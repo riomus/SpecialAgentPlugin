@@ -15,6 +15,38 @@
 #include "Services/NavigationService.h"
 #include "Services/GameplayService.h"
 #include "Services/UtilityService.h"
+#include "Services/BlueprintService.h"
+#include "Services/MaterialService.h"
+#include "Services/AssetImportService.h"
+#include "Services/PIEService.h"
+#include "Services/ConsoleService.h"
+#include "Services/ComponentService.h"
+#include "Services/EditorModeService.h"
+#include "Services/LevelService.h"
+#include "Services/LogService.h"
+#include "Services/DataTableService.h"
+#include "Services/AssetDependencyService.h"
+#include "Services/SequencerService.h"
+#include "Services/NiagaraService.h"
+#include "Services/SoundService.h"
+#include "Services/WorldPartitionService.h"
+#include "Services/PCGService.h"
+#include "Services/ContentBrowserService.h"
+#include "Services/ProjectService.h"
+#include "Services/ReflectionService.h"
+#include "Services/PhysicsService.h"
+#include "Services/AnimationService.h"
+#include "Services/AIService.h"
+#include "Services/PostProcessService.h"
+#include "Services/SkyService.h"
+#include "Services/DecalService.h"
+#include "Services/HLODService.h"
+#include "Services/RenderingService.h"
+#include "Services/ValidationService.h"
+#include "Services/SourceControlService.h"
+#include "Services/RenderQueueService.h"
+#include "Services/ModelingService.h"
+#include "Services/InputService.h"
 
 namespace
 {
@@ -52,6 +84,40 @@ FMCPRequestRouter::FMCPRequestRouter()
 	RegisterService(TEXT("navigation"), MakeShared<FNavigationService>());
 	RegisterService(TEXT("gameplay"), MakeShared<FGameplayService>());
 	RegisterService(TEXT("utility"), MakeShared<FUtilityService>());
+
+	// Phase 0.6 scaffolded services — handlers/tools populated in Phase 1.
+	RegisterService(TEXT("blueprint"),       MakeShared<FBlueprintService>());
+	RegisterService(TEXT("material"),        MakeShared<FMaterialService>());
+	RegisterService(TEXT("asset_import"),    MakeShared<FAssetImportService>());
+	RegisterService(TEXT("pie"),             MakeShared<FPIEService>());
+	RegisterService(TEXT("console"),         MakeShared<FConsoleService>());
+	RegisterService(TEXT("component"),       MakeShared<FComponentService>());
+	RegisterService(TEXT("editor_mode"),     MakeShared<FEditorModeService>());
+	RegisterService(TEXT("level"),           MakeShared<FLevelService>());
+	RegisterService(TEXT("log"),             MakeShared<FLogService>());
+	RegisterService(TEXT("data_table"),      MakeShared<FDataTableService>());
+	RegisterService(TEXT("asset_deps"),      MakeShared<FAssetDependencyService>());
+	RegisterService(TEXT("sequencer"),       MakeShared<FSequencerService>());
+	RegisterService(TEXT("niagara"),         MakeShared<FNiagaraService>());
+	RegisterService(TEXT("sound"),           MakeShared<FSoundService>());
+	RegisterService(TEXT("world_partition"), MakeShared<FWorldPartitionService>());
+	RegisterService(TEXT("pcg"),             MakeShared<FPCGService>());
+	RegisterService(TEXT("content_browser"), MakeShared<FContentBrowserService>());
+	RegisterService(TEXT("project"),         MakeShared<FProjectService>());
+	RegisterService(TEXT("reflection"),      MakeShared<FReflectionService>());
+	RegisterService(TEXT("physics"),         MakeShared<FPhysicsService>());
+	RegisterService(TEXT("animation"),       MakeShared<FAnimationService>());
+	RegisterService(TEXT("ai"),              MakeShared<FAIService>());
+	RegisterService(TEXT("post_process"),    MakeShared<FPostProcessService>());
+	RegisterService(TEXT("sky"),             MakeShared<FSkyService>());
+	RegisterService(TEXT("decal"),           MakeShared<FDecalService>());
+	RegisterService(TEXT("hlod"),            MakeShared<FHLODService>());
+	RegisterService(TEXT("rendering"),       MakeShared<FRenderingService>());
+	RegisterService(TEXT("validation"),      MakeShared<FValidationService>());
+	RegisterService(TEXT("source_control"),  MakeShared<FSourceControlService>());
+	RegisterService(TEXT("render_queue"),    MakeShared<FRenderQueueService>());
+	RegisterService(TEXT("modeling"),        MakeShared<FModelingService>());
+	RegisterService(TEXT("input"),           MakeShared<FInputService>());
 
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Registered %d services"), Services.Num());
 	ValidateServices();
