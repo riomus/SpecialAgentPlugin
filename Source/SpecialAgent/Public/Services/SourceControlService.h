@@ -7,11 +7,7 @@
  * SourceControl Service.
  *
  * Source control status, check-out, revert, submit.
- *
- * Tool list will be populated in Phase 1. See
- * docs/superpowers/plans/2026-04-19-ue5-mcp-tools-expansion-plan.md
- * and docs/superpowers/specs/2026-04-19-ue5-mcp-tools-expansion-design.md
- * for the catalog of tools this service owns.
+ * Methods: get_status, check_out, revert, submit, list_modified.
  */
 class SPECIALAGENT_API FSourceControlService : public IMCPService
 {
@@ -19,4 +15,11 @@ public:
     virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) override;
     virtual FString GetServiceDescription() const override;
     virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
+
+private:
+    FMCPResponse HandleGetStatus(const FMCPRequest& Request);
+    FMCPResponse HandleCheckOut(const FMCPRequest& Request);
+    FMCPResponse HandleRevert(const FMCPRequest& Request);
+    FMCPResponse HandleSubmit(const FMCPRequest& Request);
+    FMCPResponse HandleListModified(const FMCPRequest& Request);
 };
