@@ -6,12 +6,7 @@
 /**
  * Input Service.
  *
- * Input mapping query and edit.
- *
- * Tool list will be populated in Phase 1. See
- * docs/superpowers/plans/2026-04-19-ue5-mcp-tools-expansion-plan.md
- * and docs/superpowers/specs/2026-04-19-ue5-mcp-tools-expansion-design.md
- * for the catalog of tools this service owns.
+ * Input mapping query and edit (legacy UInputSettings action/axis mappings).
  */
 class SPECIALAGENT_API FInputService : public IMCPService
 {
@@ -19,4 +14,10 @@ public:
     virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) override;
     virtual FString GetServiceDescription() const override;
     virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
+
+private:
+    FMCPResponse HandleListMappings(const FMCPRequest& Request);
+    FMCPResponse HandleAddActionMapping(const FMCPRequest& Request);
+    FMCPResponse HandleAddAxisMapping(const FMCPRequest& Request);
+    FMCPResponse HandleRemoveMapping(const FMCPRequest& Request);
 };
