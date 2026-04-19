@@ -7,9 +7,11 @@
 
 /**
  * Performance Service
- * 
- * Level performance analysis and optimization tools.
- * Methods: get_statistics, get_actor_bounds, check_overlaps
+ *
+ * Level performance analysis and optimization.
+ *
+ * Methods: get_statistics, get_actor_bounds, check_overlaps,
+ *          get_triangle_count, get_draw_call_estimate.
  */
 class SPECIALAGENT_API FPerformanceService : public IMCPService
 {
@@ -26,8 +28,6 @@ private:
 	FMCPResponse HandleGetStatistics(const FMCPRequest& Request);
 	FMCPResponse HandleGetActorBounds(const FMCPRequest& Request);
 	FMCPResponse HandleCheckOverlaps(const FMCPRequest& Request);
-	
-	// Helper method for executing Python scripts
-	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
+	FMCPResponse HandleGetTriangleCount(const FMCPRequest& Request);
+	FMCPResponse HandleGetDrawCallEstimate(const FMCPRequest& Request);
 };
-
