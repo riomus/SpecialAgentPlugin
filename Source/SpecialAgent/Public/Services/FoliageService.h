@@ -7,9 +7,10 @@
 
 /**
  * Foliage Service
- * 
+ *
  * Procedural foliage painting and management.
- * Methods: paint_in_area, remove_from_area, get_density
+ * Methods: paint_in_area, remove_from_area, get_density,
+ *          list_foliage_types, add_foliage_type
  */
 class SPECIALAGENT_API FFoliageService : public IMCPService
 {
@@ -26,8 +27,6 @@ private:
 	FMCPResponse HandlePaintInArea(const FMCPRequest& Request);
 	FMCPResponse HandleRemoveFromArea(const FMCPRequest& Request);
 	FMCPResponse HandleGetDensity(const FMCPRequest& Request);
-	
-	// Helper method for executing Python scripts
-	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
+	FMCPResponse HandleListFoliageTypes(const FMCPRequest& Request);
+	FMCPResponse HandleAddFoliageType(const FMCPRequest& Request);
 };
-
