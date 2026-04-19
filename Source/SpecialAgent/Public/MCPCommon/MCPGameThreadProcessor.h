@@ -59,13 +59,13 @@ public:
         return Future;
     }
 
-    // FTickableEditorObject
+    // FTickableEditorObject base requires Tick, GetStatId, IsTickable.
+    // FTickableEditorObject is always ticked in-editor by definition;
+    // IsTickableInEditor / IsTickableWhenPaused / GetTickableTickType live on
+    // FTickableGameObject, not FTickableObjectBase, so we don't override them.
     virtual void Tick(float DeltaTime) override;
     virtual TStatId GetStatId() const override;
     virtual bool IsTickable() const override { return true; }
-    virtual bool IsTickableInEditor() const override { return true; }
-    virtual bool IsTickableWhenPaused() const override { return true; }
-    virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
 
 private:
     struct FWorkItem
