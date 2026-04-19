@@ -508,12 +508,14 @@ git commit -m "feat(SpecialAgent): strengthen service contract + startup validat
 
 ---
 
-### Task 0.6: Stub all 16 new service files + register them in router
+### Task 0.6: Stub all 32 new service files + register them in router
 
 **Files:**
-- Create (pairs of .h/.cpp under `Public/Services/` and `Private/Services/`) for each new service: `BlueprintService`, `MaterialService`, `AssetImportService`, `PIEService`, `ConsoleService`, `ComponentService`, `EditorModeService`, `LevelService`, `LogService`, `DataTableService`, `AssetDependencyService`, `SequencerService`, `NiagaraService`, `SoundService`, `WorldPartitionService`, `PCGService`, `ContentBrowserService`, `ProjectService`, `ReflectionService`, `PhysicsService`, `AnimationService`, `AIService`, `PostProcessService`, `SkyService`, `DecalService`, `HLODService`, `RenderingService`, `ValidationService`, `SourceControlService`, `RenderQueueService`, `ModelingService`, `InputService` — 32 headers + 32 cpps.
+- Create (pairs of .h/.cpp under `Public/Services/` and `Private/Services/`) for each of the **32** new services — this is the authoritative count drawn from the spec's §Tool Catalog (16 "Phase 2 new" + 16 "Phase 2 extended new"):
 
-(Correction: catalog lists 16 "Phase 2 new" services plus 16 "extra Phase 2" services = 32 new services total. Verify count against spec §Tool Catalog before starting.)
+  `BlueprintService`, `MaterialService`, `AssetImportService`, `PIEService`, `ConsoleService`, `ComponentService`, `EditorModeService`, `LevelService`, `LogService`, `DataTableService`, `AssetDependencyService`, `SequencerService`, `NiagaraService`, `SoundService`, `WorldPartitionService`, `PCGService`, `ContentBrowserService`, `ProjectService`, `ReflectionService`, `PhysicsService`, `AnimationService`, `AIService`, `PostProcessService`, `SkyService`, `DecalService`, `HLODService`, `RenderingService`, `ValidationService`, `SourceControlService`, `RenderQueueService`, `ModelingService`, `InputService` — **32 headers + 32 cpps**.
+
+Before starting, cross-check this list against the spec's Tool Catalog tables to confirm nothing has drifted.
 
 - Modify: `Private/MCPRequestRouter.cpp` to register each new service.
 - Modify: `SpecialAgent.Build.cs` to add minimum module dependencies so headers compile.
