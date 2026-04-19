@@ -5,6 +5,7 @@
 #include "Services/PythonService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPToolBuilder.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Editor.h"
@@ -975,35 +976,14 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 	}
 	
 	// spawn_actor
-	{
-		FMCPToolInfo Tool;
-		Tool.Name = TEXT("spawn_actor");
-		Tool.Description = TEXT("Spawn an actor at a location. IMPORTANT: Place ONE at a time, then screenshot to verify. Location is where the mesh ORIGIN/PIVOT goes (may not be mesh center). Use assets/get_bounds first to understand pivot offset. Use trace_from_screen normal to calculate proper rotation for surface alignment.");
-		
-		TSharedPtr<FJsonObject> ClassParam = MakeShared<FJsonObject>();
-		ClassParam->SetStringField(TEXT("type"), TEXT("string"));
-		ClassParam->SetStringField(TEXT("description"), TEXT("Asset path (e.g., /Game/Meshes/Rock.Rock for StaticMesh, /Game/BP/MyActor.MyActor for Blueprint) or class name"));
-		Tool.Parameters->SetObjectField(TEXT("actor_class"), ClassParam);
-		Tool.RequiredParams.Add(TEXT("actor_class"));
-		
-		TSharedPtr<FJsonObject> LocParam = MakeShared<FJsonObject>();
-		LocParam->SetStringField(TEXT("type"), TEXT("array"));
-		LocParam->SetStringField(TEXT("description"), TEXT("Spawn location as [X, Y, Z]"));
-		Tool.Parameters->SetObjectField(TEXT("location"), LocParam);
-		Tool.RequiredParams.Add(TEXT("location"));
-		
-		TSharedPtr<FJsonObject> RotParam = MakeShared<FJsonObject>();
-		RotParam->SetStringField(TEXT("type"), TEXT("array"));
-		RotParam->SetStringField(TEXT("description"), TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"));
-		Tool.Parameters->SetObjectField(TEXT("rotation"), RotParam);
-		
-		TSharedPtr<FJsonObject> ScaleParam = MakeShared<FJsonObject>();
-		ScaleParam->SetStringField(TEXT("type"), TEXT("array"));
-		ScaleParam->SetStringField(TEXT("description"), TEXT("Optional scale as [X, Y, Z]"));
-		Tool.Parameters->SetObjectField(TEXT("scale"), ScaleParam);
-		
-		Tools.Add(Tool);
-	}
+	Tools.Add(FMCPToolBuilder(
+			TEXT("spawn_actor"),
+			TEXT("Spawn an actor at a location. IMPORTANT: Place ONE at a time, then screenshot to verify. Location is where the mesh ORIGIN/PIVOT goes (may not be mesh center). Use assets/get_bounds first to understand pivot offset. Use trace_from_screen normal to calculate proper rotation for surface alignment."))
+		.RequiredString(TEXT("actor_class"), TEXT("Asset path (e.g., /Game/Meshes/Rock.Rock for StaticMesh, /Game/BP/MyActor.MyActor for Blueprint) or class name"))
+		.RequiredVec3  (TEXT("location"),    TEXT("Spawn location as [X, Y, Z]"))
+		.OptionalVec3  (TEXT("rotation"),    TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"))
+		.OptionalVec3  (TEXT("scale"),       TEXT("Optional scale as [X, Y, Z]"))
+		.Build());
 	
 	// delete_actor
 	{
@@ -1104,25 +1084,12 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 	}
 	
 	// find_actors_in_radius
-	{
-		FMCPToolInfo Tool;
-		Tool.Name = TEXT("find_actors_in_radius");
-		Tool.Description = TEXT("Find all actors within a radius of a point.");
-		
-		TSharedPtr<FJsonObject> CenterParam = MakeShared<FJsonObject>();
-		CenterParam->SetStringField(TEXT("type"), TEXT("array"));
-		CenterParam->SetStringField(TEXT("description"), TEXT("Center point as [X, Y, Z]"));
-		Tool.Parameters->SetObjectField(TEXT("center"), CenterParam);
-		Tool.RequiredParams.Add(TEXT("center"));
-		
-		TSharedPtr<FJsonObject> RadiusParam = MakeShared<FJsonObject>();
-		RadiusParam->SetStringField(TEXT("type"), TEXT("number"));
-		RadiusParam->SetStringField(TEXT("description"), TEXT("Search radius in units"));
-		Tool.Parameters->SetObjectField(TEXT("radius"), RadiusParam);
-		Tool.RequiredParams.Add(TEXT("radius"));
-		
-		Tools.Add(Tool);
-	}
+	Tools.Add(FMCPToolBuilder(
+			TEXT("find_actors_in_radius"),
+			TEXT("Find all actors within a radius of a point."))
+		.RequiredVec3  (TEXT("center"), TEXT("Center point as [X, Y, Z]"))
+		.RequiredNumber(TEXT("radius"), TEXT("Search radius in units"))
+		.Build());
 	
 	// get_level_info
 	{
