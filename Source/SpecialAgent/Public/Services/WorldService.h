@@ -7,7 +7,7 @@
 
 /**
  * World Service
- * 
+ *
  * Handles world/level introspection and actor manipulation.
  * 30+ methods for querying, spawning, modifying, and organizing actors.
  */
@@ -66,6 +66,13 @@ private:
 	FMCPResponse HandlePlaceAlongSpline(const FMCPRequest& Request);
 	FMCPResponse HandlePlaceInCircle(const FMCPRequest& Request);
 	FMCPResponse HandleScatterInArea(const FMCPRequest& Request);
+
+	// Actor state methods (new in Phase 1.A)
+	FMCPResponse HandleSetActorTickEnabled(const FMCPRequest& Request);
+	FMCPResponse HandleSetActorHidden(const FMCPRequest& Request);
+	FMCPResponse HandleSetActorCollision(const FMCPRequest& Request);
+	FMCPResponse HandleAttachTo(const FMCPRequest& Request);
+	FMCPResponse HandleDetach(const FMCPRequest& Request);
 
 	// Helper method for executing Python scripts
 	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
