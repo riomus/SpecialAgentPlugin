@@ -4,6 +4,7 @@
 #include "Services/WorldService.h"
 #include "Services/PythonService.h"
 #include "GameThreadDispatcher.h"
+#include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
 #include "Engine/World.h"
@@ -91,16 +92,6 @@ static TSharedPtr<FJsonObject> SerializeActor(AActor* Actor)
 	ActorObj->SetArrayField(TEXT("tags"), TagsArr);
 
 	return ActorObj;
-}
-
-static AActor* FindActor(UWorld* World, const FString& ActorName)
-{
-	if (!World) return nullptr;
-	for (TActorIterator<AActor> It(World); It; ++It)
-	{
-		if ((*It)->GetActorLabel() == ActorName) return *It;
-	}
-	return nullptr;
 }
 
 // Request Handler
@@ -237,7 +228,7 @@ FMCPResponse FWorldService::HandleGetActor(const FMCPRequest& Request)
 			return Result;
 		}
 
-		AActor* Actor = FindActor(World, ActorName);
+		AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
 		if (!Actor)
 		{
 			Result->SetBoolField(TEXT("success"), false);
@@ -421,7 +412,7 @@ FMCPResponse FWorldService::HandleDeleteActor(const FMCPRequest& Request)
 			return Result;
 		}
 
-		AActor* Actor = FindActor(World, ActorName);
+		AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
 		if (!Actor)
 		{
 			Result->SetBoolField(TEXT("success"), false);
@@ -469,7 +460,7 @@ FMCPResponse FWorldService::HandleSetActorLocation(const FMCPRequest& Request)
 			return Result;
 		}
 
-		AActor* Actor = FindActor(World, ActorName);
+		AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
 		if (!Actor)
 		{
 			Result->SetBoolField(TEXT("success"), false);
@@ -589,7 +580,7 @@ FMCPResponse FWorldService::HandleDuplicateActor(const FMCPRequest& Request)
 			return Result;
 		}
 
-		AActor* SourceActor = FindActor(World, ActorName);
+		AActor* SourceActor = FMCPActorResolver::ByLabel(World, ActorName);
 		if (!SourceActor)
 		{
 			Result->SetBoolField(TEXT("success"), false);
@@ -670,7 +661,7 @@ FMCPResponse FWorldService::HandleSetActorRotation(const FMCPRequest& Request)
 			return Result;
 		}
 
-		AActor* Actor = FindActor(World, ActorName);
+		AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
 		if (!Actor)
 		{
 			Result->SetBoolField(TEXT("success"), false);
@@ -720,7 +711,7 @@ FMCPResponse FWorldService::HandleSetActorScale(const FMCPRequest& Request)
 			return Result;
 		}
 
-		AActor* Actor = FindActor(World, ActorName);
+		AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
 		if (!Actor)
 		{
 			Result->SetBoolField(TEXT("success"), false);
