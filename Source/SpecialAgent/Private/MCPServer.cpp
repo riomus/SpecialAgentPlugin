@@ -162,7 +162,7 @@ bool FSpecialAgentMCPServer::HandleSSEConnection(const FHttpServerRequest& Reque
 	);
 
 	// Create response with SSE content type
-	TUniquePtr<FHttpServerResponse> Response = FHttpServerResponse::Create(TEXT(""), TEXT("text/event-stream"));
+	TUniquePtr<FHttpServerResponse> Response = FHttpServerResponse::Create(FString(TEXT("")), TEXT("text/event-stream"));
 	
 	// Set required SSE headers
 	Response->Headers.Add(TEXT("Cache-Control"), { TEXT("no-cache, no-store, must-revalidate") });
@@ -282,7 +282,7 @@ bool FSpecialAgentMCPServer::HandleMessage(const FHttpServerRequest& Request, co
 
 bool FSpecialAgentMCPServer::HandleCORS(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
-	TUniquePtr<FHttpServerResponse> Response = FHttpServerResponse::Create(TEXT(""), TEXT("text/plain"));
+	TUniquePtr<FHttpServerResponse> Response = FHttpServerResponse::Create(FString(TEXT("")), TEXT("text/plain"));
 	Response->Headers.Add(TEXT("Access-Control-Allow-Origin"), { TEXT("*") });
 	Response->Headers.Add(TEXT("Access-Control-Allow-Methods"), { TEXT("GET, POST, OPTIONS") });
 	Response->Headers.Add(TEXT("Access-Control-Allow-Headers"), { TEXT("Content-Type, Accept, Authorization") });
