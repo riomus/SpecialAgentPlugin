@@ -1385,7 +1385,9 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("list");
-		Tool.Description = TEXT("List assets in the Content Browser. Can filter by class type and path.");
+		Tool.Description = TEXT("List assets from the Asset Registry. Returns array of {name, path, class, package}. "
+			"Params: filter (object, optional) with class (string, e.g. 'StaticMesh'), path (string content root e.g. '/Game/Meshes'), max_results (integer, default 1000). "
+			"Workflow: use assets/find for name-substring, assets/search for free-text across fields; call before spawn to discover available content.");
 		
 		TSharedPtr<FJsonObject> FilterParam = MakeShared<FJsonObject>();
 		FilterParam->SetStringField(TEXT("type"), TEXT("object"));
@@ -1399,7 +1401,9 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("find");
-		Tool.Description = TEXT("Find assets by name (partial match search).");
+		Tool.Description = TEXT("Find assets whose name contains the given substring. Returns array of {name, path, class}. "
+			"Params: name (string, case-insensitive substring of the asset's short name, required). "
+			"Workflow: narrower than assets/search (name only). Use assets/get_info or get_properties to inspect a specific match.");
 		
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -1414,7 +1418,9 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_properties");
-		Tool.Description = TEXT("Get detailed properties of a specific asset by path.");
+		Tool.Description = TEXT("Load an asset and dump its reflected UProperties as JSON. Returns {asset_path, class, properties:{name:value}}. "
+			"Params: asset_path (string, full object path like /Game/Foo.Foo, required). "
+			"Workflow: use for generic introspection; prefer assets/get_info for mesh-specific bounds/materials/LODs.");
 		
 		TSharedPtr<FJsonObject> PathParam = MakeShared<FJsonObject>();
 		PathParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -1429,7 +1435,9 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("search");
-		Tool.Description = TEXT("Search assets by query string (searches name, path, and class).");
+		Tool.Description = TEXT("Free-text search across asset name, path, and class. Returns array of {name, path, class}. "
+			"Params: query (string, required); max_results (integer, default 100). "
+			"Workflow: broader than assets/find (matches any field). Follow with assets/get_info before spawning.");
 		
 		TSharedPtr<FJsonObject> QueryParam = MakeShared<FJsonObject>();
 		QueryParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -1449,7 +1457,9 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_bounds");
-		Tool.Description = TEXT("Get mesh dimensions and pivot info BEFORE spawning. Returns size, center, min, bottom_z_offset. KEY: bottom_z_offset tells you how much to ADD to spawn Z to place mesh on ground. If center != [0,0,0], pivot is offset from mesh center.");
+		Tool.Description = TEXT("Get a static mesh's local bounds and pivot offset for ground-aligned placement. Returns {size, center, min, max, bottom_z_offset} where bottom_z_offset is the Z delta to ADD at spawn so the mesh base sits on the target ground. "
+			"Params: asset_path (string, /Game/... mesh path, required). "
+			"Workflow: call BEFORE world/spawn_actor; add bottom_z_offset to the raycast-hit Z to keep the pivot honest.");
 		
 		TSharedPtr<FJsonObject> PathParam = MakeShared<FJsonObject>();
 		PathParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -1464,7 +1474,9 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_info");
-		Tool.Description = TEXT("Get detailed asset info BEFORE placing. For meshes: bounds, materials, collision, LODs, vertex count. For blueprints: parent class, type. For textures: dimensions. Use to understand what an asset IS before spawning it.");
+		Tool.Description = TEXT("Inspect a specific asset based on its class. Returns meshes: {bounds, materials, collision, LODs, vertex_count}; blueprints: {parent_class, type}; textures: {width, height, format}. "
+			"Params: asset_path (string, full object path /Game/Foo.Foo or /Game/BP/Foo.Foo_C, required). "
+			"Workflow: call before world/spawn_actor to confirm you're placing the right asset; pair with assets/get_bounds for pivot info.");
 
 		TSharedPtr<FJsonObject> PathParam = MakeShared<FJsonObject>();
 		PathParam->SetStringField(TEXT("type"), TEXT("string"));

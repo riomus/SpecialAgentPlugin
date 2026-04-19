@@ -675,7 +675,10 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("set_location");
-		Tool.Description = TEXT("Set the viewport camera location.");
+		Tool.Description = TEXT("Set the active editor viewport camera location in world space. Returns {success, location}. "
+			"Params: location ([X,Y,Z] cm world, required). "
+			"Workflow: pair with viewport/set_rotation to aim; call screenshot/capture to verify framing. "
+			"Warning: only the active Level Editor viewport is affected.");
 		
 		TSharedPtr<FJsonObject> LocParam = MakeShared<FJsonObject>();
 		LocParam->SetStringField(TEXT("type"), TEXT("array"));
@@ -690,7 +693,9 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("set_rotation");
-		Tool.Description = TEXT("Set the viewport camera rotation.");
+		Tool.Description = TEXT("Set the active editor viewport camera rotation. Returns {success, rotation}. "
+			"Params: rotation ([Pitch,Yaw,Roll] degrees, required). "
+			"Workflow: pair with viewport/set_location; use viewport/focus_actor for 'frame this actor' behaviour instead of manual angles.");
 		
 		TSharedPtr<FJsonObject> RotParam = MakeShared<FJsonObject>();
 		RotParam->SetStringField(TEXT("type"), TEXT("array"));
@@ -705,7 +710,8 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_transform");
-		Tool.Description = TEXT("Get the current viewport camera location and rotation.");
+		Tool.Description = TEXT("Get the active editor viewport camera transform. Returns {success, location:[X,Y,Z], rotation:[Pitch,Yaw,Roll]}. "
+			"Workflow: call before bookmark_save, or use the result to compute offsets for subsequent set_location calls.");
 		Tools.Add(Tool);
 	}
 	
@@ -713,7 +719,9 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("focus_actor");
-		Tool.Description = TEXT("Frame an actor in the viewport (like pressing F). Use to navigate to any actor by name. Get actor names from world/list_actors or utility/select_at_screen. After focusing, take a screenshot to see it.");
+		Tool.Description = TEXT("Frame an actor in the viewport (like pressing F in the editor). Matches by exact label, internal name, or case-insensitive substring; returns {actor_name, actor_id, matched_by}. "
+			"Params: actor_name (string, label/ID or partial, required). "
+			"Workflow: world/list_actors -> focus_actor -> screenshot/capture to confirm the view.");
 		
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -728,7 +736,9 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("trace_from_screen");
-		Tool.Description = TEXT("ESSENTIAL: Get 3D location AND surface normal from any point in screenshot. Use to: 1) Find WHERE to place actors (location), 2) Find HOW to orient actors (normal = surface 'up' direction). Workflow: screenshot -> see point -> trace at that % position -> get location+normal -> spawn/orient actor.");
+		Tool.Description = TEXT("Deproject a screen-space point and line-trace against visibility channel. Returns {hit, location, normal, distance, actor_name, actor_class, component_name, physical_material} on hit; {hit:false, ray_direction} on miss. "
+			"Params: screen_x (number 0-1, fraction from left, default 0.5); screen_y (number 0-1, fraction from top, default 0.5). "
+			"Workflow: screenshot/capture -> estimate (x,y) -> trace_from_screen -> use location to world/spawn_actor and normal to align rotation.");
 		
 		TSharedPtr<FJsonObject> XParam = MakeShared<FJsonObject>();
 		XParam->SetStringField(TEXT("type"), TEXT("number"));

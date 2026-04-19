@@ -909,7 +909,9 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("save_level");
-		Tool.Description = TEXT("Save the current level to disk.");
+		Tool.Description = TEXT("Save the current editor level to disk. Persists unsaved actor edits via FEditorFileUtils::SaveCurrentLevel; returns {success, message}. "
+			"Workflow: call after world/spawn_actor or bulk edits to commit changes. "
+			"Warning: writes to source control if active; may prompt for checkout.");
 		Tools.Add(Tool);
 	}
 	
@@ -917,7 +919,9 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("undo");
-		Tool.Description = TEXT("Undo the last editor action.");
+		Tool.Description = TEXT("Undo N editor actions. Rewinds GEditor->Trans up to 'steps' times or until the stack is empty; returns {success, steps_undone}. "
+			"Params: steps (integer, count of transactions to undo, default 1). "
+			"Workflow: pair with utility/redo. Wrap grouped edits in begin_transaction/end_transaction to undo them atomically.");
 		
 		TSharedPtr<FJsonObject> StepsParam = MakeShared<FJsonObject>();
 		StepsParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -931,7 +935,9 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("redo");
-		Tool.Description = TEXT("Redo a previously undone action.");
+		Tool.Description = TEXT("Redo N previously-undone editor actions. Replays the transactor forward up to 'steps' times; returns {success, steps_redone}. "
+			"Params: steps (integer, count of transactions to redo, default 1). "
+			"Workflow: pair with utility/undo.");
 		
 		TSharedPtr<FJsonObject> StepsParam = MakeShared<FJsonObject>();
 		StepsParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -945,7 +951,9 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("select_actor");
-		Tool.Description = TEXT("Select an actor in the editor.");
+		Tool.Description = TEXT("Select an actor in the editor by label. Highlights it in the viewport/outliner and returns {actor_name, added_to_selection}. "
+			"Params: actor_name (string, outliner label, required); add_to_selection (bool, default false — when true, adds to existing selection instead of replacing). "
+			"Workflow: pair with utility/get_selection, utility/get_selection_bounds, or viewport/focus_actor to zoom in.");
 		
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -965,7 +973,8 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_selection");
-		Tool.Description = TEXT("Get the currently selected actors in the editor.");
+		Tool.Description = TEXT("Get the currently selected actors in the editor. Returns {selected_actors:[{name,class}], count}. "
+			"Workflow: call after utility/select_actor, select_by_class, or select_at_screen to confirm the working set before mutating.");
 		Tools.Add(Tool);
 	}
 	
@@ -973,7 +982,8 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_selection_bounds");
-		Tool.Description = TEXT("Get detailed bounds and orientation data for selected actors. Returns location, rotation, scale, forward/right/up vectors, and bounding box (min, max, center, extent, size) for each selected actor.");
+		Tool.Description = TEXT("Get detailed transform and bounds data for each currently selected actor. Returns per-actor {name, id, class, location, rotation, scale, forward/right/up_vector, bounds:{min,max,center,extent,size}}. "
+			"Workflow: select first via utility/select_actor or select_at_screen, then call to size/position follow-up spawns.");
 		Tools.Add(Tool);
 	}
 	
@@ -981,7 +991,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("select_at_screen");
-		Tool.Description = TEXT("Select an actor by clicking a point in the screenshot. Workflow: screenshot -> see actor -> estimate % position -> select. Returns FULL actor info: name, class, location, rotation, scale, bounds, tags. Use to identify unknown actors or get their exact transforms.");
+		Tool.Description = TEXT("Select the actor under a screen-space point by deproject+line-trace. Returns {hit, actor_name, actor_class, hit_location, actor_location/rotation/scale, bounds, tags}. "
+			"Params: screen_x (number 0-1, fraction from left edge); screen_y (number 0-1, fraction from top edge); add_to_selection (bool, default false). "
+			"Workflow: screenshot/capture -> estimate (x,y) -> select_at_screen -> utility/get_selection_bounds or world/set_actor_* to edit. "
+			"Warning: misses when the click hits empty sky; verify hit==true before chaining.");
 		
 		TSharedPtr<FJsonObject> XParam = MakeShared<FJsonObject>();
 		XParam->SetStringField(TEXT("type"), TEXT("number"));
