@@ -2,6 +2,9 @@
 
 #include "Services/UtilityService.h"
 #include "GameThreadDispatcher.h"
+#include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPActorResolver.h"
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "EngineUtils.h"
@@ -16,6 +19,17 @@
 #include "Engine/World.h"
 #include "CollisionQueryParams.h"
 #include "SceneView.h"
+#include "Editor/GroupActor.h"
+#include "ActorGroupingUtils.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Misc/MessageDialog.h"
+#include "Framework/Docking/TabManager.h"
+#include "IContentBrowserSingleton.h"
+#include "ContentBrowserModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 
 FUtilityService::FUtilityService()
 {
@@ -35,6 +49,19 @@ FMCPResponse FUtilityService::HandleRequest(const FMCPRequest& Request, const FS
 	if (MethodName == TEXT("get_selection")) return HandleGetSelection(Request);
 	if (MethodName == TEXT("get_selection_bounds")) return HandleGetSelectionBounds(Request);
 	if (MethodName == TEXT("select_at_screen")) return HandleSelectAtScreen(Request);
+
+	// Phase 1.A
+	if (MethodName == TEXT("focus_asset_in_browser")) return HandleFocusAssetInBrowser(Request);
+	if (MethodName == TEXT("deselect_all")) return HandleDeselectAll(Request);
+	if (MethodName == TEXT("invert_selection")) return HandleInvertSelection(Request);
+	if (MethodName == TEXT("select_by_class")) return HandleSelectByClass(Request);
+	if (MethodName == TEXT("group_selected")) return HandleGroupSelected(Request);
+	if (MethodName == TEXT("ungroup")) return HandleUngroup(Request);
+	if (MethodName == TEXT("begin_transaction")) return HandleBeginTransaction(Request);
+	if (MethodName == TEXT("end_transaction")) return HandleEndTransaction(Request);
+	if (MethodName == TEXT("show_notification")) return HandleShowNotification(Request);
+	if (MethodName == TEXT("show_dialog")) return HandleShowDialog(Request);
+	if (MethodName == TEXT("focus_tab")) return HandleFocusTab(Request);
 
 	return MethodNotFound(Request.Id, TEXT("utility"), MethodName);
 }
@@ -606,6 +633,274 @@ FMCPResponse FUtilityService::HandleSelectAtScreen(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
+// ============================================================================
+// Phase 1.A additions
+// ============================================================================
+FMCPResponse FUtilityService::HandleFocusAssetInBrowser(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString AssetPath;
+	if (!Request.Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return InvalidParams(Request.Id, TEXT("Missing 'asset_path'"));
+
+	auto Task = [AssetPath]() -> TSharedPtr<FJsonObject>
+	{
+		FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		FAssetData AssetData = ARM.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
+		if (!AssetData.IsValid()) return FMCPJson::MakeError(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+
+		FContentBrowserModule& CB = FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+		TArray<FAssetData> Assets;
+		Assets.Add(AssetData);
+		CB.Get().SyncBrowserToAssets(Assets);
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("asset_path"), AssetPath);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Focused Content Browser on %s"), *AssetPath);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleDeselectAll(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		if (!GEditor) return FMCPJson::MakeError(TEXT("GEditor not available"));
+		GEditor->SelectNone(true, true, false);
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Deselected all actors"));
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleInvertSelection(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+
+		USelection* Sel = GEditor->GetSelectedActors();
+		TSet<AActor*> Currently;
+		if (Sel)
+		{
+			TArray<AActor*> Arr;
+			Sel->GetSelectedObjects<AActor>(Arr);
+			for (AActor* A : Arr) Currently.Add(A);
+		}
+		GEditor->SelectNone(true, true, false);
+		int32 Count = 0;
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (!Currently.Contains(*It))
+			{
+				GEditor->SelectActor(*It, true, true);
+				++Count;
+			}
+		}
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetNumberField(TEXT("selected"), Count);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Inverted selection (%d now selected)"), Count);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleSelectByClass(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString ClassName;
+	if (!Request.Params->TryGetStringField(TEXT("class_name"), ClassName))
+		return InvalidParams(Request.Id, TEXT("Missing 'class_name'"));
+	bool bAdd = false;
+	Request.Params->TryGetBoolField(TEXT("add_to_selection"), bAdd);
+
+	auto Task = [ClassName, bAdd]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+		UClass* Class = FindFirstObject<UClass>(*ClassName,
+			EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous);
+		if (!Class) return FMCPJson::MakeError(FString::Printf(TEXT("Class not found: %s"), *ClassName));
+		if (!bAdd) GEditor->SelectNone(true, true, false);
+		int32 Count = 0;
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if ((*It)->IsA(Class))
+			{
+				GEditor->SelectActor(*It, true, true);
+				++Count;
+			}
+		}
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("class_name"), ClassName);
+		Result->SetNumberField(TEXT("selected"), Count);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Selected %d actors by class %s"), Count, *ClassName);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleGroupSelected(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		if (!GEditor) return FMCPJson::MakeError(TEXT("GEditor not available"));
+		UActorGroupingUtils* Utils = UActorGroupingUtils::Get();
+		if (!Utils) return FMCPJson::MakeError(TEXT("ActorGroupingUtils not available"));
+		UActorGroupingUtils::SetGroupingActive(true);
+		AGroupActor* Group = Utils->GroupSelected();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		if (Group)
+			Result->SetStringField(TEXT("group_name"), Group->GetActorLabel());
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Grouped selected actors"));
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleUngroup(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		if (!GEditor) return FMCPJson::MakeError(TEXT("GEditor not available"));
+		UActorGroupingUtils* Utils = UActorGroupingUtils::Get();
+		if (!Utils) return FMCPJson::MakeError(TEXT("ActorGroupingUtils not available"));
+		Utils->UngroupSelected();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Ungrouped selection"));
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleBeginTransaction(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString Name;
+	if (!Request.Params->TryGetStringField(TEXT("name"), Name))
+		return InvalidParams(Request.Id, TEXT("Missing 'name'"));
+
+	auto Task = [Name]() -> TSharedPtr<FJsonObject>
+	{
+		if (!GEditor) return FMCPJson::MakeError(TEXT("GEditor not available"));
+		const int32 Index = GEditor->BeginTransaction(FText::FromString(Name));
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetNumberField(TEXT("transaction_index"), Index);
+		Result->SetStringField(TEXT("name"), Name);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Begin transaction '%s' (idx=%d)"), *Name, Index);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleEndTransaction(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		if (!GEditor) return FMCPJson::MakeError(TEXT("GEditor not available"));
+		const int32 Depth = GEditor->EndTransaction();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetNumberField(TEXT("depth_after"), Depth);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: End transaction (depth=%d)"), Depth);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleShowNotification(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString Message;
+	if (!Request.Params->TryGetStringField(TEXT("message"), Message))
+		return InvalidParams(Request.Id, TEXT("Missing 'message'"));
+	double Duration = 4.0;
+	Request.Params->TryGetNumberField(TEXT("duration"), Duration);
+
+	auto Task = [Message, Duration]() -> TSharedPtr<FJsonObject>
+	{
+		FNotificationInfo Info(FText::FromString(Message));
+		Info.ExpireDuration = static_cast<float>(Duration);
+		FSlateNotificationManager::Get().AddNotification(Info);
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("message"), Message);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleShowDialog(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString Message, Title;
+	if (!Request.Params->TryGetStringField(TEXT("message"), Message))
+		return InvalidParams(Request.Id, TEXT("Missing 'message'"));
+	Request.Params->TryGetStringField(TEXT("title"), Title);
+	FString TypeStr = TEXT("ok");
+	Request.Params->TryGetStringField(TEXT("type"), TypeStr);
+
+	auto Task = [Message, Title, TypeStr]() -> TSharedPtr<FJsonObject>
+	{
+		EAppMsgType::Type Type = EAppMsgType::Ok;
+		if (TypeStr.Equals(TEXT("yes_no"), ESearchCase::IgnoreCase)) Type = EAppMsgType::YesNo;
+		else if (TypeStr.Equals(TEXT("ok_cancel"), ESearchCase::IgnoreCase)) Type = EAppMsgType::OkCancel;
+		else if (TypeStr.Equals(TEXT("yes_no_cancel"), ESearchCase::IgnoreCase)) Type = EAppMsgType::YesNoCancel;
+
+		const FText TitleText = Title.IsEmpty() ? FText::FromString(TEXT("SpecialAgent")) : FText::FromString(Title);
+		EAppReturnType::Type Ret = FMessageDialog::Open(Type, FText::FromString(Message), TitleText);
+
+		FString RetStr;
+		switch (Ret)
+		{
+			case EAppReturnType::Yes: RetStr = TEXT("yes"); break;
+			case EAppReturnType::No: RetStr = TEXT("no"); break;
+			case EAppReturnType::Cancel: RetStr = TEXT("cancel"); break;
+			case EAppReturnType::Ok: RetStr = TEXT("ok"); break;
+			case EAppReturnType::YesAll: RetStr = TEXT("yes_all"); break;
+			case EAppReturnType::NoAll: RetStr = TEXT("no_all"); break;
+			default: RetStr = TEXT("unknown"); break;
+		}
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("response"), RetStr);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Dialog answered '%s'"), *RetStr);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FUtilityService::HandleFocusTab(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString TabId;
+	if (!Request.Params->TryGetStringField(TEXT("tab_id"), TabId))
+		return InvalidParams(Request.Id, TEXT("Missing 'tab_id'"));
+
+	auto Task = [TabId]() -> TSharedPtr<FJsonObject>
+	{
+		TSharedPtr<SDockTab> Tab = FGlobalTabmanager::Get()->TryInvokeTab(FTabId(FName(*TabId)));
+		if (!Tab.IsValid())
+			return FMCPJson::MakeError(FString::Printf(TEXT("Tab not found or could not be opened: %s"), *TabId));
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("tab_id"), TabId);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Focused tab %s"), *TabId);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
 TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 {
 	TArray<FMCPToolInfo> Tools;
@@ -702,9 +997,90 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 		AddParam->SetStringField(TEXT("type"), TEXT("boolean"));
 		AddParam->SetStringField(TEXT("description"), TEXT("Add to current selection instead of replacing (default: false)"));
 		Tool.Parameters->SetObjectField(TEXT("add_to_selection"), AddParam);
-		
+
 		Tools.Add(Tool);
 	}
-	
+
+	// ---------- Phase 1.A additions ----------
+	Tools.Add(FMCPToolBuilder(TEXT("focus_asset_in_browser"),
+		TEXT("Navigate the Content Browser to an asset. Effect: opens Content Browser and highlights the asset. "
+			 "Params: asset_path (string, e.g. /Game/Meshes/Rock.Rock)."))
+		.RequiredString(TEXT("asset_path"), TEXT("Full asset path /Game/..."))
+		.Build());
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("deselect_all");
+		Tool.Description = TEXT("Clear the editor selection. Effect: nothing selected. "
+			"Workflow: call before select_by_class to avoid accumulating selection.");
+		Tools.Add(Tool);
+	}
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("invert_selection");
+		Tool.Description = TEXT("Invert current editor selection. Effect: previously-selected become deselected and vice versa.");
+		Tools.Add(Tool);
+	}
+
+	Tools.Add(FMCPToolBuilder(TEXT("select_by_class"),
+		TEXT("Select all actors of a given class. Effect: adds matches to selection (or replaces). "
+			 "Params: class_name (string, class name), add_to_selection (bool, optional default false)."))
+		.RequiredString(TEXT("class_name"), TEXT("Class name to match"))
+		.OptionalBool(TEXT("add_to_selection"), TEXT("Add to current selection instead of replacing"))
+		.Build());
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("group_selected");
+		Tool.Description = TEXT("Group currently selected actors into an AGroupActor. Effect: binds them so editor operations move them together.");
+		Tools.Add(Tool);
+	}
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("ungroup");
+		Tool.Description = TEXT("Ungroup any selected AGroupActors. Effect: child actors are released and group actors destroyed.");
+		Tools.Add(Tool);
+	}
+
+	Tools.Add(FMCPToolBuilder(TEXT("begin_transaction"),
+		TEXT("Open a named undo/redo transaction. Effect: subsequent edits are grouped under 'name' for undo. "
+			 "Params: name (string, label shown in undo menu). "
+			 "Workflow: pair with end_transaction; everything between is atomic."))
+		.RequiredString(TEXT("name"), TEXT("Transaction label"))
+		.Build());
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("end_transaction");
+		Tool.Description = TEXT("Close the current undo/redo transaction. Effect: finalizes the group for undo stack.");
+		Tools.Add(Tool);
+	}
+
+	Tools.Add(FMCPToolBuilder(TEXT("show_notification"),
+		TEXT("Display a toast notification in the editor. Effect: transient popup visible to the user. "
+			 "Params: message (string), duration (number, seconds, optional default 4)."))
+		.RequiredString(TEXT("message"), TEXT("Notification text"))
+		.OptionalNumber(TEXT("duration"), TEXT("Expire time in seconds (default 4)"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("show_dialog"),
+		TEXT("Display a modal dialog. Effect: blocks the editor until the user answers; returns the response string. "
+			 "Params: message (string), title (string, optional), type (enum 'ok'|'yes_no'|'ok_cancel'|'yes_no_cancel'). "
+			 "Warning: modal — use sparingly for user confirmation only."))
+		.RequiredString(TEXT("message"), TEXT("Dialog body text"))
+		.OptionalString(TEXT("title"), TEXT("Optional dialog title"))
+		.OptionalEnum(TEXT("type"), {TEXT("ok"), TEXT("yes_no"), TEXT("ok_cancel"), TEXT("yes_no_cancel")},
+			TEXT("Dialog button set (default 'ok')"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("focus_tab"),
+		TEXT("Open/focus an editor tab by its tab id. Effect: invokes the named tab in the global tab manager. "
+			 "Params: tab_id (string, e.g. 'ContentBrowserTab1', 'LevelEditor', 'OutputLog'). "
+			 "Warning: tab ids are internal FNames; use built-in ids to avoid failure."))
+		.RequiredString(TEXT("tab_id"), TEXT("Tab FName id, e.g. 'OutputLog'"))
+		.Build());
+
 	return Tools;
 }
