@@ -44,6 +44,87 @@ Rejected alternatives:
 
 ## Architecture
 
+### Critical prerequisite — fix the task-graph reentrancy crash
+
+A live crash has been observed with the current plugin when a Python tool triggers asset import. Stack:
+
+```
+Game thread in UEditorEngine::Tick -> MassEntityEditor::Tick -> 
+WaitWithNamedThreadsSupport -> ProcessTasksNamedThread -> ProcessTasksUntilQuit
+-> TGraphTask<FAsyncGraphTask>::ExecuteTask         <-- HTTP handler runs here
+   -> FSpecialAgentMCPServer::HandleMessage
+     -> FMCPRequestRouter::HandleToolsCall
+       -> FPythonService::HandleExecute
+         -> Python -> ImportAssetsAutomated
+           -> UInterchangeManager::ImportAssetWithResult
+             -> WaitUntilTasksComplete
+               -> FNamedTaskThread::ProcessTasksUntilIdle
+                 [assert] ++Queue(QueueIndex).RecursionGuard == 1
+```
+
+Root cause: `FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn` uses
+`AsyncTask(ENamedThreads::GameThread, ...)` from the HTTP worker. The game
+thread executes that inside its own `ProcessTasksUntilIdle` pump. When a tool
+invokes an engine subsystem that itself blocks on `WaitUntilTasksComplete`,
+UE5's named task thread re-enters `ProcessTasksUntilIdle` on the same queue
+and hits its recursion guard. The editor crashes.
+
+**This must be fixed in Phase 0 before any new tools land.** Building ~250 new
+tools on top of the current dispatcher multiplies the blast radius across
+every handler that might pump the task graph: asset_import, pie start/stop,
+blueprint/compile, hlod/build, navigation/rebuild, landscape sculpt, save_level
+with auto-reimport, render_queue, source_control/submit, data_table import.
+
+**Fix — replace the dispatcher with a tickable processor.**
+
+Introduce `FMCPGameThreadProcessor` — an `FTickableEditorObject` that drains
+a thread-safe queue of work items during `Tick()`, which runs **outside** the
+task graph's `ProcessTasksUntilIdle` scope.
+
+```cpp
+// Public/MCPCommon/MCPGameThreadProcessor.h
+class FMCPGameThreadProcessor : public FTickableEditorObject
+{
+public:
+    static FMCPGameThreadProcessor& Get();
+
+    // Called from any thread. Returns a future that completes after Tick()
+    // has executed the task on the game thread.
+    template<typename ReturnType>
+    TFuture<ReturnType> Enqueue(TFunction<ReturnType()> Task);
+
+    virtual void Tick(float DeltaTime) override;
+    virtual TStatId GetStatId() const override;
+    virtual bool IsTickableInEditor() const override { return true; }
+
+private:
+    struct FWorkItem { TFunction<void()> Run; };
+    TQueue<FWorkItem, EQueueMode::Mpsc> Pending;
+};
+```
+
+All handlers replace:
+```cpp
+FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<T>(Task)
+```
+with:
+```cpp
+FMCPGameThreadProcessor::Get().Enqueue<T>(Task).Get()
+```
+
+The caller (HTTP worker thread) still blocks on the future — the key change
+is that `Task()` executes during `Tick()`, not inside `ProcessTasksUntilIdle`,
+so engine subsystems that pump the task graph from inside `Task()` no longer
+recurse on the same queue.
+
+`FGameThreadDispatcher` is kept as a thin compatibility wrapper that forwards
+to the processor, so existing call sites continue to compile during the
+migration. The fast-path optimization (`if (IsInGameThread()) run directly`)
+is **removed** — even on the game thread, direct execution inside a task
+graph context is the exact bug. When called from the game thread we instead
+enqueue and spin the editor message pump, or assert (the MCP server is never
+invoked from the game thread anyway).
+
 ### Service contract (strengthened)
 
 `IMCPService` currently specifies `GetAvailableTools()` and `HandleRequest()` with no enforcement that the two agree. The new contract:
@@ -264,10 +345,12 @@ Expanded: add the following high-leverage prompt templates.
 
 ### Phase 0 — Sequential foundation (1 agent)
 
-1. Implement `FMCPToolBuilder`, `FMCPJson`, `FMCPActorResolver`.
-2. Stub every new service header + empty .cpp file so Phase 1 agents have targets.
-3. Update `IMCPService.h` with the strengthened contract comments.
-4. Compile-check the foundation.
+1. **Fix the task-graph reentrancy crash.** Implement `FMCPGameThreadProcessor` (tickable editor object with MPSC queue). Migrate every existing call site of `FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn` to `FMCPGameThreadProcessor::Get().Enqueue(...).Get()`. Keep `FGameThreadDispatcher` as a thin forwarder (or delete it) so the rest of the codebase compiles.
+2. Implement `FMCPToolBuilder`, `FMCPJson`, `FMCPActorResolver`.
+3. Stub every new service header + empty .cpp file so Phase 1 agents have targets.
+4. Update `IMCPService.h` with the strengthened contract comments.
+5. Compile-check the foundation.
+6. **Verify the fix**: reproduce the original crash (have Python trigger an asset import via `ImportAssetsAutomated`) and confirm it no longer asserts.
 
 ### Phase 1 — Parallel service implementation (12 agents)
 
@@ -324,6 +407,7 @@ Full unit tests are explicitly out of scope — editor-dependent APIs are hard t
 
 | Risk | Mitigation |
 |---|---|
+| Task-graph reentrancy crash on any handler that pumps tasks (asset import, PIE, blueprint compile, HLOD build, navmesh rebuild, landscape ops, save, render queue, source_control submit, data_table CSV import) | Replace `FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn` with `FMCPGameThreadProcessor` (tickable drain) in Phase 0 before any new tools ship. Verify by repro'ing the original crash. |
 | Some Phase 2 services depend on modules not in `Build.cs` (Sequencer, Niagara, etc.) | Phase 0 agent verifies each new service header compiles with minimum required module additions to `Build.cs`. Service agents report any missing modules. |
 | Scope creep — 280 tools is a lot | Strict per-agent catalog limits. Agents that finish early do description polish or pick up Group L overflow. No new services added mid-stream. |
 | Description inconsistency | Dedicated Phase 3 description polish agent applying the standard uniformly. |
@@ -335,15 +419,16 @@ Full unit tests are explicitly out of scope — editor-dependent APIs are hard t
 
 ## Success Criteria
 
-1. `tools/list` returns ≥ 250 tools, all with non-empty schemas.
-2. Zero handlers return `{"status":"not_implemented"}`.
-3. Every registered service returns a non-empty `GetAvailableTools()`.
-4. Every tool description matches the documented standard.
-5. `BuildSpecialAgentInstructions()` enumerates all 30 services in compact form.
-6. `prompts/list` returns at least 16 prompt templates (4 existing + 12 new).
-7. README tool count claim updated to match reality.
-8. Full clean build on Mac (user's platform).
-9. Live smoke test: at least one handler per service successfully invoked.
+1. **Task-graph reentrancy crash no longer reproduces.** A handler that invokes `ImportAssetsAutomated` (or any task-graph-pumping subsystem) completes without the `RecursionGuard` assert.
+2. `tools/list` returns ≥ 250 tools, all with non-empty schemas.
+3. Zero handlers return `{"status":"not_implemented"}`.
+4. Every registered service returns a non-empty `GetAvailableTools()`.
+5. Every tool description matches the documented standard.
+6. `BuildSpecialAgentInstructions()` enumerates all 30 services in compact form.
+7. `prompts/list` returns at least 16 prompt templates (4 existing + 12 new).
+8. README tool count claim updated to match reality.
+9. Full clean build on Mac (user's platform).
+10. Live smoke test: at least one handler per service successfully invoked.
 
 ---
 
