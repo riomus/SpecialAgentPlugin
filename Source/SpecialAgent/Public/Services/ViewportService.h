@@ -7,9 +7,9 @@
 
 /**
  * Viewport Service
- * 
- * Control editor viewport camera for optimal screenshot capture.
- * Methods: set_location, set_rotation, get_transform, focus_actor
+ *
+ * Control editor viewport camera for optimal screenshot capture, view-mode
+ * switching, FOV/bookmark control, and grid snapping.
  */
 class SPECIALAGENT_API FViewportService : public IMCPService
 {
@@ -28,5 +28,15 @@ private:
 	FMCPResponse HandleGetTransform(const FMCPRequest& Request);
 	FMCPResponse HandleFocusActor(const FMCPRequest& Request);
 	FMCPResponse HandleTraceFromScreen(const FMCPRequest& Request);
+
+	// Phase 1.A additions
+	FMCPResponse HandleOrbitAroundActor(const FMCPRequest& Request);
+	FMCPResponse HandleSetFov(const FMCPRequest& Request);
+	FMCPResponse HandleSetViewMode(const FMCPRequest& Request);
+	FMCPResponse HandleToggleGameView(const FMCPRequest& Request);
+	FMCPResponse HandleBookmarkSave(const FMCPRequest& Request);
+	FMCPResponse HandleBookmarkRestore(const FMCPRequest& Request);
+	FMCPResponse HandleSetGridSnap(const FMCPRequest& Request);
+	FMCPResponse HandleToggleRealtime(const FMCPRequest& Request);
 };
 
