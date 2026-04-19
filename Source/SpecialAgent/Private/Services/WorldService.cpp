@@ -4,6 +4,7 @@
 #include "Services/WorldService.h"
 #include "Services/PythonService.h"
 #include "GameThreadDispatcher.h"
+#include "MCPCommon/MCPJson.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Editor.h"
@@ -501,67 +502,37 @@ FMCPResponse FWorldService::HandleGetLevelInfo(const FMCPRequest& Request)
 {
 	auto GetInfoTask = []() -> TSharedPtr<FJsonObject>
 	{
-		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-
 		UWorld* World = GEditor->GetEditorWorldContext().World();
 		if (!World)
 		{
-			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No editor world"));
-			return Result;
+			return FMCPJson::MakeError(TEXT("No editor world"));
 		}
 
-		Result->SetBoolField(TEXT("success"), true);
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("level_name"), World->GetMapName());
 		Result->SetStringField(TEXT("level_path"), World->GetPathName());
-		
-		// Count actors
-		int32 ActorCount = 0;
-		for (TActorIterator<AActor> It(World); It; ++It)
-		{
-			ActorCount++;
-		}
-		Result->SetNumberField(TEXT("actor_count"), ActorCount);
 
-		// Get level bounds
+		int32 ActorCount = 0;
 		FBox LevelBounds(ForceInit);
 		for (TActorIterator<AActor> It(World); It; ++It)
 		{
 			AActor* Actor = *It;
-			if (Actor && !Actor->IsA<AWorldSettings>())
+			if (!Actor) continue;
+			ActorCount++;
+			if (!Actor->IsA<AWorldSettings>())
 			{
 				LevelBounds += Actor->GetComponentsBoundingBox(true);
 			}
 		}
+		Result->SetNumberField(TEXT("actor_count"), ActorCount);
 
 		if (LevelBounds.IsValid)
 		{
 			TSharedPtr<FJsonObject> BoundsObj = MakeShared<FJsonObject>();
-			
-			TArray<TSharedPtr<FJsonValue>> MinArr, MaxArr, CenterArr, SizeArr;
-			FVector Min = LevelBounds.Min;
-			FVector Max = LevelBounds.Max;
-			FVector Center = LevelBounds.GetCenter();
-			FVector Size = LevelBounds.GetSize();
-
-			MinArr.Add(MakeShared<FJsonValueNumber>(Min.X));
-			MinArr.Add(MakeShared<FJsonValueNumber>(Min.Y));
-			MinArr.Add(MakeShared<FJsonValueNumber>(Min.Z));
-			MaxArr.Add(MakeShared<FJsonValueNumber>(Max.X));
-			MaxArr.Add(MakeShared<FJsonValueNumber>(Max.Y));
-			MaxArr.Add(MakeShared<FJsonValueNumber>(Max.Z));
-			CenterArr.Add(MakeShared<FJsonValueNumber>(Center.X));
-			CenterArr.Add(MakeShared<FJsonValueNumber>(Center.Y));
-			CenterArr.Add(MakeShared<FJsonValueNumber>(Center.Z));
-			SizeArr.Add(MakeShared<FJsonValueNumber>(Size.X));
-			SizeArr.Add(MakeShared<FJsonValueNumber>(Size.Y));
-			SizeArr.Add(MakeShared<FJsonValueNumber>(Size.Z));
-
-			BoundsObj->SetArrayField(TEXT("min"), MinArr);
-			BoundsObj->SetArrayField(TEXT("max"), MaxArr);
-			BoundsObj->SetArrayField(TEXT("center"), CenterArr);
-			BoundsObj->SetArrayField(TEXT("size"), SizeArr);
-
+			FMCPJson::WriteVec3(BoundsObj, TEXT("min"),    LevelBounds.Min);
+			FMCPJson::WriteVec3(BoundsObj, TEXT("max"),    LevelBounds.Max);
+			FMCPJson::WriteVec3(BoundsObj, TEXT("center"), LevelBounds.GetCenter());
+			FMCPJson::WriteVec3(BoundsObj, TEXT("size"),   LevelBounds.GetSize());
 			Result->SetObjectField(TEXT("bounds"), BoundsObj);
 		}
 
