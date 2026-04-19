@@ -6,17 +6,17 @@
 /**
  * Decal Service.
  *
- * Decal actor spawn and configuration.
- *
- * Tool list will be populated in Phase 1. See
- * docs/superpowers/plans/2026-04-19-ue5-mcp-tools-expansion-plan.md
- * and docs/superpowers/specs/2026-04-19-ue5-mcp-tools-expansion-design.md
- * for the catalog of tools this service owns.
+ * Spawn ADecalActor and configure its material and projected size.
  */
 class SPECIALAGENT_API FDecalService : public IMCPService
 {
 public:
-    virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) override;
-    virtual FString GetServiceDescription() const override;
-    virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
+	virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) override;
+	virtual FString GetServiceDescription() const override;
+	virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
+
+private:
+	FMCPResponse HandleSpawn(const FMCPRequest& Request);
+	FMCPResponse HandleSetMaterial(const FMCPRequest& Request);
+	FMCPResponse HandleSetSize(const FMCPRequest& Request);
 };
