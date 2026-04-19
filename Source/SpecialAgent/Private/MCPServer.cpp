@@ -6,7 +6,6 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Misc/Guid.h"
-#include "Async/Async.h"
 
 FSpecialAgentMCPServer::FSpecialAgentMCPServer()
 	: bIsRunning(false)
@@ -252,30 +251,33 @@ bool FSpecialAgentMCPServer::HandleMessage(const FHttpServerRequest& Request, co
 		return true;
 	}
 
-	// Process on game thread and send response
-	AsyncTask(ENamedThreads::GameThread, [this, MCPRequest, OnComplete, SessionId]()
-	{
-		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Processing request on game thread: %s"), *MCPRequest.Method);
-		
-		FMCPResponse MCPResponse = RequestRouter->RouteRequest(MCPRequest);
-		
-		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: RouteRequest completed for: %s"), *MCPRequest.Method);
-		
-		FString ResponseJson = FormatResponse(MCPResponse);
+	// Process on the HTTP worker thread. Service handlers that need the game
+	// thread marshal via FMCPGameThreadProcessor::Get().Enqueue(...).Get() —
+	// which runs their work during editor Tick(), OUTSIDE the task-graph pump.
+	// This is the fix for the task-graph recursion-guard crash: we must NOT
+	// be on the game thread (or inside ProcessTasksUntilIdle) when we invoke
+	// handlers that call engine APIs which themselves pump tasks
+	// (asset import, PIE, blueprint compile, navmesh rebuild, etc.).
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Processing request: %s"), *MCPRequest.Method);
 
-		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Response ready for %s (size=%d): %s"), 
-			*MCPRequest.Method, ResponseJson.Len(), *ResponseJson.Left(300));
+	FMCPResponse MCPResponse = RequestRouter->RouteRequest(MCPRequest);
 
-		TUniquePtr<FHttpServerResponse> Response = FHttpServerResponse::Create(ResponseJson, TEXT("application/json"));
-		Response->Headers.Add(TEXT("Access-Control-Allow-Origin"), { TEXT("*") });
-		Response->Headers.Add(TEXT("Access-Control-Allow-Methods"), { TEXT("GET, POST, OPTIONS") });
-		Response->Headers.Add(TEXT("Access-Control-Allow-Headers"), { TEXT("Content-Type") });
-		Response->Code = EHttpServerResponseCodes::Ok;
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: RouteRequest completed for: %s"), *MCPRequest.Method);
 
-		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Calling OnComplete for: %s"), *MCPRequest.Method);
-		OnComplete(MoveTemp(Response));
-		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: OnComplete returned for: %s"), *MCPRequest.Method);
-	});
+	FString ResponseJson = FormatResponse(MCPResponse);
+
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Response ready for %s (size=%d): %s"),
+		*MCPRequest.Method, ResponseJson.Len(), *ResponseJson.Left(300));
+
+	TUniquePtr<FHttpServerResponse> Response = FHttpServerResponse::Create(ResponseJson, TEXT("application/json"));
+	Response->Headers.Add(TEXT("Access-Control-Allow-Origin"), { TEXT("*") });
+	Response->Headers.Add(TEXT("Access-Control-Allow-Methods"), { TEXT("GET, POST, OPTIONS") });
+	Response->Headers.Add(TEXT("Access-Control-Allow-Headers"), { TEXT("Content-Type") });
+	Response->Code = EHttpServerResponseCodes::Ok;
+
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Calling OnComplete for: %s"), *MCPRequest.Method);
+	OnComplete(MoveTemp(Response));
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: OnComplete returned for: %s"), *MCPRequest.Method);
 
 	return true;
 }
