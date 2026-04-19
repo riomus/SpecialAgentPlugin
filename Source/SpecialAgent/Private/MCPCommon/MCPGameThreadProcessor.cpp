@@ -6,6 +6,21 @@ FMCPGameThreadProcessor& FMCPGameThreadProcessor::Get()
     return Instance;
 }
 
+void FMCPGameThreadProcessor::Shutdown()
+{
+    bShuttingDown.store(true, std::memory_order_release);
+
+    // Drain any pending work so in-flight futures complete. Do this on
+    // whatever thread called us — if it's the game thread, the drain is
+    // outside ProcessTasksUntilIdle because module shutdown happens from
+    // editor subsystem lifecycle, not from task-graph pump.
+    FWorkItem Item;
+    while (Pending.Dequeue(Item))
+    {
+        Item.Run();
+    }
+}
+
 void FMCPGameThreadProcessor::Tick(float DeltaTime)
 {
     int32 Processed = 0;

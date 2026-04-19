@@ -6,6 +6,8 @@
 #include "Async/Future.h"
 #include "HAL/CriticalSection.h"
 
+#include <atomic>
+
 /**
  * FMCPGameThreadProcessor
  *
@@ -27,11 +29,25 @@ class SPECIALAGENT_API FMCPGameThreadProcessor : public FTickableEditorObject
 public:
     static FMCPGameThreadProcessor& Get();
 
+    /** Called from module shutdown on the game thread. Drains remaining
+     *  work items and signals subsequent Enqueue calls to fail fast. */
+    void Shutdown();
+
     template<typename ReturnType>
     TFuture<ReturnType> Enqueue(TFunction<ReturnType()> Task)
     {
         TSharedPtr<TPromise<ReturnType>> Promise = MakeShared<TPromise<ReturnType>>();
         TFuture<ReturnType> Future = Promise->GetFuture();
+
+        if (bShuttingDown.load(std::memory_order_acquire))
+        {
+            // Fast-fail: return a default-constructed ReturnType so workers
+            // don't hang on .Get() during editor exit. Callers should treat
+            // a default-constructed value as a failure signal and log; MCP
+            // responses are already allowed to carry success=false payloads.
+            Promise->SetValue(ReturnType{});
+            return Future;
+        }
 
         FWorkItem Item;
         Item.Run = [Task = MoveTemp(Task), Promise]()
@@ -58,6 +74,7 @@ private:
     };
 
     TQueue<FWorkItem, EQueueMode::Mpsc> Pending;
+    std::atomic<bool> bShuttingDown{false};
 
     static constexpr int32 MaxItemsPerTick = 64;
 };
