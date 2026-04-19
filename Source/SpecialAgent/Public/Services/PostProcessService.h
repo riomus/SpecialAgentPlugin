@@ -6,17 +6,21 @@
 /**
  * PostProcess Service.
  *
- * Post-process volume spawn and tuning.
- *
- * Tool list will be populated in Phase 1. See
- * docs/superpowers/plans/2026-04-19-ue5-mcp-tools-expansion-plan.md
- * and docs/superpowers/specs/2026-04-19-ue5-mcp-tools-expansion-design.md
- * for the catalog of tools this service owns.
+ * Spawn and tune APostProcessVolume actors (exposure, bloom, DOF,
+ * color grading, GI) via UPROPERTY overrides on FPostProcessSettings.
  */
 class SPECIALAGENT_API FPostProcessService : public IMCPService
 {
 public:
-    virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) override;
-    virtual FString GetServiceDescription() const override;
-    virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
+	virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) override;
+	virtual FString GetServiceDescription() const override;
+	virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
+
+private:
+	FMCPResponse HandleSpawnVolume(const FMCPRequest& Request);
+	FMCPResponse HandleSetExposure(const FMCPRequest& Request);
+	FMCPResponse HandleSetBloom(const FMCPRequest& Request);
+	FMCPResponse HandleSetDof(const FMCPRequest& Request);
+	FMCPResponse HandleSetColorGrading(const FMCPRequest& Request);
+	FMCPResponse HandleSetGi(const FMCPRequest& Request);
 };
