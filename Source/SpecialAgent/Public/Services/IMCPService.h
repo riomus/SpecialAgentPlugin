@@ -22,10 +22,20 @@ struct FMCPToolInfo
 };
 
 /**
- * MCP Service Interface
- * 
- * Base interface for all MCP service implementations.
- * Each service handles a specific domain of functionality (assets, world, python, etc.)
+ * MCP Service Interface.
+ *
+ * Contract (enforced by code review + startup validation):
+ *   1. GetAvailableTools() MUST return an entry for every branch in HandleRequest().
+ *      No unlisted methods. No listed-but-unhandled tools.
+ *   2. Every handler returns {"success": bool, "error"?: string, ...payload}.
+ *   3. No handler returns {"status": "not_implemented"}. Ship it or remove it
+ *      from HandleRequest + the tool list.
+ *   4. Any handler that touches UObject / GEditor / UWorld state MUST run via
+ *      FMCPGameThreadProcessor::Get().Enqueue(...).Get() (use the
+ *      FGameThreadDispatcher forwarder for source compatibility).
+ *      Never AsyncTask(ENamedThreads::GameThread) from a service handler.
+ *   5. Every handler logs at Log verbosity with "SpecialAgent:" prefix on
+ *      success and Warning on failure.
  */
 class SPECIALAGENT_API IMCPService
 {

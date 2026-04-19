@@ -33,6 +33,13 @@ public:
 	 */
 	void RegisterService(const FString& ServicePrefix, TSharedPtr<IMCPService> Service);
 
+	/**
+	 * Log one line per registered service summarizing its tool count, and
+	 * emit a Warning for any service that is registered but exposes zero
+	 * tools. Call from the router constructor (after RegisterService calls).
+	 */
+	void ValidateServices() const;
+
 private:
 	/** Handle MCP initialize request */
 	FMCPResponse HandleInitialize(const FMCPRequest& Request);

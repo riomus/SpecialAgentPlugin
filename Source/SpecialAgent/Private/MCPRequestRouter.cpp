@@ -54,10 +54,32 @@ FMCPRequestRouter::FMCPRequestRouter()
 	RegisterService(TEXT("utility"), MakeShared<FUtilityService>());
 
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Registered %d services"), Services.Num());
+	ValidateServices();
 }
 
 FMCPRequestRouter::~FMCPRequestRouter()
 {
+}
+
+void FMCPRequestRouter::ValidateServices() const
+{
+	int32 TotalTools = 0;
+	int32 DeadServices = 0;
+	for (const auto& Pair : Services)
+	{
+		const TArray<FMCPToolInfo> Tools = Pair.Value->GetAvailableTools();
+		if (Tools.Num() == 0)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("SpecialAgent: service '%s' registered but exposes ZERO tools"),
+				*Pair.Key);
+			++DeadServices;
+		}
+		TotalTools += Tools.Num();
+	}
+	UE_LOG(LogTemp, Log,
+		TEXT("SpecialAgent: %d services, %d tools total, %d services with zero tools"),
+		Services.Num(), TotalTools, DeadServices);
 }
 
 FMCPResponse FMCPRequestRouter::RouteRequest(const FMCPRequest& Request)
