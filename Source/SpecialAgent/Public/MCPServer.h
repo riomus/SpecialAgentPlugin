@@ -74,6 +74,12 @@ public:
 	 */
 	void RecordClientActivity();
 
+	/** Parse JSON-RPC request from body (static — used by new raw TCP transport). */
+	static bool ParseRequest(const FString& JsonString, FMCPRequest& OutRequest);
+
+	/** Format JSON-RPC response (static — used by new raw TCP transport). */
+	static FString FormatResponse(const FMCPResponse& Response);
+
 private:
 	/** Handle SSE connection request (GET /sse) */
 	bool HandleSSEConnection(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
@@ -86,12 +92,6 @@ private:
 
 	/** Handle CORS preflight (OPTIONS) */
 	bool HandleCORS(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
-
-	/** Parse JSON-RPC request from body */
-	bool ParseRequest(const FString& JsonString, FMCPRequest& OutRequest);
-
-	/** Format JSON-RPC response */
-	FString FormatResponse(const FMCPResponse& Response);
 
 	/** Send SSE event to a specific session */
 	void SendSSEEvent(const FString& SessionId, const FString& EventType, const FString& Data);
