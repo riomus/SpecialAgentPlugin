@@ -38,5 +38,6 @@ private:
 	FMCPResponse HandleBookmarkRestore(const FMCPRequest& Request);
 	FMCPResponse HandleSetGridSnap(const FMCPRequest& Request);
 	FMCPResponse HandleToggleRealtime(const FMCPRequest& Request);
+	FMCPResponse HandleForceRedraw(const FMCPRequest& Request);
 };
 

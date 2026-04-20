@@ -46,6 +46,7 @@ FMCPResponse FViewportService::HandleRequest(const FMCPRequest& Request, const F
 	if (MethodName == TEXT("bookmark_restore")) return HandleBookmarkRestore(Request);
 	if (MethodName == TEXT("set_grid_snap")) return HandleSetGridSnap(Request);
 	if (MethodName == TEXT("toggle_realtime")) return HandleToggleRealtime(Request);
+	if (MethodName == TEXT("force_redraw")) return HandleForceRedraw(Request);
 
 	return MethodNotFound(Request.Id, TEXT("viewport"), MethodName);
 }
@@ -667,6 +668,35 @@ FMCPResponse FViewportService::HandleToggleRealtime(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
+FMCPResponse FViewportService::HandleForceRedraw(const FMCPRequest& Request)
+{
+	bool bInvalidateHitProxies = true;
+	if (Request.Params.IsValid())
+	{
+		FMCPJson::ReadBool(Request.Params, TEXT("invalidate_hit_proxies"), bInvalidateHitProxies);
+	}
+
+	auto Task = [bInvalidateHitProxies]() -> TSharedPtr<FJsonObject>
+	{
+		if (!GEditor)
+		{
+			return FMCPJson::MakeError(TEXT("GEditor unavailable"));
+		}
+		// Synchronously repaints all level editor viewports. Commits camera
+		// and view changes (including those queued by Python scripts via
+		// UnrealEditorSubsystem) before this call returns, so subsequent
+		// screenshot/capture sees the new frame.
+		GEditor->RedrawLevelEditingViewports(bInvalidateHitProxies);
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetBoolField(TEXT("invalidate_hit_proxies"), bInvalidateHitProxies);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: viewport/force_redraw (invalidate_hit_proxies=%d)"), bInvalidateHitProxies ? 1 : 0);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
 TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 {
 	TArray<FMCPToolInfo> Tools;
@@ -818,6 +848,15 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 			"Workflow: disable when positioning camera precisely, enable for playback preview.");
 		Tools.Add(Tool);
 	}
+
+	Tools.Add(FMCPToolBuilder(TEXT("force_redraw"),
+		TEXT("Synchronously repaint all level editor viewports via GEditor->RedrawLevelEditingViewports(true). "
+			 "Effect: commits any queued camera/view changes to pixels before this call returns. "
+			 "Workflow: chain after python/execute, viewport/set_location, viewport/set_rotation, viewport/focus_actor etc. "
+			 "and before screenshot/capture so the captured frame reflects the new state. "
+			 "Params: invalidate_hit_proxies (bool, optional, default true — rebuild hit proxies for picking)."))
+		.OptionalBool(TEXT("invalidate_hit_proxies"), TEXT("Rebuild hit proxies (default true). Set false for a cheaper repaint when picking isn't needed."))
+		.Build());
 
 	return Tools;
 }
