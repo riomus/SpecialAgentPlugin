@@ -4,6 +4,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPToolBuilder.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -162,7 +163,7 @@ FString FBlueprintService::GetServiceDescription() const
 	return TEXT("Blueprint asset creation, compilation, and reflection");
 }
 
-FMCPResponse FBlueprintService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FBlueprintService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("create"))            return HandleCreate(Request);
 	if (MethodName == TEXT("compile"))           return HandleCompile(Request);

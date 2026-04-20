@@ -4,6 +4,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
@@ -33,7 +34,7 @@ FString FAssetService::GetServiceDescription() const
 	return TEXT("Asset discovery and management - browse Content Browser assets");
 }
 
-FMCPResponse FAssetService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FAssetService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("list"))
 	{

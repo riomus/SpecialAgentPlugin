@@ -5,6 +5,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "Editor.h"
 #include "Engine/Engine.h"
@@ -54,7 +55,7 @@ TArray<FMCPToolInfo> FConsoleService::GetAvailableTools() const
     return Tools;
 }
 
-FMCPResponse FConsoleService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FConsoleService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("execute"))
     {

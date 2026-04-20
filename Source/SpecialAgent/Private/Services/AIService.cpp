@@ -6,6 +6,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "AIController.h"
 #include "BehaviorTree/BehaviorTree.h"
@@ -95,7 +96,7 @@ FString FAIService::GetServiceDescription() const
     return TEXT("AI pawn / controller / behavior tree / blackboard");
 }
 
-FMCPResponse FAIService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FAIService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("spawn_ai_pawn"))        return HandleSpawnAIPawn(Request);
     if (MethodName == TEXT("assign_controller"))    return HandleAssignController(Request);

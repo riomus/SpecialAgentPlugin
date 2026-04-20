@@ -3,6 +3,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -47,7 +48,7 @@ FString FContentBrowserService::GetServiceDescription() const
     return TEXT("Content Browser UI operations (sync, folders, metadata) — UI-focused counterpart to assets service");
 }
 
-FMCPResponse FContentBrowserService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FContentBrowserService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("sync_to_folder"))
     {

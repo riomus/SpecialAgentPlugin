@@ -5,6 +5,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -51,7 +52,7 @@ FString FAnimationService::GetServiceDescription() const
     return TEXT("Skeletal mesh animation playback and anim blueprint assignment");
 }
 
-FMCPResponse FAnimationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FAnimationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("play"))               return HandlePlay(Request);
     if (MethodName == TEXT("stop"))               return HandleStop(Request);
