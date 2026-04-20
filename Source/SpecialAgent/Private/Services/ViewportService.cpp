@@ -707,8 +707,8 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		Tool.Name = TEXT("set_location");
 		Tool.Description = TEXT("Set the active editor viewport camera location in world space. Returns {success, location}. "
 			"Params: location ([X,Y,Z] cm world, required). "
-			"Workflow: pair with viewport/set_rotation to aim; call screenshot/capture to verify framing. "
-			"Warning: only the active Level Editor viewport is affected.");
+			"Workflow: pair with viewport/set_rotation to aim; call viewport/force_redraw before screenshot/capture so the captured frame reflects the new camera. "
+			"Warning: only the active Level Editor viewport is affected; updates the view data immediately but the pixel repaint happens on the next editor tick unless you call viewport/force_redraw.");
 		
 		TSharedPtr<FJsonObject> LocParam = MakeShared<FJsonObject>();
 		LocParam->SetStringField(TEXT("type"), TEXT("array"));
@@ -725,7 +725,8 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		Tool.Name = TEXT("set_rotation");
 		Tool.Description = TEXT("Set the active editor viewport camera rotation. Returns {success, rotation}. "
 			"Params: rotation ([Pitch,Yaw,Roll] degrees, required). "
-			"Workflow: pair with viewport/set_location; use viewport/focus_actor for 'frame this actor' behaviour instead of manual angles.");
+			"Workflow: pair with viewport/set_location; use viewport/focus_actor for 'frame this actor' behaviour instead of manual angles. "
+			"Warning: updates view data immediately but the pixel repaint happens next editor tick — call viewport/force_redraw before screenshot/capture.");
 		
 		TSharedPtr<FJsonObject> RotParam = MakeShared<FJsonObject>();
 		RotParam->SetStringField(TEXT("type"), TEXT("array"));
@@ -751,7 +752,7 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		Tool.Name = TEXT("focus_actor");
 		Tool.Description = TEXT("Frame an actor in the viewport (like pressing F in the editor). Matches by exact label, internal name, or case-insensitive substring; returns {actor_name, actor_id, matched_by}. "
 			"Params: actor_name (string, label/ID or partial, required). "
-			"Workflow: world/list_actors -> focus_actor -> screenshot/capture to confirm the view.");
+			"Workflow: world/list_actors -> focus_actor -> viewport/force_redraw -> screenshot/capture to confirm the view.");
 		
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -787,7 +788,7 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(TEXT("orbit_around_actor"),
 		TEXT("Position the camera on a ring around an actor's bounds center, looking inward. Effect: sets viewport location + rotation. "
 			 "Params: actor_name (string), angle (number deg, 0=+X), distance (number cm, default 500), height (number cm, default 200). "
-			 "Workflow: take a screenshot after to verify framing."))
+			 "Workflow: call viewport/force_redraw before screenshot/capture so the new framing is visible."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label to orbit around"))
 		.OptionalNumber(TEXT("angle"), TEXT("Horizontal angle in degrees (0 = +X axis)"))
 		.OptionalNumber(TEXT("distance"), TEXT("Horizontal distance from target cm (default 500)"))
@@ -796,14 +797,16 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_fov"),
 		TEXT("Set the perspective camera field of view. Effect: updates FLevelEditorViewportClient::ViewFOV. "
-			 "Params: fov (number, degrees, typical 60-120)."))
+			 "Params: fov (number, degrees, typical 60-120). "
+			 "Workflow: call viewport/force_redraw before screenshot/capture so the new FOV is visible."))
 		.RequiredNumber(TEXT("fov"), TEXT("FOV in degrees"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_view_mode"),
 		TEXT("Switch the viewport's render mode. Effect: one of lit/unlit/wireframe/brush_wireframe/detail_lighting/"
 			 "lighting_only/light_complexity/shader_complexity/stationary_light_overlap/lightmap_density. "
-			 "Params: mode (enum)."))
+			 "Params: mode (enum). "
+			 "Workflow: call viewport/force_redraw before screenshot/capture so the new view mode is visible."))
 		.RequiredEnum(TEXT("mode"), {
 			TEXT("lit"), TEXT("unlit"), TEXT("wireframe"), TEXT("brush_wireframe"),
 			TEXT("detail_lighting"), TEXT("lighting_only"), TEXT("light_complexity"),
@@ -815,7 +818,7 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("toggle_game_view");
 		Tool.Description = TEXT("Toggle editor viewport Game View mode. Effect: hides editor-only icons/gizmos if on. "
-			"Workflow: call before screenshot to capture an in-game framing.");
+			"Workflow: call before screenshot to capture an in-game framing; follow with viewport/force_redraw so the toggle is reflected in the next capture.");
 		Tools.Add(Tool);
 	}
 
@@ -829,6 +832,7 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(TEXT("bookmark_restore"),
 		TEXT("Restore a saved viewport bookmark. Effect: teleports camera to the saved view. "
 			 "Params: index (integer). "
+			 "Workflow: call viewport/force_redraw before screenshot/capture so the restored view is visible. "
 			 "Warning: returns error if the slot was never saved."))
 		.RequiredInteger(TEXT("index"), TEXT("Bookmark slot index"))
 		.Build());

@@ -29,6 +29,7 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 		Tool.Description = TEXT("Execute arbitrary Python code via IPythonScriptPlugin in the game thread with full UE5 API. Returns {success, stdout, stderr, execution_time}. "
 			"Params: code (string, Python source; 'unreal' module is auto-imported, required); timeout (number seconds, default 30). "
 			"Workflow: use as an escape hatch when no direct tool exists — prefer world/*, assets/*, blueprint/* etc. for supported operations. "
+			"IMPORTANT: if your script writes viewport camera data (e.g. UnrealEditorSubsystem.set_level_viewport_camera_info) or any other viewport-client state, the pixels are NOT yet repainted when this tool returns — call viewport/force_redraw afterwards before screenshot/capture or screenshot/save, otherwise the capture still shows the previous frame. "
 			"Warning: runs on the game thread and can crash the editor; side-effects are not inside an undo transaction unless you wrap them with utility/begin_transaction.");
 		
 		TSharedPtr<FJsonObject> CodeParam = MakeShared<FJsonObject>();

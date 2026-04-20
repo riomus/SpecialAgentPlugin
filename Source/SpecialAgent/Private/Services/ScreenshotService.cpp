@@ -33,6 +33,7 @@ TArray<FMCPToolInfo> FScreenshotService::GetAvailableTools() const
 		Tool.Description = TEXT("Capture the active editor viewport as a base64 image. Returns {base64_data, mimeType, width, height} for inline vision. "
 			"Params: width (integer px, default 1280), height (integer px, default 720), quality (integer 1-99 JPEG or 100 PNG, default 85). "
 			"Workflow: ALWAYS call first for visual feedback, then estimate (x,y) in 0-1 space for viewport/trace_from_screen or viewport/select_at_screen; call again after edits to verify. "
+			"IMPORTANT: if you just changed the viewport camera (python/execute that writes camera data, viewport/set_location, viewport/set_rotation, viewport/focus_actor, viewport/orbit_around_actor, viewport/set_fov, viewport/bookmark_restore, viewport/set_view_mode, viewport/toggle_game_view) the pixels have not yet been repainted — call viewport/force_redraw first, otherwise the capture still shows the previous frame. "
 			"Warning: large sizes produce huge base64 payloads; prefer defaults.");
 		
 		TSharedPtr<FJsonObject> WidthParam = MakeShared<FJsonObject>();
@@ -60,6 +61,7 @@ TArray<FMCPToolInfo> FScreenshotService::GetAvailableTools() const
 		Tool.Description = TEXT("Capture the active editor viewport and write it to a PNG file on disk. Returns {file_path, width, height, file_size}. "
 			"Params: file_path (string, absolute path, required), width (integer px, default 1920), height (integer px, default 1080). "
 			"Workflow: use instead of capture when you want a persisted artifact rather than inline base64. "
+			"IMPORTANT: if you just changed the viewport camera, call viewport/force_redraw first so the captured frame reflects the new view (same caveat as screenshot/capture). "
 			"Warning: file_path parent directory must exist; existing files are overwritten.");
 		
 		TSharedPtr<FJsonObject> FileParam = MakeShared<FJsonObject>();
