@@ -2,7 +2,14 @@
 
 **Connect AI to Unreal Engine 5**
 
-Full Python API access • 71+ level design tools • Visual feedback loop
+Full Python API access • ~294 tools across 45 services • Visual feedback loop
+
+---
+
+## What's new
+
+- **Phase 0:** fixed a task-graph reentrancy crash that could hang the editor when MCP requests were dispatched to the game thread while another game-thread task was mid-flight. Requests are now dispatched without re-entering the calling task.
+- **Phase 3:** expanded the service surface from 13 to 45 services (~294 tools), added 12 new MCP prompts, and refreshed the system instructions string sent to clients.
 
 ---
 
@@ -10,7 +17,7 @@ Full Python API access • 71+ level design tools • Visual feedback loop
 
 SpecialAgent bridges AI assistants and Unreal Engine 5 through the **Model Context Protocol (MCP)**. Connect Claude, GPT, or any MCP-compatible LLM directly to your editor and control it through natural language.
 
-At its core, SpecialAgent provides **unrestricted Python execution** with full access to UE5's Python API—meaning your AI assistant can do anything the editor can do. On top of that foundation, **71+ purpose-built tools** handle common level design tasks without writing a single line of code.
+At its core, SpecialAgent provides **unrestricted Python execution** with full access to UE5's Python API—meaning your AI assistant can do anything the editor can do. On top of that foundation, **~294 purpose-built tools across 45 services** handle common level design, content, rendering, gameplay, and automation tasks without writing a single line of code.
 
 Native HTTP/SSE transport. No external bridges or dependencies.
 
@@ -34,9 +41,9 @@ Execute arbitrary Python with complete `unreal` module access. Your AI assistant
 
 This is the unlimited foundation. If you can script it, AI can do it.
 
-#### Level Design Toolkit
+#### Level Design & Editor Toolkit
 
-71+ specialized tools for world-building workflows:
+~294 specialized tools across 45 services for world-building, content, gameplay and automation workflows:
 
 | Category | Capabilities |
 |----------|-------------|
@@ -44,10 +51,19 @@ This is the unlimited foundation. If you can script it, AI can do it.
 | **Patterns** | Grid, circular, spline, and scatter placement |
 | **Landscape** | Sculpt height, flatten, smooth, paint material layers |
 | **Foliage** | Paint vegetation with density control |
-| **Lighting** | Spawn and configure lights, build lightmaps |
-| **Streaming** | Manage sub-levels for open worlds |
+| **Lighting / Sky** | Lights, sky atmosphere, fog, clouds, build lightmaps |
+| **Streaming / WP** | Manage sub-levels, World Partition cell loading |
 | **Navigation** | Rebuild NavMesh, test pathfinding |
-| **Performance** | Analyze statistics, detect overlaps |
+| **Performance** | Statistics, overlap detection, triangle counts |
+| **Blueprints** | Create, compile, edit, spawn, introspect |
+| **Materials** | Materials + instances + parameter editing |
+| **Components / Physics / Anim / AI** | Actor components, physics, skeletal anim, AI pawns/BT |
+| **Post-Process / Decals / Niagara / Sound** | Visuals and audio |
+| **Sequencer / Render Queue** | Cinematics and movie render output |
+| **PIE / Console / Log / Level** | Runtime control, CVars, logs, level ops |
+| **Asset Import / Content Browser / Validation / Deps / Data Tables** | Content pipeline |
+| **Reflection / Project / Source Control** | Introspection, project settings, SCM |
+| **PCG / Modeling / HLOD / Rendering / Editor Mode** | Procedural content, modeling tools, HLOD, scalability |
 | **Organization** | Folders, tags, labels, selection management |
 
 ### Visual Feedback Loop
@@ -122,7 +138,7 @@ Add SpecialAgent to your MCP client configuration:
 
 Your AI assistant now has access to:
 - Python execution with full UE5 API
-- 71+ level design tools
+- ~294 tools across 45 services
 - Viewport screenshot capture
 - Editor utilities (save, undo, redo)
 
@@ -130,21 +146,55 @@ Your AI assistant now has access to:
 
 ## Service Categories
 
-| Service | Methods | Description |
-|---------|:-------:|-------------|
-| **Python** | 3 | Execute scripts, run files, list modules |
-| **Screenshot** | 2 | Capture viewport for AI vision |
-| **World** | 30+ | Actor manipulation and spatial queries |
-| **Assets** | 4 | Content Browser search and inspection |
-| **Landscape** | 5 | Terrain sculpting and layer painting |
-| **Foliage** | 3 | Vegetation painting and removal |
-| **Lighting** | 4 | Light spawning and configuration |
-| **Streaming** | 4 | Sub-level loading and visibility |
-| **Performance** | 3 | Statistics and overlap analysis |
-| **Navigation** | 2 | NavMesh building and path testing |
-| **Viewport** | 4 | Camera control and actor focus |
-| **Utility** | 5 | Save, undo, redo, selection tools |
-| **Gameplay** | 2 | Trigger volumes and player starts |
+Counts are approximate as services evolve; call `tools/list` at runtime for the authoritative list.
+
+| Service | Tools | Description |
+|---------|:-----:|-------------|
+| **python** | 3 | Execute scripts, run files, list modules |
+| **screenshot** | 2 | Capture viewport for AI vision |
+| **world** | 35 | Actor spawn/transform/delete, patterns, spatial queries |
+| **lighting** | 6 | Light spawning, configuration, build lighting |
+| **foliage** | 5 | Procedural foliage painting and removal |
+| **landscape** | 6 | Terrain sculpting and layer painting |
+| **streaming** | 5 | Sub-level loading and visibility |
+| **navigation** | 4 | NavMesh building and path testing |
+| **world_partition** | 5 | World Partition cell loading |
+| **gameplay** | 6 | Trigger volumes, player starts, kill volumes |
+| **performance** | 5 | Statistics, overlap analysis, triangle counts |
+| **assets** | 16 | Asset Registry search, metadata, bounds |
+| **content_browser** | 9 | Content Browser UI operations |
+| **asset_import** | 6 | FBX/texture/sound/CSV import |
+| **asset_deps** | 4 | Asset references/referencers |
+| **data_table** | 7 | Read/write DataTable rows |
+| **validation** | 3 | Asset and level validation |
+| **blueprint** | 10 | Blueprint create/compile/edit |
+| **material** | 8 | Materials, instances, parameter editing |
+| **reflection** | 5 | UClass/UProperty/UFunction introspection |
+| **component** | 7 | Actor component manipulation |
+| **physics** | 7 | Physics simulation controls |
+| **animation** | 5 | Skeletal animation |
+| **ai** | 5 | AI pawns, behavior trees, blackboards |
+| **input** | 4 | Input mappings |
+| **sound** | 4 | Sound playback |
+| **post_process** | 6 | Post-process volumes |
+| **sky** | 5 | Sky atmosphere, fog, clouds, sky light |
+| **decal** | 3 | Decal actors |
+| **sequencer** | 6 | Level Sequence authoring |
+| **niagara** | 6 | Niagara VFX |
+| **render_queue** | 3 | Movie Render Queue |
+| **rendering** | 5 | Scalability, view modes, screenshots |
+| **pie** | 8 | Play In Editor control |
+| **console** | 4 | Console commands and CVars |
+| **log** | 4 | Log tail and categories |
+| **level** | 5 | Level open/new/save |
+| **editor_mode** | 3 | Landscape/foliage/modeling mode |
+| **project** | 8 | Project settings and plugins |
+| **source_control** | 5 | Source control operations |
+| **pcg** | 3 | PCG graphs |
+| **modeling** | 4 | Mesh booleans/extrude/simplify |
+| **hlod** | 3 | Hierarchical LOD |
+| **utility** | 18 | Save, undo, selection, transactions |
+| **viewport** | 13 | Camera, view modes, bookmarks |
 
 ---
 
@@ -196,8 +246,9 @@ bVerboseLogging=false
 │  └─────────────────────────────────┘    │
 │                                         │
 │  ┌─────────────────────────────────┐    │
-│  │   14 Services (71+ Tools)       │    │
-│  │   Level design & utilities      │    │
+│  │   45 Services (~294 Tools)      │    │
+│  │   Level design, content,        │    │
+│  │   gameplay, rendering, more     │    │
 │  └─────────────────────────────────┘    │
 │                                         │
 │  ┌─────────────────────────────────┐    │
@@ -224,7 +275,7 @@ bVerboseLogging=false
 
 ## Design Philosophy
 
-The 71+ tools exist for convenience and discoverability. Python execution is the real power.
+The ~294 tools exist for convenience and discoverability. Python execution is the real power.
 
 When your AI assistant sees `world/place_in_circle`, it learns circular placement is possible. But for custom logic—density falloff, terrain-aware positioning, asset variation based on rules—it writes Python.
 

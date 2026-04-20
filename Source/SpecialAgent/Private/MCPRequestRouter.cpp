@@ -15,23 +15,105 @@
 #include "Services/NavigationService.h"
 #include "Services/GameplayService.h"
 #include "Services/UtilityService.h"
+#include "Services/BlueprintService.h"
+#include "Services/MaterialService.h"
+#include "Services/AssetImportService.h"
+#include "Services/PIEService.h"
+#include "Services/ConsoleService.h"
+#include "Services/ComponentService.h"
+#include "Services/EditorModeService.h"
+#include "Services/LevelService.h"
+#include "Services/LogService.h"
+#include "Services/DataTableService.h"
+#include "Services/AssetDependencyService.h"
+#include "Services/SequencerService.h"
+#include "Services/NiagaraService.h"
+#include "Services/SoundService.h"
+#include "Services/WorldPartitionService.h"
+#include "Services/PCGService.h"
+#include "Services/ContentBrowserService.h"
+#include "Services/ProjectService.h"
+#include "Services/ReflectionService.h"
+#include "Services/PhysicsService.h"
+#include "Services/AnimationService.h"
+#include "Services/AIService.h"
+#include "Services/PostProcessService.h"
+#include "Services/SkyService.h"
+#include "Services/DecalService.h"
+#include "Services/HLODService.h"
+#include "Services/RenderingService.h"
+#include "Services/ValidationService.h"
+#include "Services/SourceControlService.h"
+#include "Services/RenderQueueService.h"
+#include "Services/ModelingService.h"
+#include "Services/InputService.h"
 
 namespace
 {
 	static FString BuildSpecialAgentInstructions()
 	{
-		// Balanced instructions - comprehensive but concise
+		// Compact service map — keep under ~1500 tokens.
 		return TEXT(
-			"SpecialAgent controls Unreal Editor. "
-			"WORKFLOW: 1) screenshot/capture to SEE viewport, 2) trace/select to GET 3D info, 3) act, 4) screenshot to VERIFY. "
-			"SCREEN COORDS: All screen tools use 0-1 percentage (0.5,0.5=center, 0.25,0.75=25% from left, 75% from top). "
-			"KEY TOOLS: "
-			"viewport/trace_from_screen(screen_x,screen_y) - get world location AND surface normal at any visible point. Use to find WHERE to place things and HOW to orient them. "
-			"utility/select_at_screen(screen_x,screen_y) - click to select actor, returns full info. "
-			"assets/get_bounds(asset_path) - get mesh dimensions, pivot_offset, bottom_z BEFORE spawning. Essential for correct placement height. "
-			"assets/get_info(asset_path) - get detailed asset info including materials, collision, LODs. "
-			"PLACEMENT: 1) trace_from_screen to get location+normal, 2) get_bounds to understand mesh pivot, 3) spawn ONE actor, 4) screenshot verify, 5) adjust rotation using normal. "
-			"ROTATION: Surface normal from trace tells you which way is 'up' for that surface - use to calculate actor rotation."
+			"SpecialAgent controls Unreal Editor via MCP tools.\n"
+			"WORKFLOW: screenshot/capture -> inspect/select/trace -> act -> screenshot/capture to verify.\n"
+			"SCREEN COORDS: normalized 0-1 (0.5,0.5 = center).\n"
+			"\n"
+			"KEY TOOLS:\n"
+			"  viewport/trace_from_screen - world location + surface normal at screen point\n"
+			"  utility/select_at_screen   - click to inspect actor (full info)\n"
+			"  assets/get_bounds          - mesh dimensions, pivot offset before spawn\n"
+			"  assets/get_info            - materials, collision, LODs\n"
+			"  python/execute             - full UE5 Python API fallback for anything not covered\n"
+			"\n"
+			"SERVICES (45 prefixes):\n"
+			"  world           - actor spawn/transform/delete/patterns/spatial queries (35)\n"
+			"  lighting        - light spawn/config/build (6)\n"
+			"  foliage         - procedural foliage (5)\n"
+			"  landscape       - sculpt/paint/layers (6)\n"
+			"  streaming       - sub-level loading (5)\n"
+			"  navigation      - navmesh build/test (4)\n"
+			"  world_partition - cell loading (5)\n"
+			"  gameplay        - trigger volumes/player starts (6)\n"
+			"  performance     - stats/overlaps/triangles (5)\n"
+			"  assets          - asset registry + metadata (16)\n"
+			"  content_browser - UI-level asset ops (9)\n"
+			"  asset_import    - FBX/texture/sound/csv import (6)\n"
+			"  asset_deps      - references/referencers (4)\n"
+			"  data_table      - row read/write (7)\n"
+			"  validation      - asset/level validation (3)\n"
+			"  blueprint       - BP create/compile/edit (10)\n"
+			"  material        - materials + instances + params (8)\n"
+			"  reflection      - UClass/UProperty/UFunction introspection (5)\n"
+			"  component       - actor components (7)\n"
+			"  physics         - physics simulation (7)\n"
+			"  animation       - skeletal anim (5)\n"
+			"  ai              - AI pawn/BT/blackboard (5)\n"
+			"  input           - input mapping (4)\n"
+			"  sound           - sound playback (4)\n"
+			"  post_process    - PP volumes (6)\n"
+			"  sky             - sky/atmosphere/fog/cloud (5)\n"
+			"  decal           - decal actors (3)\n"
+			"  sequencer       - Level Sequence (6)\n"
+			"  niagara         - Niagara VFX (6)\n"
+			"  render_queue    - Movie Render Queue (3)\n"
+			"  rendering       - scalability/view modes/screenshot (5)\n"
+			"  pie             - Play In Editor control (8)\n"
+			"  console         - console commands + CVars (4)\n"
+			"  log             - log tail/categories (4)\n"
+			"  level           - level open/new/save (5)\n"
+			"  editor_mode     - landscape/foliage/modeling mode (3)\n"
+			"  project         - settings + plugins (8)\n"
+			"  source_control  - SCM (5)\n"
+			"  pcg             - PCG graphs (3)\n"
+			"  modeling        - mesh booleans/extrude/simplify (4)\n"
+			"  hlod            - Hierarchical LOD (3)\n"
+			"  utility         - save/undo/select/transactions (18)\n"
+			"  viewport        - camera + view mode + bookmarks (13)\n"
+			"  screenshot      - viewport capture (2)\n"
+			"  python          - arbitrary Python execution (3)\n"
+			"\n"
+			"PLACEMENT: 1) trace_from_screen for location+normal, 2) assets/get_bounds for pivot, "
+			"3) spawn ONE actor, 4) screenshot, 5) adjust rotation using surface normal."
 		);
 	}
 }
@@ -53,11 +135,67 @@ FMCPRequestRouter::FMCPRequestRouter()
 	RegisterService(TEXT("gameplay"), MakeShared<FGameplayService>());
 	RegisterService(TEXT("utility"), MakeShared<FUtilityService>());
 
+	// Phase 0.6 scaffolded services — handlers/tools populated in Phase 1.
+	RegisterService(TEXT("blueprint"),       MakeShared<FBlueprintService>());
+	RegisterService(TEXT("material"),        MakeShared<FMaterialService>());
+	RegisterService(TEXT("asset_import"),    MakeShared<FAssetImportService>());
+	RegisterService(TEXT("pie"),             MakeShared<FPIEService>());
+	RegisterService(TEXT("console"),         MakeShared<FConsoleService>());
+	RegisterService(TEXT("component"),       MakeShared<FComponentService>());
+	RegisterService(TEXT("editor_mode"),     MakeShared<FEditorModeService>());
+	RegisterService(TEXT("level"),           MakeShared<FLevelService>());
+	RegisterService(TEXT("log"),             MakeShared<FLogService>());
+	RegisterService(TEXT("data_table"),      MakeShared<FDataTableService>());
+	RegisterService(TEXT("asset_deps"),      MakeShared<FAssetDependencyService>());
+	RegisterService(TEXT("sequencer"),       MakeShared<FSequencerService>());
+	RegisterService(TEXT("niagara"),         MakeShared<FNiagaraService>());
+	RegisterService(TEXT("sound"),           MakeShared<FSoundService>());
+	RegisterService(TEXT("world_partition"), MakeShared<FWorldPartitionService>());
+	RegisterService(TEXT("pcg"),             MakeShared<FPCGService>());
+	RegisterService(TEXT("content_browser"), MakeShared<FContentBrowserService>());
+	RegisterService(TEXT("project"),         MakeShared<FProjectService>());
+	RegisterService(TEXT("reflection"),      MakeShared<FReflectionService>());
+	RegisterService(TEXT("physics"),         MakeShared<FPhysicsService>());
+	RegisterService(TEXT("animation"),       MakeShared<FAnimationService>());
+	RegisterService(TEXT("ai"),              MakeShared<FAIService>());
+	RegisterService(TEXT("post_process"),    MakeShared<FPostProcessService>());
+	RegisterService(TEXT("sky"),             MakeShared<FSkyService>());
+	RegisterService(TEXT("decal"),           MakeShared<FDecalService>());
+	RegisterService(TEXT("hlod"),            MakeShared<FHLODService>());
+	RegisterService(TEXT("rendering"),       MakeShared<FRenderingService>());
+	RegisterService(TEXT("validation"),      MakeShared<FValidationService>());
+	RegisterService(TEXT("source_control"),  MakeShared<FSourceControlService>());
+	RegisterService(TEXT("render_queue"),    MakeShared<FRenderQueueService>());
+	RegisterService(TEXT("modeling"),        MakeShared<FModelingService>());
+	RegisterService(TEXT("input"),           MakeShared<FInputService>());
+
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Registered %d services"), Services.Num());
+	ValidateServices();
 }
 
 FMCPRequestRouter::~FMCPRequestRouter()
 {
+}
+
+void FMCPRequestRouter::ValidateServices() const
+{
+	int32 TotalTools = 0;
+	int32 DeadServices = 0;
+	for (const auto& Pair : Services)
+	{
+		const TArray<FMCPToolInfo> Tools = Pair.Value->GetAvailableTools();
+		if (Tools.Num() == 0)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("SpecialAgent: service '%s' registered but exposes ZERO tools"),
+				*Pair.Key);
+			++DeadServices;
+		}
+		TotalTools += Tools.Num();
+	}
+	UE_LOG(LogTemp, Log,
+		TEXT("SpecialAgent: %d services, %d tools total, %d services with zero tools"),
+		Services.Num(), TotalTools, DeadServices);
 }
 
 FMCPResponse FMCPRequestRouter::RouteRequest(const FMCPRequest& Request)
@@ -407,15 +545,136 @@ FMCPResponse FMCPRequestRouter::HandleResourcesRead(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
+namespace
+{
+	// Helper: build an argument descriptor for a prompt entry.
+	static TSharedPtr<FJsonValue> MakePromptArg(const FString& Name, const FString& Description, bool bRequired)
+	{
+		TSharedPtr<FJsonObject> Arg = MakeShared<FJsonObject>();
+		Arg->SetStringField(TEXT("name"), Name);
+		Arg->SetStringField(TEXT("description"), Description);
+		Arg->SetBoolField(TEXT("required"), bRequired);
+		return MakeShared<FJsonValueObject>(Arg);
+	}
+
+	// Helper: build a prompt list entry.
+	static TSharedPtr<FJsonValue> MakePromptEntry(const FString& Name, const FString& Description, TArray<TSharedPtr<FJsonValue>> Args)
+	{
+		TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+		P->SetStringField(TEXT("name"), Name);
+		P->SetStringField(TEXT("description"), Description);
+		P->SetArrayField(TEXT("arguments"), Args);
+		return MakeShared<FJsonValueObject>(P);
+	}
+}
+
 FMCPResponse FMCPRequestRouter::HandlePromptsList(const FMCPRequest& Request)
 {
-	// MCP prompts/list - return empty list for now (prompts may cause client issues)
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> Prompts;
+
+	// Existing 4 prompts
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Prompts.Add(MakePromptEntry(TEXT("explore_level"),
+			TEXT("Screenshot, list actors, focus interesting ones, summarize."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("search_term"), TEXT("Substring to match actor names against"), true));
+		Prompts.Add(MakePromptEntry(TEXT("find_actor"),
+			TEXT("Find and focus actors whose names match a search term."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Prompts.Add(MakePromptEntry(TEXT("inspect_selection"),
+			TEXT("Inspect currently selected actors (bounds, properties, screenshots)."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("description"), TEXT("Natural language description of what to place"), true));
+		Prompts.Add(MakePromptEntry(TEXT("place_objects"),
+			TEXT("Place objects in the level using Python + screenshots to verify."), Args));
+	}
+
+	// 12 new prompts
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Prompts.Add(MakePromptEntry(TEXT("build_scene"),
+			TEXT("Populate a scene with lighting + foliage + streaming, screenshotting between steps."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("parent_class"), TEXT("Parent class path (e.g. /Script/Engine.Actor)"), true));
+		Args.Add(MakePromptArg(TEXT("bp_name"), TEXT("Blueprint asset name"), true));
+		Args.Add(MakePromptArg(TEXT("asset_path"), TEXT("Content Browser folder path (e.g. /Game/BP)"), true));
+		Prompts.Add(MakePromptEntry(TEXT("create_blueprint"),
+			TEXT("Create, compile and spawn a new Blueprint, screenshot to verify."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("source_path"), TEXT("Source folder on disk to import from"), true));
+		Args.Add(MakePromptArg(TEXT("destination"), TEXT("Target Content Browser path"), true));
+		Prompts.Add(MakePromptEntry(TEXT("import_assets"),
+			TEXT("Import assets from a folder then run validation on the results."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("duration_seconds"), TEXT("Playback duration in seconds"), true));
+		Prompts.Add(MakePromptEntry(TEXT("build_sequence"),
+			TEXT("Create a Level Sequence, add transform tracks and keyframes, set playback range."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("time_of_day"), TEXT("Hours, 0-24 (e.g. 6.5 = sunrise)"), true));
+		Prompts.Add(MakePromptEntry(TEXT("setup_lighting"),
+			TEXT("Spawn sky/fog/clouds/sun for a given time of day and build lighting."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("foliage_type_path"), TEXT("Foliage type asset path"), true));
+		Args.Add(MakePromptArg(TEXT("density"), TEXT("Instances per square meter"), true));
+		Prompts.Add(MakePromptEntry(TEXT("populate_foliage"),
+			TEXT("Paint foliage across the level bounds at a given density, screenshot."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("size"), TEXT("Landscape size in components (e.g. 8)"), true));
+		Args.Add(MakePromptArg(TEXT("layers"), TEXT("Comma-separated list of material layer names"), true));
+		Prompts.Add(MakePromptEntry(TEXT("build_landscape"),
+			TEXT("Create a landscape, sculpt regions, and paint material layers."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Prompts.Add(MakePromptEntry(TEXT("configure_postprocess"),
+			TEXT("Spawn a post-process volume and tune exposure, bloom and DoF."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Prompts.Add(MakePromptEntry(TEXT("setup_navigation"),
+			TEXT("Add a nav bounds volume, rebuild the navmesh, test a path."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Prompts.Add(MakePromptEntry(TEXT("wire_gameplay"),
+			TEXT("Spawn player start, killz volume, trigger volume, and splined markers."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Prompts.Add(MakePromptEntry(TEXT("debug_performance"),
+			TEXT("Collect stats, overlaps and triangle counts and report hot spots."), Args));
+	}
+	{
+		TArray<TSharedPtr<FJsonValue>> Args;
+		Args.Add(MakePromptArg(TEXT("duration_seconds"), TEXT("Seconds to keep PIE running"), true));
+		Prompts.Add(MakePromptEntry(TEXT("run_pie_test"),
+			TEXT("Start PIE, wait, tail the log, stop PIE, and summarize."), Args));
+	}
+
 	Result->SetArrayField(TEXT("prompts"), Prompts);
-	
-	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Returning empty prompts list"));
-	
+
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Returning %d prompts"), Prompts.Num());
+
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
@@ -489,7 +748,7 @@ FMCPResponse FMCPRequestRouter::HandlePromptsGet(const FMCPRequest& Request)
 		{
 			Arguments->TryGetStringField(TEXT("description"), Description);
 		}
-		
+
 		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
 		Msg->SetStringField(TEXT("role"), TEXT("user"));
 		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
@@ -500,6 +759,221 @@ FMCPResponse FMCPRequestRouter::HandlePromptsGet(const FMCPRequest& Request)
 			"3. Place/modify the requested objects\n"
 			"4. Screenshot again to verify the results"
 		), *Description));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("build_scene"))
+	{
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), TEXT(
+			"Populate the current level with a basic playable scene:\n"
+			"1. screenshot/capture to record starting state\n"
+			"2. world/place_in_grid to distribute static meshes across an area\n"
+			"3. lighting/spawn_light to add a directional + a few point lights; then lighting/build_lighting\n"
+			"4. foliage/paint_in_area to cover the ground\n"
+			"5. streaming/load_level (or streaming/create_streaming_level) to bring in any sub-levels\n"
+			"6. screenshot/capture between major steps and at the end to verify"
+		));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("create_blueprint"))
+	{
+		FString ParentClass;
+		FString BpName;
+		FString AssetPath;
+		if (Arguments.IsValid())
+		{
+			Arguments->TryGetStringField(TEXT("parent_class"), ParentClass);
+			Arguments->TryGetStringField(TEXT("bp_name"), BpName);
+			Arguments->TryGetStringField(TEXT("asset_path"), AssetPath);
+		}
+
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
+			"Create a new Blueprint and verify it spawns:\n"
+			"1. blueprint/create with parent_class='%s', name='%s', path='%s'\n"
+			"2. blueprint/compile the new asset\n"
+			"3. world/spawn_actor to place an instance in the level\n"
+			"4. screenshot/capture to verify the spawn"
+		), *ParentClass, *BpName, *AssetPath));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("import_assets"))
+	{
+		FString SourcePath;
+		FString Destination;
+		if (Arguments.IsValid())
+		{
+			Arguments->TryGetStringField(TEXT("source_path"), SourcePath);
+			Arguments->TryGetStringField(TEXT("destination"), Destination);
+		}
+
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
+			"Import assets from disk and validate them:\n"
+			"1. asset_import/import_folder with source='%s' destination='%s'\n"
+			"2. validation/validate_selected on the freshly imported assets\n"
+			"3. Report any validation errors or warnings"
+		), *SourcePath, *Destination));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("build_sequence"))
+	{
+		FString DurationSeconds;
+		if (Arguments.IsValid())
+		{
+			Arguments->TryGetStringField(TEXT("duration_seconds"), DurationSeconds);
+		}
+
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
+			"Build a simple Level Sequence %s seconds long:\n"
+			"1. sequencer/create to make a new Level Sequence asset\n"
+			"2. sequencer/add_actor_binding for each actor you want animated\n"
+			"3. sequencer/add_transform_track + sequencer/add_keyframe for start and end poses\n"
+			"4. sequencer/set_playback_range to cover the full duration\n"
+			"5. screenshot/capture the Sequencer editor to verify"
+		), *DurationSeconds));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("setup_lighting"))
+	{
+		FString TimeOfDay;
+		if (Arguments.IsValid())
+		{
+			Arguments->TryGetStringField(TEXT("time_of_day"), TimeOfDay);
+		}
+
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
+			"Set up natural outdoor lighting for time_of_day=%s (hours 0-24):\n"
+			"1. sky/spawn_sky_atmosphere\n"
+			"2. sky/spawn_height_fog\n"
+			"3. sky/spawn_volumetric_cloud\n"
+			"4. sky/spawn_sky_light\n"
+			"5. lighting/spawn_light (directional) positioned to represent the sun for that time\n"
+			"6. lighting/build_lighting\n"
+			"7. screenshot/capture to verify the mood"
+		), *TimeOfDay));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("populate_foliage"))
+	{
+		FString FoliageTypePath;
+		FString Density;
+		if (Arguments.IsValid())
+		{
+			Arguments->TryGetStringField(TEXT("foliage_type_path"), FoliageTypePath);
+			Arguments->TryGetStringField(TEXT("density"), Density);
+		}
+
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
+			"Populate foliage across the full level bounds:\n"
+			"1. foliage/paint_in_area using foliage_type='%s' and density=%s\n"
+			"2. Cover the level extents (query world bounds if needed)\n"
+			"3. screenshot/capture to verify coverage"
+		), *FoliageTypePath, *Density));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("build_landscape"))
+	{
+		FString Size;
+		FString Layers;
+		if (Arguments.IsValid())
+		{
+			Arguments->TryGetStringField(TEXT("size"), Size);
+			Arguments->TryGetStringField(TEXT("layers"), Layers);
+		}
+
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
+			"Build a landscape of size=%s with layers=[%s]:\n"
+			"1. python/execute to create the landscape actor (UE editor API fallback)\n"
+			"2. landscape/sculpt to shape a few regions\n"
+			"3. landscape/paint_layer for each layer in the list\n"
+			"4. screenshot/capture to verify"
+		), *Size, *Layers));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("configure_postprocess"))
+	{
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), TEXT(
+			"Spawn and tune a post-process volume:\n"
+			"1. post_process/spawn_volume (unbound)\n"
+			"2. post_process/set_exposure to a reasonable min/max\n"
+			"3. post_process/set_bloom to tasteful intensity\n"
+			"4. post_process/set_dof for focal distance/aperture\n"
+			"5. screenshot/capture before and after to show the effect"
+		));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("setup_navigation"))
+	{
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), TEXT(
+			"Set up navigation for the current level:\n"
+			"1. python/execute to spawn a NavMeshBoundsVolume covering the playable area\n"
+			"2. navigation/rebuild_navmesh\n"
+			"3. navigation/test_path between two sample points to confirm it works\n"
+			"4. screenshot/capture in nav view mode to verify coverage"
+		));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("wire_gameplay"))
+	{
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), TEXT(
+			"Wire the essential gameplay actors into this level:\n"
+			"1. gameplay/spawn_player_start where the player should appear\n"
+			"2. gameplay/spawn_killz_volume below the playable area\n"
+			"3. gameplay/spawn_trigger_volume near the objective\n"
+			"4. gameplay/place_along_spline to mark the path toward the goal\n"
+			"5. screenshot/capture to verify placement"
+		));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("debug_performance"))
+	{
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), TEXT(
+			"Diagnose level performance:\n"
+			"1. performance/get_statistics for overall stats\n"
+			"2. performance/check_overlaps to find geometric collisions\n"
+			"3. performance/get_triangle_count to find heavy meshes\n"
+			"4. Summarize the top hot spots and recommend fixes"
+		));
+		Messages.Add(MakeShared<FJsonValueObject>(Msg));
+	}
+	else if (PromptName == TEXT("run_pie_test"))
+	{
+		FString DurationSeconds;
+		if (Arguments.IsValid())
+		{
+			Arguments->TryGetStringField(TEXT("duration_seconds"), DurationSeconds);
+		}
+
+		TSharedPtr<FJsonObject> Msg = MakeShared<FJsonObject>();
+		Msg->SetStringField(TEXT("role"), TEXT("user"));
+		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
+			"Run a PIE smoke test for %s seconds:\n"
+			"1. pie/start\n"
+			"2. Wait %s seconds (sleep via python/execute if needed)\n"
+			"3. log/tail to collect recent log output\n"
+			"4. pie/stop\n"
+			"5. Summarize any errors or warnings found in the tail"
+		), *DurationSeconds, *DurationSeconds));
 		Messages.Add(MakeShared<FJsonValueObject>(Msg));
 	}
 	else

@@ -7,9 +7,10 @@
 
 /**
  * Lighting Service
- * 
+ *
  * Spawn and configure lighting actors, build lightmaps.
- * Methods: spawn_light, set_light_intensity, set_light_color, build_lighting
+ * Methods: spawn_light, set_light_intensity, set_light_color,
+ *          set_light_attenuation, set_light_cast_shadows, build_lighting
  */
 class SPECIALAGENT_API FLightingService : public IMCPService
 {
@@ -26,9 +27,7 @@ private:
 	FMCPResponse HandleSpawnLight(const FMCPRequest& Request);
 	FMCPResponse HandleSetLightIntensity(const FMCPRequest& Request);
 	FMCPResponse HandleSetLightColor(const FMCPRequest& Request);
+	FMCPResponse HandleSetLightAttenuation(const FMCPRequest& Request);
+	FMCPResponse HandleSetLightCastShadows(const FMCPRequest& Request);
 	FMCPResponse HandleBuildLighting(const FMCPRequest& Request);
-	
-	// Helper method for executing Python scripts
-	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
 };
-

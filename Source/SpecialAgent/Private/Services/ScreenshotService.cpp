@@ -30,7 +30,10 @@ TArray<FMCPToolInfo> FScreenshotService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("capture");
-		Tool.Description = TEXT("ALWAYS USE FIRST. Returns viewport image. Then estimate % positions (0-1) for trace_from_screen or select_at_screen. Example: object at image center = (0.5, 0.5), object 1/4 from left and 3/4 down = (0.25, 0.75). Use BEFORE actions to plan, AFTER actions to verify.");
+		Tool.Description = TEXT("Capture the active editor viewport as a base64 image. Returns {base64_data, mimeType, width, height} for inline vision. "
+			"Params: width (integer px, default 1280), height (integer px, default 720), quality (integer 1-99 JPEG or 100 PNG, default 85). "
+			"Workflow: ALWAYS call first for visual feedback, then estimate (x,y) in 0-1 space for viewport/trace_from_screen or viewport/select_at_screen; call again after edits to verify. "
+			"Warning: large sizes produce huge base64 payloads; prefer defaults.");
 		
 		TSharedPtr<FJsonObject> WidthParam = MakeShared<FJsonObject>();
 		WidthParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -54,7 +57,10 @@ TArray<FMCPToolInfo> FScreenshotService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("save");
-		Tool.Description = TEXT("Capture viewport screenshot and save to file.");
+		Tool.Description = TEXT("Capture the active editor viewport and write it to a PNG file on disk. Returns {file_path, width, height, file_size}. "
+			"Params: file_path (string, absolute path, required), width (integer px, default 1920), height (integer px, default 1080). "
+			"Workflow: use instead of capture when you want a persisted artifact rather than inline base64. "
+			"Warning: file_path parent directory must exist; existing files are overwritten.");
 		
 		TSharedPtr<FJsonObject> FileParam = MakeShared<FJsonObject>();
 		FileParam->SetStringField(TEXT("type"), TEXT("string"));

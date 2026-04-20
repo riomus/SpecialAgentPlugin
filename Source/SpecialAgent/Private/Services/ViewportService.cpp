@@ -2,6 +2,9 @@
 
 #include "Services/ViewportService.h"
 #include "GameThreadDispatcher.h"
+#include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPActorResolver.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "EditorViewportClient.h"
@@ -10,6 +13,12 @@
 #include "Engine/World.h"
 #include "CollisionQueryParams.h"
 #include "SceneView.h"
+#include "UnrealEdGlobals.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Engine/Selection.h"
+#include "ShowFlags.h"
+#include "Bookmarks/IBookmarkTypeTools.h"
+#include "Settings/LevelEditorViewportSettings.h"
 
 FViewportService::FViewportService()
 {
@@ -27,6 +36,16 @@ FMCPResponse FViewportService::HandleRequest(const FMCPRequest& Request, const F
 	if (MethodName == TEXT("get_transform")) return HandleGetTransform(Request);
 	if (MethodName == TEXT("focus_actor")) return HandleFocusActor(Request);
 	if (MethodName == TEXT("trace_from_screen")) return HandleTraceFromScreen(Request);
+
+	// Phase 1.A
+	if (MethodName == TEXT("orbit_around_actor")) return HandleOrbitAroundActor(Request);
+	if (MethodName == TEXT("set_fov")) return HandleSetFov(Request);
+	if (MethodName == TEXT("set_view_mode")) return HandleSetViewMode(Request);
+	if (MethodName == TEXT("toggle_game_view")) return HandleToggleGameView(Request);
+	if (MethodName == TEXT("bookmark_save")) return HandleBookmarkSave(Request);
+	if (MethodName == TEXT("bookmark_restore")) return HandleBookmarkRestore(Request);
+	if (MethodName == TEXT("set_grid_snap")) return HandleSetGridSnap(Request);
+	if (MethodName == TEXT("toggle_realtime")) return HandleToggleRealtime(Request);
 
 	return MethodNotFound(Request.Id, TEXT("viewport"), MethodName);
 }
@@ -433,6 +452,221 @@ FMCPResponse FViewportService::HandleTraceFromScreen(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
+// ============================================================================
+// Phase 1.A additions
+// ============================================================================
+// Helper: resolve a FLevelEditorViewportClient, or null.
+static FLevelEditorViewportClient* ResolveLevelViewportClient()
+{
+	if (!GEditor) return nullptr;
+	FViewport* VP = GEditor->GetActiveViewport();
+	if (!VP) return nullptr;
+	return static_cast<FLevelEditorViewportClient*>(VP->GetClient());
+}
+
+FMCPResponse FViewportService::HandleOrbitAroundActor(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString ActorName;
+	if (!Request.Params->TryGetStringField(TEXT("actor_name"), ActorName))
+		return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+	double Angle = 0.0, Distance = 500.0, Height = 200.0;
+	Request.Params->TryGetNumberField(TEXT("angle"), Angle);
+	Request.Params->TryGetNumberField(TEXT("distance"), Distance);
+	Request.Params->TryGetNumberField(TEXT("height"), Height);
+
+	auto Task = [ActorName, Angle, Distance, Height]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+		AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
+		if (!Actor) return FMCPJson::MakeError(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+
+		FLevelEditorViewportClient* VC = ResolveLevelViewportClient();
+		if (!VC) return FMCPJson::MakeError(TEXT("No active viewport client"));
+
+		FBox Bounds = Actor->GetComponentsBoundingBox(true);
+		FVector Center = Bounds.IsValid ? Bounds.GetCenter() : Actor->GetActorLocation();
+		const double Rad = FMath::DegreesToRadians(Angle);
+		const FVector Offset(FMath::Cos(Rad) * Distance, FMath::Sin(Rad) * Distance, Height);
+		const FVector CamPos = Center + Offset;
+		VC->SetViewLocation(CamPos);
+		VC->SetViewRotation((Center - CamPos).Rotation());
+		VC->Invalidate();
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		FMCPJson::WriteVec3(Result, TEXT("camera_location"), CamPos);
+		FMCPJson::WriteVec3(Result, TEXT("target"), Center);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Orbit around %s angle=%.1f"), *ActorName, Angle);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FViewportService::HandleSetFov(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	double Fov = 90.0;
+	if (!Request.Params->TryGetNumberField(TEXT("fov"), Fov))
+		return InvalidParams(Request.Id, TEXT("Missing 'fov' (degrees)"));
+
+	auto Task = [Fov]() -> TSharedPtr<FJsonObject>
+	{
+		FLevelEditorViewportClient* VC = ResolveLevelViewportClient();
+		if (!VC) return FMCPJson::MakeError(TEXT("No active viewport client"));
+		VC->ViewFOV = static_cast<float>(Fov);
+		VC->Invalidate();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetNumberField(TEXT("fov"), Fov);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Set viewport FOV to %.1f"), Fov);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FViewportService::HandleSetViewMode(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString Mode;
+	if (!Request.Params->TryGetStringField(TEXT("mode"), Mode))
+		return InvalidParams(Request.Id, TEXT("Missing 'mode'"));
+
+	auto Task = [Mode]() -> TSharedPtr<FJsonObject>
+	{
+		FLevelEditorViewportClient* VC = ResolveLevelViewportClient();
+		if (!VC) return FMCPJson::MakeError(TEXT("No active viewport client"));
+
+		EViewModeIndex Idx = VMI_Lit;
+		if (Mode.Equals(TEXT("lit"), ESearchCase::IgnoreCase)) Idx = VMI_Lit;
+		else if (Mode.Equals(TEXT("unlit"), ESearchCase::IgnoreCase)) Idx = VMI_Unlit;
+		else if (Mode.Equals(TEXT("wireframe"), ESearchCase::IgnoreCase)) Idx = VMI_Wireframe;
+		else if (Mode.Equals(TEXT("brush_wireframe"), ESearchCase::IgnoreCase)) Idx = VMI_BrushWireframe;
+		else if (Mode.Equals(TEXT("detail_lighting"), ESearchCase::IgnoreCase)) Idx = VMI_Lit_DetailLighting;
+		else if (Mode.Equals(TEXT("lighting_only"), ESearchCase::IgnoreCase)) Idx = VMI_LightingOnly;
+		else if (Mode.Equals(TEXT("light_complexity"), ESearchCase::IgnoreCase)) Idx = VMI_LightComplexity;
+		else if (Mode.Equals(TEXT("shader_complexity"), ESearchCase::IgnoreCase)) Idx = VMI_ShaderComplexity;
+		else if (Mode.Equals(TEXT("stationary_light_overlap"), ESearchCase::IgnoreCase)) Idx = VMI_StationaryLightOverlap;
+		else if (Mode.Equals(TEXT("lightmap_density"), ESearchCase::IgnoreCase)) Idx = VMI_LightmapDensity;
+		else return FMCPJson::MakeError(FString::Printf(TEXT("Unknown view mode: %s"), *Mode));
+
+		VC->SetViewMode(Idx);
+		VC->Invalidate();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("mode"), Mode);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Set view mode to %s"), *Mode);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FViewportService::HandleToggleGameView(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		FLevelEditorViewportClient* VC = ResolveLevelViewportClient();
+		if (!VC) return FMCPJson::MakeError(TEXT("No active viewport client"));
+		VC->SetGameView(!VC->IsInGameView());
+		VC->Invalidate();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetBoolField(TEXT("game_view"), VC->IsInGameView());
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Game view = %d"), VC->IsInGameView());
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FViewportService::HandleBookmarkSave(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	int32 Index = 0;
+	if (!Request.Params->TryGetNumberField(TEXT("index"), Index) || Index < 0)
+		return InvalidParams(Request.Id, TEXT("Missing or invalid 'index' (>=0)"));
+
+	auto Task = [Index]() -> TSharedPtr<FJsonObject>
+	{
+		FLevelEditorViewportClient* VC = ResolveLevelViewportClient();
+		if (!VC) return FMCPJson::MakeError(TEXT("No active viewport client"));
+		IBookmarkTypeTools::Get().CreateOrSetBookmark(static_cast<uint32>(Index), VC);
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetNumberField(TEXT("index"), Index);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Saved bookmark %d"), Index);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FViewportService::HandleBookmarkRestore(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	int32 Index = 0;
+	if (!Request.Params->TryGetNumberField(TEXT("index"), Index) || Index < 0)
+		return InvalidParams(Request.Id, TEXT("Missing or invalid 'index'"));
+
+	auto Task = [Index]() -> TSharedPtr<FJsonObject>
+	{
+		FLevelEditorViewportClient* VC = ResolveLevelViewportClient();
+		if (!VC) return FMCPJson::MakeError(TEXT("No active viewport client"));
+		if (!IBookmarkTypeTools::Get().CheckBookmark(static_cast<uint32>(Index), VC))
+			return FMCPJson::MakeError(FString::Printf(TEXT("Bookmark %d does not exist"), Index));
+		IBookmarkTypeTools::Get().JumpToBookmark(static_cast<uint32>(Index), nullptr, VC);
+		VC->Invalidate();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetNumberField(TEXT("index"), Index);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Restored bookmark %d"), Index);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FViewportService::HandleSetGridSnap(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	bool bEnabled = true;
+	Request.Params->TryGetBoolField(TEXT("enabled"), bEnabled);
+	int32 GridSizeIdx = -1;
+	Request.Params->TryGetNumberField(TEXT("grid_size_index"), GridSizeIdx);
+
+	auto Task = [bEnabled, GridSizeIdx]() -> TSharedPtr<FJsonObject>
+	{
+		ULevelEditorViewportSettings* Settings = GetMutableDefault<ULevelEditorViewportSettings>();
+		if (!Settings) return FMCPJson::MakeError(TEXT("LevelEditorViewportSettings not available"));
+		Settings->GridEnabled = bEnabled ? 1 : 0;
+		if (GridSizeIdx >= 0) Settings->CurrentPosGridSize = GridSizeIdx;
+		Settings->PostEditChange();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetBoolField(TEXT("enabled"), bEnabled);
+		Result->SetNumberField(TEXT("grid_size_index"), Settings->CurrentPosGridSize);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Grid snap enabled=%d idx=%d"), bEnabled, Settings->CurrentPosGridSize);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FViewportService::HandleToggleRealtime(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		FLevelEditorViewportClient* VC = ResolveLevelViewportClient();
+		if (!VC) return FMCPJson::MakeError(TEXT("No active viewport client"));
+		const bool bRealtimeNow = !VC->IsRealtime();
+		VC->SetRealtime(bRealtimeNow);
+		VC->Invalidate();
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetBoolField(TEXT("realtime"), bRealtimeNow);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Realtime = %d"), bRealtimeNow);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
 TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 {
 	TArray<FMCPToolInfo> Tools;
@@ -441,7 +675,10 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("set_location");
-		Tool.Description = TEXT("Set the viewport camera location.");
+		Tool.Description = TEXT("Set the active editor viewport camera location in world space. Returns {success, location}. "
+			"Params: location ([X,Y,Z] cm world, required). "
+			"Workflow: pair with viewport/set_rotation to aim; call screenshot/capture to verify framing. "
+			"Warning: only the active Level Editor viewport is affected.");
 		
 		TSharedPtr<FJsonObject> LocParam = MakeShared<FJsonObject>();
 		LocParam->SetStringField(TEXT("type"), TEXT("array"));
@@ -456,7 +693,9 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("set_rotation");
-		Tool.Description = TEXT("Set the viewport camera rotation.");
+		Tool.Description = TEXT("Set the active editor viewport camera rotation. Returns {success, rotation}. "
+			"Params: rotation ([Pitch,Yaw,Roll] degrees, required). "
+			"Workflow: pair with viewport/set_location; use viewport/focus_actor for 'frame this actor' behaviour instead of manual angles.");
 		
 		TSharedPtr<FJsonObject> RotParam = MakeShared<FJsonObject>();
 		RotParam->SetStringField(TEXT("type"), TEXT("array"));
@@ -471,7 +710,8 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_transform");
-		Tool.Description = TEXT("Get the current viewport camera location and rotation.");
+		Tool.Description = TEXT("Get the active editor viewport camera transform. Returns {success, location:[X,Y,Z], rotation:[Pitch,Yaw,Roll]}. "
+			"Workflow: call before bookmark_save, or use the result to compute offsets for subsequent set_location calls.");
 		Tools.Add(Tool);
 	}
 	
@@ -479,7 +719,9 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("focus_actor");
-		Tool.Description = TEXT("Frame an actor in the viewport (like pressing F). Use to navigate to any actor by name. Get actor names from world/list_actors or utility/select_at_screen. After focusing, take a screenshot to see it.");
+		Tool.Description = TEXT("Frame an actor in the viewport (like pressing F in the editor). Matches by exact label, internal name, or case-insensitive substring; returns {actor_name, actor_id, matched_by}. "
+			"Params: actor_name (string, label/ID or partial, required). "
+			"Workflow: world/list_actors -> focus_actor -> screenshot/capture to confirm the view.");
 		
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -494,7 +736,9 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("trace_from_screen");
-		Tool.Description = TEXT("ESSENTIAL: Get 3D location AND surface normal from any point in screenshot. Use to: 1) Find WHERE to place actors (location), 2) Find HOW to orient actors (normal = surface 'up' direction). Workflow: screenshot -> see point -> trace at that % position -> get location+normal -> spawn/orient actor.");
+		Tool.Description = TEXT("Deproject a screen-space point and line-trace against visibility channel. Returns {hit, location, normal, distance, actor_name, actor_class, component_name, physical_material} on hit; {hit:false, ray_direction} on miss. "
+			"Params: screen_x (number 0-1, fraction from left, default 0.5); screen_y (number 0-1, fraction from top, default 0.5). "
+			"Workflow: screenshot/capture -> estimate (x,y) -> trace_from_screen -> use location to world/spawn_actor and normal to align rotation.");
 		
 		TSharedPtr<FJsonObject> XParam = MakeShared<FJsonObject>();
 		XParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -505,9 +749,75 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		YParam->SetStringField(TEXT("type"), TEXT("number"));
 		YParam->SetStringField(TEXT("description"), TEXT("Screen Y as 0-1 percentage (0=top edge, 0.5=center, 1=bottom edge). Estimate from screenshot."));
 		Tool.Parameters->SetObjectField(TEXT("screen_y"), YParam);
-		
+
 		Tools.Add(Tool);
 	}
-	
+
+	// ---------- Phase 1.A additions ----------
+	Tools.Add(FMCPToolBuilder(TEXT("orbit_around_actor"),
+		TEXT("Position the camera on a ring around an actor's bounds center, looking inward. Effect: sets viewport location + rotation. "
+			 "Params: actor_name (string), angle (number deg, 0=+X), distance (number cm, default 500), height (number cm, default 200). "
+			 "Workflow: take a screenshot after to verify framing."))
+		.RequiredString(TEXT("actor_name"), TEXT("Actor label to orbit around"))
+		.OptionalNumber(TEXT("angle"), TEXT("Horizontal angle in degrees (0 = +X axis)"))
+		.OptionalNumber(TEXT("distance"), TEXT("Horizontal distance from target cm (default 500)"))
+		.OptionalNumber(TEXT("height"), TEXT("Vertical offset above target cm (default 200)"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("set_fov"),
+		TEXT("Set the perspective camera field of view. Effect: updates FLevelEditorViewportClient::ViewFOV. "
+			 "Params: fov (number, degrees, typical 60-120)."))
+		.RequiredNumber(TEXT("fov"), TEXT("FOV in degrees"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("set_view_mode"),
+		TEXT("Switch the viewport's render mode. Effect: one of lit/unlit/wireframe/brush_wireframe/detail_lighting/"
+			 "lighting_only/light_complexity/shader_complexity/stationary_light_overlap/lightmap_density. "
+			 "Params: mode (enum)."))
+		.RequiredEnum(TEXT("mode"), {
+			TEXT("lit"), TEXT("unlit"), TEXT("wireframe"), TEXT("brush_wireframe"),
+			TEXT("detail_lighting"), TEXT("lighting_only"), TEXT("light_complexity"),
+			TEXT("shader_complexity"), TEXT("stationary_light_overlap"), TEXT("lightmap_density")
+		}, TEXT("Viewport render mode"))
+		.Build());
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("toggle_game_view");
+		Tool.Description = TEXT("Toggle editor viewport Game View mode. Effect: hides editor-only icons/gizmos if on. "
+			"Workflow: call before screenshot to capture an in-game framing.");
+		Tools.Add(Tool);
+	}
+
+	Tools.Add(FMCPToolBuilder(TEXT("bookmark_save"),
+		TEXT("Save the current viewport camera to a bookmark slot. Effect: records location, rotation, and view settings. "
+			 "Params: index (integer 0..MaxBookmarks-1). "
+			 "Workflow: pair with bookmark_restore to revisit a viewpoint later."))
+		.RequiredInteger(TEXT("index"), TEXT("Bookmark slot index (0..max)"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("bookmark_restore"),
+		TEXT("Restore a saved viewport bookmark. Effect: teleports camera to the saved view. "
+			 "Params: index (integer). "
+			 "Warning: returns error if the slot was never saved."))
+		.RequiredInteger(TEXT("index"), TEXT("Bookmark slot index"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("set_grid_snap"),
+		TEXT("Enable/disable position grid snap and optionally pick the grid size index. "
+			 "Effect: mutates ULevelEditorViewportSettings. "
+			 "Params: enabled (bool), grid_size_index (integer >=0, optional; indexes into Pow2GridSizes/DecimalGridSizes)."))
+		.RequiredBool(TEXT("enabled"), TEXT("true=snap to grid, false=disable"))
+		.OptionalInteger(TEXT("grid_size_index"), TEXT("Index into the grid size array"))
+		.Build());
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("toggle_realtime");
+		Tool.Description = TEXT("Toggle viewport realtime mode. Effect: when on, viewport animates; off saves CPU. "
+			"Workflow: disable when positioning camera precisely, enable for playback preview.");
+		Tools.Add(Tool);
+	}
+
 	return Tools;
 }

@@ -7,9 +7,10 @@
 
 /**
  * Streaming Service
- * 
+ *
  * Level streaming management for large worlds.
- * Methods: list_levels, load_level, unload_level, set_level_visibility
+ * Methods: list_levels, load_level, unload_level, set_level_visibility,
+ *          set_level_streaming_volume.
  */
 class SPECIALAGENT_API FStreamingService : public IMCPService
 {
@@ -27,8 +28,6 @@ private:
 	FMCPResponse HandleLoadLevel(const FMCPRequest& Request);
 	FMCPResponse HandleUnloadLevel(const FMCPRequest& Request);
 	FMCPResponse HandleSetLevelVisibility(const FMCPRequest& Request);
-	
-	// Helper method for executing Python scripts
-	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
+	FMCPResponse HandleSetLevelStreamingVolume(const FMCPRequest& Request);
 };
 

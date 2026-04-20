@@ -7,9 +7,10 @@
 
 /**
  * Landscape Service
- * 
+ *
  * Terrain sculpting and material layer painting.
- * Methods: get_info, sculpt_height, flatten_area, smooth_area, paint_layer
+ * Methods: get_info, sculpt_height, flatten_area, smooth_area,
+ *          paint_layer, list_layers
  */
 class SPECIALAGENT_API FLandscapeService : public IMCPService
 {
@@ -28,8 +29,5 @@ private:
 	FMCPResponse HandleFlattenArea(const FMCPRequest& Request);
 	FMCPResponse HandleSmoothArea(const FMCPRequest& Request);
 	FMCPResponse HandlePaintLayer(const FMCPRequest& Request);
-	
-	// Helper method for executing Python scripts
-	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
+	FMCPResponse HandleListLayers(const FMCPRequest& Request);
 };
-

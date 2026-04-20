@@ -7,9 +7,12 @@
 
 /**
  * Gameplay Service
- * 
- * Spawn gameplay-related actors like trigger volumes and player starts.
- * Methods: spawn_trigger_volume, spawn_player_start
+ *
+ * Spawn gameplay-related actors such as trigger volumes, player starts,
+ * notes, target points, kill-Z volumes, and blocking volumes.
+ *
+ * Methods: spawn_trigger_volume, spawn_player_start, spawn_note,
+ *          spawn_target_point, spawn_killz_volume, spawn_blocking_volume.
  */
 class SPECIALAGENT_API FGameplayService : public IMCPService
 {
@@ -25,8 +28,8 @@ public:
 private:
 	FMCPResponse HandleSpawnTriggerVolume(const FMCPRequest& Request);
 	FMCPResponse HandleSpawnPlayerStart(const FMCPRequest& Request);
-	
-	// Helper method for executing Python scripts
-	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
+	FMCPResponse HandleSpawnNote(const FMCPRequest& Request);
+	FMCPResponse HandleSpawnTargetPoint(const FMCPRequest& Request);
+	FMCPResponse HandleSpawnKillZVolume(const FMCPRequest& Request);
+	FMCPResponse HandleSpawnBlockingVolume(const FMCPRequest& Request);
 };
-

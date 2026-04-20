@@ -7,9 +7,10 @@
 
 /**
  * Navigation Service
- * 
+ *
  * Navigation mesh management and pathfinding testing.
- * Methods: rebuild_navmesh, test_path
+ * Methods: rebuild_navmesh, test_path, get_navmesh_bounds,
+ *          find_nearest_reachable_point.
  */
 class SPECIALAGENT_API FNavigationService : public IMCPService
 {
@@ -25,8 +26,7 @@ public:
 private:
 	FMCPResponse HandleRebuildNavMesh(const FMCPRequest& Request);
 	FMCPResponse HandleTestPath(const FMCPRequest& Request);
-	
-	// Helper method for executing Python scripts
-	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
+	FMCPResponse HandleGetNavMeshBounds(const FMCPRequest& Request);
+	FMCPResponse HandleFindNearestReachablePoint(const FMCPRequest& Request);
 };
 

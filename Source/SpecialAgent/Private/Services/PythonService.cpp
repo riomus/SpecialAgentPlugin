@@ -26,7 +26,10 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("execute");
-		Tool.Description = TEXT("Execute Python with full UE5 API. Use for: spawning actors (unreal.EditorLevelLibrary), modifying properties, batch operations, anything not covered by other tools. Import 'unreal' module is automatic.");
+		Tool.Description = TEXT("Execute arbitrary Python code via IPythonScriptPlugin in the game thread with full UE5 API. Returns {success, stdout, stderr, execution_time}. "
+			"Params: code (string, Python source; 'unreal' module is auto-imported, required); timeout (number seconds, default 30). "
+			"Workflow: use as an escape hatch when no direct tool exists — prefer world/*, assets/*, blueprint/* etc. for supported operations. "
+			"Warning: runs on the game thread and can crash the editor; side-effects are not inside an undo transaction unless you wrap them with utility/begin_transaction.");
 		
 		TSharedPtr<FJsonObject> CodeParam = MakeShared<FJsonObject>();
 		CodeParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -46,7 +49,10 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("execute_file");
-		Tool.Description = TEXT("Execute a Python script file from the Content/Python directory.");
+		Tool.Description = TEXT("Execute a Python script file on disk via IPythonScriptPlugin. Returns {success, stdout, stderr, execution_time}. "
+			"Params: file_path (string, path relative to Content/Python/ or absolute, required). "
+			"Workflow: use for reusable multi-line scripts; pair with python/list_modules to discover available scripts. "
+			"Warning: no arg passing — all inputs must be embedded in the script file.");
 		
 		TSharedPtr<FJsonObject> FilePathParam = MakeShared<FJsonObject>();
 		FilePathParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -61,7 +67,8 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("list_modules");
-		Tool.Description = TEXT("List available Python modules and scripts.");
+		Tool.Description = TEXT("List Python scripts found under the project's Content/Python/ directory. Returns {files:[relative_path], count}. "
+			"Workflow: call before python/execute_file to discover candidate script paths.");
 		Tools.Add(Tool);
 	}
 	

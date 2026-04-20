@@ -3,6 +3,7 @@
 #include "SpecialAgentModule.h"
 #include "MCPServer.h"
 #include "MCPStatusBarWidget.h"
+#include "MCPCommon/MCPGameThreadProcessor.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 #include "LevelEditor.h"
@@ -54,11 +55,20 @@ void FSpecialAgentModule::StartupModule()
 
 	// Register status bar widget
 	RegisterStatusBarWidget();
+
+	// Touch the processor on the game thread so its FTickableEditorObject
+	// registration happens on the right thread before any HTTP worker enqueues.
+	FMCPGameThreadProcessor::Get();
 }
 
 void FSpecialAgentModule::ShutdownModule()
 {
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Module shutting down"));
+
+	// Drain the game-thread processor and block subsequent Enqueue calls
+	// before tearing anything else down. Any HTTP worker mid-Enqueue will
+	// now fast-fail instead of hanging its .Get().
+	FMCPGameThreadProcessor::Get().Shutdown();
 
 	UnregisterStatusBarWidget();
 
