@@ -4,6 +4,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "Editor.h"
 #include "Engine/World.h"
@@ -133,7 +134,7 @@ FString FModelingService::GetServiceDescription() const
     return TEXT("Mesh modeling via Geometry Script - boolean, extrude, and simplify static mesh actors");
 }
 
-FMCPResponse FModelingService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FModelingService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("boolean_union"))    return HandleBooleanUnion(Request);
     if (MethodName == TEXT("boolean_subtract")) return HandleBooleanSubtract(Request);

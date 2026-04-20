@@ -4,6 +4,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
@@ -22,7 +23,7 @@ FString FMaterialService::GetServiceDescription() const
 	return TEXT("Material authoring - create UMaterial / UMaterialInstanceConstant assets and edit parameters");
 }
 
-FMCPResponse FMaterialService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FMaterialService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("create")) return HandleCreate(Request);
 	if (MethodName == TEXT("create_instance")) return HandleCreateInstance(Request);

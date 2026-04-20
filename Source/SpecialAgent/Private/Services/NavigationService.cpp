@@ -5,6 +5,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "Editor.h"
 #include "EditorBuildUtils.h"
@@ -23,7 +24,7 @@ FString FNavigationService::GetServiceDescription() const
 	return TEXT("Navigation mesh management - rebuild navmesh, test synchronous paths, query navmesh bounds and projected points");
 }
 
-FMCPResponse FNavigationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FNavigationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("rebuild_navmesh")) return HandleRebuildNavMesh(Request);
 	if (MethodName == TEXT("test_path")) return HandleTestPath(Request);
