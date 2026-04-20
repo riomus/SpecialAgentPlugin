@@ -5,6 +5,7 @@
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Editor.h"
@@ -25,7 +26,7 @@ FString FFoliageService::GetServiceDescription() const
 	return TEXT("Foliage management - paint, remove, and inspect instanced foliage");
 }
 
-FMCPResponse FFoliageService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FFoliageService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("paint_in_area"))      return HandlePaintInArea(Request);
 	if (MethodName == TEXT("remove_from_area"))   return HandleRemoveFromArea(Request);

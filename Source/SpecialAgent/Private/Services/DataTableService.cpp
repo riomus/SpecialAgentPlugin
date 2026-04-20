@@ -45,7 +45,7 @@ FString FDataTableService::GetServiceDescription() const
     return TEXT("Read and write data table rows via reflection");
 }
 
-FMCPResponse FDataTableService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FDataTableService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("list_tables"))
     {

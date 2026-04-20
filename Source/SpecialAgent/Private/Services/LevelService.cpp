@@ -4,6 +4,7 @@
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Editor.h"
@@ -55,7 +56,7 @@ TArray<FMCPToolInfo> FLevelService::GetAvailableTools() const
     return Tools;
 }
 
-FMCPResponse FLevelService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FLevelService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("open"))
     {

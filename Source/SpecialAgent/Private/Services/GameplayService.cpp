@@ -3,6 +3,7 @@
 #include "Services/GameplayService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 #include "Editor.h"
 #include "Engine/World.h"
@@ -78,7 +79,7 @@ namespace
 	}
 }
 
-FMCPResponse FGameplayService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FGameplayService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("spawn_trigger_volume"))  return HandleSpawnTriggerVolume(Request);
 	if (MethodName == TEXT("spawn_player_start"))    return HandleSpawnPlayerStart(Request);

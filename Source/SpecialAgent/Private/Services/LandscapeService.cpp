@@ -5,6 +5,7 @@
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Editor.h"
@@ -29,7 +30,7 @@ FString FLandscapeService::GetServiceDescription() const
 	return TEXT("Landscape terrain editing - sculpt, flatten, smooth, and paint layers");
 }
 
-FMCPResponse FLandscapeService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FLandscapeService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("get_info"))      return HandleGetInfo(Request);
 	if (MethodName == TEXT("sculpt_height")) return HandleSculptHeight(Request);

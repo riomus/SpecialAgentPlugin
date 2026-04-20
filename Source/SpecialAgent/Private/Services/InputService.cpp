@@ -4,6 +4,7 @@
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "GameFramework/InputSettings.h"
@@ -91,7 +92,7 @@ FString FInputService::GetServiceDescription() const
     return TEXT("Input mapping query and edit (legacy UInputSettings + Enhanced Input)");
 }
 
-FMCPResponse FInputService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FInputService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     // Legacy UInputSettings
     if (MethodName == TEXT("list_mappings"))          return HandleListMappings(Request);
