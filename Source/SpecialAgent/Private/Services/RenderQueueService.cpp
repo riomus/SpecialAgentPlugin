@@ -6,6 +6,7 @@
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Editor.h"
+#include "Graph/MovieGraphConfig.h"
 #include "LevelSequence.h"
 #include "MoviePipelineExecutor.h"
 #include "MoviePipelineOutputSetting.h"
@@ -33,11 +34,15 @@ TArray<FMCPToolInfo> FRenderQueueService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("queue_sequence"),
         TEXT("Add a Level Sequence as a new render job in the Movie Pipeline Queue. Returns the job index. "
-             "Params: sequence_path (string, /Game/... ULevelSequence), job_name (string, optional). "
-             "Workflow: queue_sequence -> set_output -> (render via UI or executor). "
-             "Warning: does not start the render; use the Movie Render Queue UI or an executor."))
+             "Params: sequence_path (string, /Game/... ULevelSequence), job_name (string, optional), "
+             "config_path (string, optional asset path to a UMoviePipelinePrimaryConfig or UMovieGraphConfig). "
+             "Workflow: queue_sequence -> set_output (classic configs only) -> (render via UI or executor). "
+             "Warning: does not start the render; use the Movie Render Queue UI or an executor. "
+             "When config_path points at a UMovieGraphConfig the graph preset is applied via SetGraphPreset "
+             "and set_output is not applicable (edit the graph's Output node instead)."))
         .RequiredString(TEXT("sequence_path"), TEXT("Asset path to ULevelSequence"))
         .OptionalString(TEXT("job_name"), TEXT("Human-readable job name shown in the queue"))
+        .OptionalString(TEXT("config_path"), TEXT("Asset path to UMoviePipelinePrimaryConfig or UMovieGraphConfig (graph preset)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_output"),
@@ -94,7 +99,10 @@ FMCPResponse FRenderQueueService::HandleQueueSequence(const FMCPRequest& Request
     FString JobName;
     FMCPJson::ReadString(Request.Params, TEXT("job_name"), JobName);
 
-    auto Task = [SequencePath, JobName]() -> TSharedPtr<FJsonObject>
+    FString ConfigPath;
+    const bool bHasConfigPath = FMCPJson::ReadString(Request.Params, TEXT("config_path"), ConfigPath) && !ConfigPath.IsEmpty();
+
+    auto Task = [SequencePath, JobName, ConfigPath, bHasConfigPath]() -> TSharedPtr<FJsonObject>
     {
         UMoviePipelineQueue* Queue = GetQueue();
         if (!Queue)
@@ -108,6 +116,29 @@ FMCPResponse FRenderQueueService::HandleQueueSequence(const FMCPRequest& Request
             return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load sequence: %s"), *SequencePath));
         }
 
+        // Resolve optional config asset and decide which branch to use.
+        UMovieGraphConfig* GraphConfig = nullptr;
+        UMoviePipelinePrimaryConfig* ClassicConfig = nullptr;
+        if (bHasConfigPath)
+        {
+            UObject* ConfigObj = LoadObject<UObject>(nullptr, *ConfigPath);
+            if (!ConfigObj)
+            {
+                return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load config: %s"), *ConfigPath));
+            }
+            GraphConfig = Cast<UMovieGraphConfig>(ConfigObj);
+            if (!GraphConfig)
+            {
+                ClassicConfig = Cast<UMoviePipelinePrimaryConfig>(ConfigObj);
+            }
+            if (!GraphConfig && !ClassicConfig)
+            {
+                return FMCPJson::MakeError(FString::Printf(
+                    TEXT("config_path '%s' is neither UMovieGraphConfig nor UMoviePipelinePrimaryConfig (got %s)"),
+                    *ConfigPath, *ConfigObj->GetClass()->GetName()));
+            }
+        }
+
         UMoviePipelineExecutorJob* Job = Queue->AllocateNewJob(UMoviePipelineExecutorJob::StaticClass());
         if (!Job)
         {
@@ -117,10 +148,27 @@ FMCPResponse FRenderQueueService::HandleQueueSequence(const FMCPRequest& Request
         Job->SetSequence(FSoftObjectPath(Sequence));
         Job->JobName = JobName.IsEmpty() ? Sequence->GetName() : JobName;
 
-        // Seed the configuration with a default Output setting so set_output works without re-adding.
-        if (UMoviePipelinePrimaryConfig* Config = Job->GetConfiguration())
+        FString ConfigKind;
+        if (GraphConfig)
         {
-            Config->FindOrAddSettingByClass(UMoviePipelineOutputSetting::StaticClass());
+            // Graph-config path (UE 5.5+): assign the preset; the graph's Output node supplies output settings.
+            Job->SetGraphPreset(GraphConfig);
+            ConfigKind = TEXT("graph");
+        }
+        else
+        {
+            // Classic path: either use the provided UMoviePipelinePrimaryConfig, or the auto-allocated default.
+            if (ClassicConfig)
+            {
+                Job->SetConfiguration(ClassicConfig);
+            }
+
+            // Seed a default Output setting on the classic config so set_output works without re-adding.
+            if (UMoviePipelinePrimaryConfig* Config = Job->GetConfiguration())
+            {
+                Config->FindOrAddSettingByClass(UMoviePipelineOutputSetting::StaticClass());
+            }
+            ConfigKind = TEXT("classic");
         }
 
         const int32 JobIndex = Queue->GetJobs().Find(Job);
@@ -129,6 +177,11 @@ FMCPResponse FRenderQueueService::HandleQueueSequence(const FMCPRequest& Request
         Result->SetNumberField(TEXT("job_index"), JobIndex);
         Result->SetStringField(TEXT("job_name"), Job->JobName);
         Result->SetStringField(TEXT("sequence_path"), SequencePath);
+        Result->SetStringField(TEXT("config_kind"), ConfigKind);
+        if (bHasConfigPath)
+        {
+            Result->SetStringField(TEXT("config_path"), ConfigPath);
+        }
         return Result;
     };
 
@@ -252,6 +305,8 @@ FMCPResponse FRenderQueueService::HandleGetStatus(const FMCPRequest& Request)
             JobObj->SetStringField(TEXT("status"), State);
             JobObj->SetStringField(TEXT("status_message"), Job->GetStatusMessage());
             JobObj->SetNumberField(TEXT("progress"), Job->GetStatusProgress());
+            JobObj->SetStringField(TEXT("config_kind"),
+                Job->IsUsingGraphConfiguration() ? TEXT("graph") : TEXT("classic"));
             JobArr.Add(MakeShared<FJsonValueObject>(JobObj));
         }
 
