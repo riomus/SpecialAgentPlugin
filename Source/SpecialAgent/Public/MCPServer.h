@@ -11,6 +11,7 @@
 #include "Containers/Queue.h"
 
 class FMCPRequestRouter;
+class FSATcpServer;
 struct FMCPRequest;
 struct FMCPResponse;
 
@@ -108,6 +109,9 @@ private:
 private:
 	/** HTTP router */
 	TSharedPtr<IHttpRouter> HttpRouter;
+
+	/** Raw-TCP transport (Phase 1: side-by-side on :8768; cuts over to :8767 in Phase 1.9). */
+	TUniquePtr<FSATcpServer> RawServer;
 
 	/** Route handles for cleanup */
 	FHttpRouteHandle SSERouteHandle;

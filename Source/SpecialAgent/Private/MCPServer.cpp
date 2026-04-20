@@ -2,6 +2,7 @@
 
 #include "MCPServer.h"
 #include "MCPRequestRouter.h"
+#include "Transport/SATcpServer.h"
 #include "Async/Async.h"
 #include "JsonObjectConverter.h"
 #include "Serialization/JsonSerializer.h"
@@ -106,6 +107,13 @@ bool FSpecialAgentMCPServer::StartServer(int32 Port)
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Message endpoint: http://localhost:%d/message"), ServerPort);
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Health endpoint: http://localhost:%d/health"), ServerPort);
 
+	// Raw TCP transport on :8768 (Phase 1 side-by-side validation; Phase 1.9 cuts over to ServerPort).
+	RawServer = MakeUnique<FSATcpServer>(RequestRouter);
+	if (!RawServer->Start(8768))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: raw TCP transport failed to bind 8768"));
+	}
+
 	return true;
 }
 
@@ -117,6 +125,9 @@ void FSpecialAgentMCPServer::StopServer()
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: MCP Server stopping"));
+
+	// Stop raw-TCP transport first.
+	if (RawServer) { RawServer->Stop(); RawServer.Reset(); }
 
 	// Unbind routes
 	if (HttpRouter.IsValid())
