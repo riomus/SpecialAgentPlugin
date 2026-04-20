@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Services/StreamingService.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
@@ -21,7 +22,7 @@ FString FStreamingService::GetServiceDescription() const
 	return TEXT("Level streaming management - list, load, unload, and control visibility of sublevels and streaming volumes");
 }
 
-FMCPResponse FStreamingService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FStreamingService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("list_levels")) return HandleListLevels(Request);
 	if (MethodName == TEXT("load_level")) return HandleLoadLevel(Request);

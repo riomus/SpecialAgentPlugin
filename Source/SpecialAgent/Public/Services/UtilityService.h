@@ -18,7 +18,7 @@ public:
 	virtual ~FUtilityService() = default;
 
 	// IMCPService interface
-	virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) override;
+	virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx) override;
 	virtual FString GetServiceDescription() const override;
 	virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
 

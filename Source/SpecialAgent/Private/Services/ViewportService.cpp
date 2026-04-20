@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Services/ViewportService.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
@@ -29,7 +30,7 @@ FString FViewportService::GetServiceDescription() const
 	return TEXT("Viewport camera control - position camera for screenshot capture");
 }
 
-FMCPResponse FViewportService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FViewportService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("set_location")) return HandleSetLocation(Request);
 	if (MethodName == TEXT("set_rotation")) return HandleSetRotation(Request);

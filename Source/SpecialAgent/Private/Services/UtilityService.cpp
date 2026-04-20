@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Services/UtilityService.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
@@ -40,7 +41,7 @@ FString FUtilityService::GetServiceDescription() const
 	return TEXT("Editor utilities - save, undo/redo, and selection management");
 }
 
-FMCPResponse FUtilityService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FUtilityService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("save_level")) return HandleSaveLevel(Request);
 	if (MethodName == TEXT("undo")) return HandleUndo(Request);

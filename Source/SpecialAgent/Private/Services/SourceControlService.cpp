@@ -1,4 +1,5 @@
 #include "Services/SourceControlService.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
@@ -65,7 +66,7 @@ FString FSourceControlService::GetServiceDescription() const
     return TEXT("Source control (revision control) - status, check-out, revert, submit files");
 }
 
-FMCPResponse FSourceControlService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FSourceControlService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("get_status"))     return HandleGetStatus(Request);
     if (MethodName == TEXT("check_out"))      return HandleCheckOut(Request);

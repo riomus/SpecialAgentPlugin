@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Services/WorldPartitionService.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
@@ -89,7 +90,7 @@ FString FWorldPartitionService::GetServiceDescription() const
 	return TEXT("World Partition cell loading and streaming - enumerate, load, unload, and force-load regions");
 }
 
-FMCPResponse FWorldPartitionService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FWorldPartitionService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("list_cells")) return HandleListCells(Request);
 	if (MethodName == TEXT("load_cell")) return HandleLoadCell(Request);
