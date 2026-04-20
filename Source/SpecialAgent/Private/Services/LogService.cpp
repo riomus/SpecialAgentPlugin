@@ -15,6 +15,7 @@
 #include "Misc/OutputDevice.h"
 #include "Misc/OutputDeviceNull.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "Misc/StringOutputDevice.h"
 
 namespace SpecialAgentLogRing
 {
@@ -262,8 +263,15 @@ FMCPResponse FLogService::HandleRequest(const FMCPRequest& Request, const FStrin
                 FString::Printf(TEXT("Unknown verbosity '%s'"), *VerbosityName));
         }
 
-        // The log suppression system supports the "log <Category> <Verbosity>" console
-        // command which looks up the category by name and applies the verbosity.
+        // Why the console shim instead of a direct API:
+        //   - FLogCategoryBase::SetVerbosity() exists but requires a pointer to a specific category
+        //     instance. Category instances are per-TU globals (LogTemp, LogSlate, etc).
+        //   - UE 5.7 Core does NOT expose a public lookup-by-name API; FLogSuppressionInterface only
+        //     exposes AssociateSuppress/DisassociateSuppress/ProcessConfigAndCommandLine. The name
+        //     -> FLogCategoryBase* multimap is private to FLogSuppressionImplementation.
+        //   - The "log <Cat> <Verb>" console command is implemented by FLogSuppressionImplementation
+        //     and is the supported public path. It logs one line per affected category to the
+        //     provided FOutputDevice, which we capture to detect "no category matched".
         const FString Verbosity_c = VerbosityName;
         TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(
             [CategoryName, Verbosity_c]() -> TSharedPtr<FJsonObject>
@@ -273,15 +281,37 @@ FMCPResponse FLogService::HandleRequest(const FMCPRequest& Request, const FStrin
                     return FMCPJson::MakeError(TEXT("GEngine/GLog unavailable"));
                 }
                 const FString Cmd = FString::Printf(TEXT("log %s %s"), *CategoryName, *Verbosity_c);
-                FOutputDeviceNull Null;
-                const bool bExecuted = GEngine->Exec(nullptr, *Cmd, Null);
+                FStringOutputDevice Captured;
+                const bool bExecuted = GEngine->Exec(nullptr, *Cmd, Captured);
+
+                // The LOG exec writes one "<name>  <verbosity>  ..." line per category whose
+                // verbosity actually changed. Empty output => either the category name did not
+                // match anything registered, OR the category was already at the requested level.
+                // We cannot disambiguate without private API, so we surface an advisory.
+                // Resolve IsEmpty() via the FString base explicitly (FStringOutputDevice has two
+                // parent classes).
+                const FString& CapturedStr = static_cast<const FString&>(Captured);
+                const bool bAnyCategoryAffected = !CapturedStr.IsEmpty();
 
                 TSharedPtr<FJsonObject> OutInner = FMCPJson::MakeSuccess();
                 OutInner->SetStringField(TEXT("category"), CategoryName);
                 OutInner->SetStringField(TEXT("verbosity"), Verbosity_c);
                 OutInner->SetBoolField(TEXT("executed"), bExecuted);
-                UE_LOG(LogTemp, Log, TEXT("SpecialAgent: set verbosity %s = %s (exec=%d)"),
-                    *CategoryName, *Verbosity_c, bExecuted ? 1 : 0);
+                OutInner->SetBoolField(TEXT("any_category_affected"), bAnyCategoryAffected);
+                if (bAnyCategoryAffected)
+                {
+                    OutInner->SetStringField(TEXT("affected"), CapturedStr.TrimStartAndEnd());
+                }
+                else
+                {
+                    OutInner->SetStringField(TEXT("advisory"), FString::Printf(
+                        TEXT("No category rows were emitted by the LOG command. Either '%s' is not a "
+                             "registered category, or it was already at verbosity '%s'. "
+                             "Category names are case-insensitive."),
+                        *CategoryName, *Verbosity_c));
+                }
+                UE_LOG(LogTemp, Log, TEXT("SpecialAgent: set verbosity %s = %s (exec=%d, affected=%d)"),
+                    *CategoryName, *Verbosity_c, bExecuted ? 1 : 0, bAnyCategoryAffected ? 1 : 0);
                 return OutInner;
             });
         return FMCPResponse::Success(Request.Id, Result);
