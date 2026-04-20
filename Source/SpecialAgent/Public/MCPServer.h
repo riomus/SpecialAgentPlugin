@@ -3,39 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "HttpServerModule.h"
-#include "IHttpRouter.h"
-#include "HttpRouteHandle.h"
-#include "HttpServerRequest.h"
-#include "HttpServerResponse.h"
-#include "Containers/Queue.h"
 
 class FMCPRequestRouter;
-class FSATcpServer;
 struct FMCPRequest;
 struct FMCPResponse;
-
-/**
- * SSE Client Connection
- * Represents an active Server-Sent Events connection
- */
-struct FSSEConnection
-{
-	FString SessionId;
-	TSharedPtr<FHttpServerResponse> Response;
-	FDateTime ConnectedTime;
-	bool bIsValid;
-
-	FSSEConnection()
-		: bIsValid(false)
-	{}
-};
+class FSATcpServer;
 
 /**
  * MCP Server Implementation
- * 
- * Implements the Model Context Protocol with native HTTP/SSE transport.
- * Handles incoming requests from MCP clients (like Cursor) and routes them to appropriate services.
+ *
+ * Owns the raw-TCP transport (FSATcpServer) and the request router.
+ * Handles incoming requests from MCP clients (Claude Code, Cursor, custom)
+ * over HTTP/1.1 + SSE on a single port.
  */
 class SPECIALAGENT_API FSpecialAgentMCPServer
 {
@@ -44,7 +23,7 @@ public:
 	~FSpecialAgentMCPServer();
 
 	/**
-	 * Start the MCP HTTP server on the specified port
+	 * Start the MCP server on the specified port
 	 * @param Port The port to listen on (default 8767)
 	 * @return true if server started successfully
 	 */
@@ -55,99 +34,47 @@ public:
 	 */
 	void StopServer();
 
-	/**
-	 * Check if the server is running
-	 */
+	/** Check if the server is running */
 	bool IsRunning() const { return bIsRunning; }
 
-	/**
-	 * Get the request router
-	 */
+	/** Get the request router */
 	TSharedPtr<FMCPRequestRouter> GetRouter() const { return RequestRouter; }
 
-	/**
-	 * Get number of recently connected clients (based on recent request activity)
-	 */
+	/** Number of recently connected clients (based on recent request activity). */
 	int32 GetConnectedClientCount() const;
 
-	/**
-	 * Record a client request (called internally to track activity)
-	 */
+	/** Record a client request (called by the transport to track activity). */
 	void RecordClientActivity();
 
-	/** Parse JSON-RPC request from body (static — used by new raw TCP transport). */
+	/** Parse JSON-RPC request from body (static — used by the raw-TCP transport). */
 	static bool ParseRequest(const FString& JsonString, FMCPRequest& OutRequest);
 
-	/** Format JSON-RPC response (static — used by new raw TCP transport). */
+	/** Format JSON-RPC response (static — used by the raw-TCP transport). */
 	static FString FormatResponse(const FMCPResponse& Response);
 
 private:
-	/** Handle SSE connection request (GET /sse) */
-	bool HandleSSEConnection(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
-
-	/** Handle MCP message request (POST /message) */
-	bool HandleMessage(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
-
-	/** Handle health check (GET /health) */
-	bool HandleHealth(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
-
-	/** Handle CORS preflight (OPTIONS) */
-	bool HandleCORS(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
-
-	/** Send SSE event to a specific session */
-	void SendSSEEvent(const FString& SessionId, const FString& EventType, const FString& Data);
-
-	/** Send SSE event to all connected clients */
-	void BroadcastSSEEvent(const FString& EventType, const FString& Data);
-
-	/** Generate unique session ID */
-	FString GenerateSessionId();
-
-	/** Clean up stale connections */
-	void CleanupConnections();
-
-private:
-	/** HTTP router */
-	TSharedPtr<IHttpRouter> HttpRouter;
-
-	/** Raw-TCP transport (Phase 1: side-by-side on :8768; cuts over to :8767 in Phase 1.9). */
+	/** Raw-TCP transport (FTcpListener + FSAConnection). Owns the listening socket. */
 	TUniquePtr<FSATcpServer> RawServer;
 
-	/** Route handles for cleanup */
-	FHttpRouteHandle SSERouteHandle;
-	FHttpRouteHandle MessageRouteHandle;
-	FHttpRouteHandle HealthRouteHandle;
-
-	/** Request router */
+	/** Request router (shared with RawServer). */
 	TSharedPtr<FMCPRequestRouter> RequestRouter;
 
-	/** Active SSE connections */
-	TMap<FString, TSharedPtr<FSSEConnection>> SSEConnections;
-
-	/** Pending responses to send via SSE */
-	TQueue<TPair<FString, FString>> PendingSSEResponses;
-
-	/** Server running flag */
+	/** Server running flag. */
 	bool bIsRunning;
 
-	/** Server port */
+	/** Server port (from StartServer). */
 	int32 ServerPort;
 
-	/** Critical section for thread safety */
-	FCriticalSection ConnectionsLock;
-
-	/** Last time we received a request from a client */
+	/** Last time we received a request from a client. */
 	FDateTime LastClientActivity;
 
-	/** Consider client "connected" if activity within this many seconds */
+	/** Consider client "connected" if activity within this many seconds. */
 	static constexpr double ClientActivityTimeoutSeconds = 30.0;
 };
 
 
 /**
- * MCP Request Structure
- * 
- * Represents a JSON-RPC 2.0 request
+ * MCP Request Structure (JSON-RPC 2.0).
  */
 struct FMCPRequest
 {
@@ -156,16 +83,12 @@ struct FMCPRequest
 	TSharedPtr<FJsonObject> Params;
 	FString Id;  // Can be string or number
 
-	FMCPRequest()
-		: JsonRpc(TEXT("2.0"))
-	{}
+	FMCPRequest() : JsonRpc(TEXT("2.0")) {}
 };
 
 
 /**
- * MCP Response Structure
- * 
- * Represents a JSON-RPC 2.0 response
+ * MCP Response Structure (JSON-RPC 2.0).
  */
 struct FMCPResponse
 {
@@ -176,10 +99,7 @@ struct FMCPResponse
 
 	bool bSuccess;
 
-	FMCPResponse()
-		: JsonRpc(TEXT("2.0"))
-		, bSuccess(true)
-	{}
+	FMCPResponse() : JsonRpc(TEXT("2.0")), bSuccess(true) {}
 
 	/** Create success response */
 	static FMCPResponse Success(const FString& InId, TSharedPtr<FJsonObject> InResult)
