@@ -1026,9 +1026,21 @@ git commit -m "feat(SpecialAgent/transport): add FSAConnection skeleton (health/
 - Create: `Source/SpecialAgent/Private/Transport/SATcpServer.h`
 - Create: `Source/SpecialAgent/Private/Transport/SATcpServer.cpp`
 
-- [ ] **Step 1: Make ParseRequest / FormatResponse accessible**
+- [ ] **Step 1: Make ParseRequest / FormatResponse public static**
 
-In `MCPServer.h`, move `ParseRequest` and `FormatResponse` to `public: static` section. (They are already static; just move access.)
+Currently in `MCPServer.h` (line 91 / 94) these are **non-static member functions** and their bodies (in `MCPServer.cpp:330` / `:372`) do not reference `this`. Change both the declaration and the definition to `static`:
+
+```cpp
+// MCPServer.h — move to public: and add static
+public:
+    static bool ParseRequest(const FString& JsonString, FMCPRequest& OutRequest);
+    static FString FormatResponse(const FMCPResponse& Response);
+```
+
+```cpp
+// MCPServer.cpp — drop the scope qualifier on the implementation's "FSpecialAgentMCPServer::" keyword? no, keep it; just make sure the .h is updated and the .cpp compiles.
+// Definitions stay as "bool FSpecialAgentMCPServer::ParseRequest(...)" etc.
+```
 
 - [ ] **Step 2: Write FSATcpServer header**
 
@@ -1106,10 +1118,20 @@ bool FSATcpServer::HandleAccept(FSocket* ClientSocket, const FIPv4Endpoint& Endp
     FScopeLock L(&ActiveLock);
     if (Active.Num() >= SATransport::MaxConnections)
     {
-        // 503 then close. Done on a fire-and-forget thread so we don't block accept.
-        auto* Reject = new FSAConnection(this, ClientSocket, Router);
-        Reject->RequestStop();  // Run() will write the best-effort close; we just leak the thread here intentionally — simpler than juggling threads for a reject path.
-        delete Reject;
+        // Write a plain 503 directly to the raw socket without spawning a thread,
+        // then destroy it. Matches the spec's error table for too-many-connections.
+        const char* Msg =
+            "HTTP/1.1 503 Service Unavailable\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: 23\r\n"
+            "Connection: close\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "\r\n"
+            "service temporarily busy";
+        int32 Sent = 0;
+        ClientSocket->Send((const uint8*)Msg, FCStringAnsi::Strlen(Msg), Sent);
+        if (ISocketSubsystem* SS = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
+            SS->DestroySocket(ClientSocket);
         return true;
     }
     FSAConnection* Conn = new FSAConnection(this, ClientSocket, Router);
@@ -1591,15 +1613,24 @@ git commit -m "feat(SpecialAgent/transport): populate FMCPRequestContext from re
 - Modify: `Source/SpecialAgent/Private/Transport/SAConnection.cpp`
 - Modify: `docs/superpowers/specs/sse-transport-smoke.sh`
 
-- [ ] **Step 1: Mint session in initialize**
+- [ ] **Step 1: Mint session id in SAConnection (transport owns it; router stays protocol-ignorant)**
 
-In `FMCPRequestRouter::HandleInitialize`, at the end, register the minted id on the response. The response struct doesn't carry headers today — pass it back via `FMCPRequestContext` being mutable, or add an `FString OutSessionId` on `FMCPResponse`. Pick the latter — smaller change.
+In `FSAConnection::HandlePostMCP` (and `HandlePostMCPSSE`), after parsing `Msg` but before dispatch:
 
-- [ ] **Step 2: Thread session id from response to HTTP header in SAConnection**
+```cpp
+FString MintedSessionId;
+if (Msg.Method == TEXT("initialize"))
+{
+    MintedSessionId = FSASessionRegistry::Get().MintSession();
+}
+// pass MintedSessionId into response-writing below
+```
 
-When `Msg.Method == "initialize"`, mint via `FSASessionRegistry::Get().MintSession()` and add the `Mcp-Session-Id` response header. (Simpler and keeps the router ignorant of transport.)
+Write the `Mcp-Session-Id` response header only when `MintedSessionId` is non-empty. Pass the header through `ExtraHeaders` to `FSAHttpResponse::WriteSingleBody(...)` / `BeginSSE(...)`.
 
-- [ ] **Step 3: Validate on non-initialize POSTs**
+No change to `FMCPResponse` struct. No change to `FMCPRequestRouter`.
+
+- [ ] **Step 2: Validate on non-initialize POSTs**
 
 In `HandlePostMCP`, before dispatch:
 
@@ -1622,11 +1653,11 @@ if (Msg.Method != TEXT("initialize"))
 }
 ```
 
-- [ ] **Step 4: Update smoke script**
+- [ ] **Step 3: Update smoke script**
 
 Cases 5 and 7 now enforce and should pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add Source/SpecialAgent
@@ -1737,9 +1768,14 @@ git commit -m "feat(SpecialAgent/transport): bind FMCPRequestContext::SendProgre
 ### Task 3b.3: Smoke-test progress emission
 
 **Files:**
-- Temp-modify: pick one service (suggest `FPythonService::HandleExecute`) to emit `Ctx.SendProgress(0.5, 1.0, TEXT("half"))` once.
+- Temp-modify: `Source/SpecialAgent/Private/Services/PythonService.cpp` — emit `Ctx.SendProgress(0.5, 1.0, TEXT("half"))` exactly once inside `FPythonService::HandleExecute`, immediately after the `IPythonScriptPlugin` availability check (so it fires before the real work).
 
-- [ ] **Step 1: Add a single SendProgress call in the chosen handler (TEMPORARY)**
+- [ ] **Step 1: Insert the temporary SendProgress call in `HandleExecute`**
+
+```cpp
+// In FPythonService::HandleExecute, right after the !PythonPlugin early-return:
+Ctx.SendProgress(0.5, 1.0, TEXT("half"));
+```
 
 - [ ] **Step 2: Run the GET /sse smoke**
 
