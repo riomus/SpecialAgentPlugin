@@ -88,6 +88,8 @@ public class SpecialAgent : ModuleRules
 				"MeshModelingTools",
 				"ContentBrowserData",
 				"ContentBrowser",
+				"DataValidation",
+				"MessageLog",
 			}
 		);
 		

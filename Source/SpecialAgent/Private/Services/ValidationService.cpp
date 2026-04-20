@@ -9,86 +9,123 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
-#include "EditorAssetLibrary.h"
+#include "EditorValidatorSubsystem.h"
+#include "Engine/Selection.h"
 #include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "IContentBrowserSingleton.h"
+#include "IMessageLogListing.h"
 #include "Logging/MessageLog.h"
 #include "Logging/TokenizedMessage.h"
+#include "MessageLogModule.h"
 #include "Misc/DataValidation.h"
+#include "Modules/ModuleManager.h"
 #include "UObject/Object.h"
+#include "UObject/Package.h"
 
 namespace
 {
-    // Runs UObject::IsDataValid(FDataValidationContext&) — always available in CoreUObject,
-    // independent of the DataValidation editor plugin.
-    TSharedPtr<FJsonObject> ValidateAssetList(const TArray<UObject*>& Assets)
+    /**
+     * Run UEditorValidatorSubsystem::ValidateAssetsWithSettings on the provided
+     * AssetData list and shape the results into the JSON response used by
+     * existing MCP clients: {success, validated_count, issue_count, errors[], warnings[]}.
+     *
+     * We also emit per-asset details (same shape the old handler used) so clients
+     * that already consumed that get continuity.
+     */
+    TSharedPtr<FJsonObject> RunValidatorSubsystem(const TArray<FAssetData>& AssetDataArray)
     {
         TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-        int32 NumValid = 0;
-        int32 NumInvalid = 0;
-        int32 NumNotValidated = 0;
 
-        TArray<TSharedPtr<FJsonValue>> PerAsset;
-        for (UObject* Obj : Assets)
+        UEditorValidatorSubsystem* ValidatorSubsystem = GEditor ?
+            GEditor->GetEditorSubsystem<UEditorValidatorSubsystem>() : nullptr;
+        if (!ValidatorSubsystem)
         {
-            if (!Obj)
-            {
-                continue;
-            }
-            FDataValidationContext Context(/*bWasAssetLoadedForValidation=*/false,
-                                           EDataValidationUsecase::Script,
-                                           /*AssociatedObjects=*/TConstArrayView<FAssetData>());
-            const UObject* ConstObj = Obj;
-            EDataValidationResult ValidationResult = ConstObj->IsDataValid(Context);
+            Result->SetBoolField(TEXT("success"), false);
+            Result->SetStringField(TEXT("error"), TEXT("UEditorValidatorSubsystem not available"));
+            return Result;
+        }
+
+        FValidateAssetsSettings Settings;
+        Settings.ValidationUsecase = EDataValidationUsecase::Manual;
+        Settings.bCollectPerAssetDetails = true;
+        Settings.bSilent = true;
+        Settings.bShowIfNoFailures = false;
+
+        FValidateAssetsResults Results;
+        const int32 Issues = ValidatorSubsystem->ValidateAssetsWithSettings(AssetDataArray, Settings, Results);
+
+        TArray<TSharedPtr<FJsonValue>> ErrorArr;
+        TArray<TSharedPtr<FJsonValue>> WarningArr;
+        TArray<TSharedPtr<FJsonValue>> PerAsset;
+
+        for (const TPair<FString, FValidateAssetsDetails>& Entry : Results.AssetsDetails)
+        {
+            const FValidateAssetsDetails& Details = Entry.Value;
 
             TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
-            Item->SetStringField(TEXT("asset"), Obj->GetPathName());
+            Item->SetStringField(TEXT("asset"), Entry.Key);
+            Item->SetStringField(TEXT("package"), Details.PackageName.ToString());
 
             FString ResultStr;
-            switch (ValidationResult)
+            switch (Details.Result)
             {
-                case EDataValidationResult::Valid:       ResultStr = TEXT("valid"); ++NumValid; break;
-                case EDataValidationResult::Invalid:     ResultStr = TEXT("invalid"); ++NumInvalid; break;
-                case EDataValidationResult::NotValidated: ResultStr = TEXT("not_validated"); ++NumNotValidated; break;
-                default: ResultStr = TEXT("unknown"); break;
+                case EDataValidationResult::Valid:        ResultStr = TEXT("valid"); break;
+                case EDataValidationResult::Invalid:      ResultStr = TEXT("invalid"); break;
+                case EDataValidationResult::NotValidated: ResultStr = TEXT("not_validated"); break;
+                default:                                  ResultStr = TEXT("unknown"); break;
             }
             Item->SetStringField(TEXT("result"), ResultStr);
-            Item->SetNumberField(TEXT("num_errors"), Context.GetNumErrors());
-            Item->SetNumberField(TEXT("num_warnings"), Context.GetNumWarnings());
+            Item->SetNumberField(TEXT("num_errors"), Details.ValidationErrors.Num());
+            Item->SetNumberField(TEXT("num_warnings"), Details.ValidationWarnings.Num());
 
-            TArray<FText> Warnings, Errors;
-            Context.SplitIssues(Warnings, Errors);
-
-            TArray<TSharedPtr<FJsonValue>> ErrArr;
-            for (const FText& E : Errors)
+            TArray<TSharedPtr<FJsonValue>> ItemErrs;
+            for (const FText& E : Details.ValidationErrors)
             {
-                ErrArr.Add(MakeShared<FJsonValueString>(E.ToString()));
+                const FString S = E.ToString();
+                ItemErrs.Add(MakeShared<FJsonValueString>(S));
+                ErrorArr.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%s: %s"), *Entry.Key, *S)));
             }
-            Item->SetArrayField(TEXT("errors"), ErrArr);
+            Item->SetArrayField(TEXT("errors"), ItemErrs);
 
-            TArray<TSharedPtr<FJsonValue>> WarnArr;
-            for (const FText& W : Warnings)
+            TArray<TSharedPtr<FJsonValue>> ItemWarns;
+            for (const FText& W : Details.ValidationWarnings)
             {
-                WarnArr.Add(MakeShared<FJsonValueString>(W.ToString()));
+                const FString S = W.ToString();
+                ItemWarns.Add(MakeShared<FJsonValueString>(S));
+                WarningArr.Add(MakeShared<FJsonValueString>(FString::Printf(TEXT("%s: %s"), *Entry.Key, *S)));
             }
-            Item->SetArrayField(TEXT("warnings"), WarnArr);
+            Item->SetArrayField(TEXT("warnings"), ItemWarns);
 
             PerAsset.Add(MakeShared<FJsonValueObject>(Item));
         }
 
         Result->SetBoolField(TEXT("success"), true);
-        Result->SetNumberField(TEXT("total"), Assets.Num());
-        Result->SetNumberField(TEXT("valid"), NumValid);
-        Result->SetNumberField(TEXT("invalid"), NumInvalid);
-        Result->SetNumberField(TEXT("not_validated"), NumNotValidated);
+        Result->SetNumberField(TEXT("validated_count"), Results.NumChecked);
+        Result->SetNumberField(TEXT("issue_count"), Issues);
+        Result->SetNumberField(TEXT("num_requested"), Results.NumRequested);
+        Result->SetNumberField(TEXT("num_valid"), Results.NumValid);
+        Result->SetNumberField(TEXT("num_invalid"), Results.NumInvalid);
+        Result->SetNumberField(TEXT("num_skipped"), Results.NumSkipped);
+        Result->SetNumberField(TEXT("num_warnings"), Results.NumWarnings);
+        Result->SetNumberField(TEXT("num_unable_to_validate"), Results.NumUnableToValidate);
+        Result->SetArrayField(TEXT("errors"), ErrorArr);
+        Result->SetArrayField(TEXT("warnings"), WarningArr);
         Result->SetArrayField(TEXT("assets"), PerAsset);
+
+        // Backward-compat keys from the old shape.
+        Result->SetNumberField(TEXT("total"), Results.NumRequested);
+        Result->SetNumberField(TEXT("valid"), Results.NumValid);
+        Result->SetNumberField(TEXT("invalid"), Results.NumInvalid);
+        Result->SetNumberField(TEXT("not_validated"), Results.NumUnableToValidate);
+
         return Result;
     }
 }
 
 FString FValidationService::GetServiceDescription() const
 {
-    return TEXT("Asset and level validation via UObject::IsDataValid");
+    return TEXT("Asset and level validation via UEditorValidatorSubsystem");
 }
 
 FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
@@ -97,23 +134,43 @@ FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const
     {
         auto Task = []() -> TSharedPtr<FJsonObject>
         {
-            // Collect assets currently selected in the Content Browser.
-            FContentBrowserModule& CBModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
-            TArray<FAssetData> Selected;
-            CBModule.Get().GetSelectedAssets(Selected);
+            TArray<FAssetData> AssetDataArray;
 
-            TArray<UObject*> Loaded;
-            for (const FAssetData& Data : Selected)
+            // Content-browser-selected assets.
+            FContentBrowserModule& CBModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+            CBModule.Get().GetSelectedAssets(AssetDataArray);
+
+            // Selected actors: include the actor's class asset (Blueprint-authored actor classes),
+            // which is what UEditorValidatorSubsystem can actually validate.
+            IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+            if (GEditor)
             {
-                if (UObject* Obj = Data.GetAsset())
+                if (USelection* Sel = GEditor->GetSelectedActors())
                 {
-                    Loaded.Add(Obj);
+                    TArray<AActor*> Actors;
+                    Sel->GetSelectedObjects<AActor>(Actors);
+                    TSet<UClass*> SeenClasses;
+                    for (AActor* A : Actors)
+                    {
+                        if (!A) continue;
+                        UClass* Cls = A->GetClass();
+                        if (!Cls || SeenClasses.Contains(Cls)) continue;
+                        SeenClasses.Add(Cls);
+
+                        if (UPackage* Pkg = Cls->GetOutermost())
+                        {
+                            TArray<FAssetData> ClassAssets;
+                            Registry.GetAssetsByPackageName(Pkg->GetFName(), ClassAssets);
+                            AssetDataArray.Append(ClassAssets);
+                        }
+                    }
                 }
             }
 
-            TSharedPtr<FJsonObject> Result = ValidateAssetList(Loaded);
-            Result->SetStringField(TEXT("source"), TEXT("content_browser_selection"));
-            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: validation/validate_selected → %d assets"), Loaded.Num());
+            TSharedPtr<FJsonObject> Result = RunValidatorSubsystem(AssetDataArray);
+            Result->SetStringField(TEXT("source"), TEXT("selection"));
+            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: validation/validate_selected -> %d asset(s)"),
+                AssetDataArray.Num());
             return Result;
         };
 
@@ -127,11 +184,7 @@ FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const
         {
             TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-            UWorld* World = nullptr;
-            if (GEditor)
-            {
-                World = GEditor->GetEditorWorldContext().World();
-            }
+            UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
             if (!World)
             {
                 Result->SetBoolField(TEXT("success"), false);
@@ -139,18 +192,18 @@ FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const
                 return Result;
             }
 
-            // Gather all assets referenced by actors in the persistent level.
             IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
             const FName LevelPackage = World->GetOutermost()->GetFName();
 
+            // Start with the level itself.
+            TArray<FAssetData> AssetDataArray;
+            Registry.GetAssetsByPackageName(LevelPackage, AssetDataArray);
+
+            // Walk package dependencies, capped so very large levels don't stall validation.
             TArray<FName> Deps;
             Registry.GetDependencies(LevelPackage, Deps, UE::AssetRegistry::EDependencyCategory::Package);
 
-            TArray<UObject*> Loaded;
-            // Also validate the level itself.
-            Loaded.Add(World);
-
-            int32 LoadedFromDeps = 0;
+            int32 DepsScanned = 0;
             for (const FName& DepPkg : Deps)
             {
                 const FString PkgStr = DepPkg.ToString();
@@ -158,25 +211,22 @@ FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const
                 {
                     continue;
                 }
-                if (UObject* Obj = UEditorAssetLibrary::LoadAsset(PkgStr))
+                TArray<FAssetData> DepAssets;
+                Registry.GetAssetsByPackageName(DepPkg, DepAssets);
+                AssetDataArray.Append(DepAssets);
+                ++DepsScanned;
+                if (DepsScanned >= 256)
                 {
-                    Loaded.Add(Obj);
-                    ++LoadedFromDeps;
-                    if (LoadedFromDeps >= 256)
-                    {
-                        break;
-                    }
+                    break;
                 }
             }
 
-            TSharedPtr<FJsonObject> Sub = ValidateAssetList(Loaded);
-            // Copy sub result fields into Result.
-            Result->SetBoolField(TEXT("success"), true);
+            TSharedPtr<FJsonObject> Sub = RunValidatorSubsystem(AssetDataArray);
             Result->SetStringField(TEXT("level_package"), LevelPackage.ToString());
             Result->Values.Append(Sub->Values);
-            Result->SetNumberField(TEXT("level_deps_scanned"), LoadedFromDeps);
-            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: validation/validate_level '%s' → %d objs"),
-                *LevelPackage.ToString(), Loaded.Num());
+            Result->SetNumberField(TEXT("level_deps_scanned"), DepsScanned);
+            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: validation/validate_level '%s' -> %d asset(s)"),
+                *LevelPackage.ToString(), AssetDataArray.Num());
             return Result;
         };
 
@@ -191,35 +241,76 @@ FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const
             TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
             TArray<TSharedPtr<FJsonValue>> MessageArr;
 
-            // Query the Map Check and Asset Check message logs. FMessageLog itself lives in
-            // Core; the MessageLog developer module hosts the UI but isn't required to count
-            // messages in existing logs.
             const TArray<FName> LogsToCheck{
-                FName(TEXT("MapCheck")),
                 FName(TEXT("AssetCheck")),
+                FName(TEXT("MapCheck")),
                 FName(TEXT("AssetTools")),
                 FName(TEXT("LoadErrors")),
             };
 
+            constexpr int32 MaxMessagesPerLog = 32;
+
+            FMessageLogModule* MessageLogModule = FModuleManager::LoadModulePtr<FMessageLogModule>(TEXT("MessageLog"));
+
             int32 TotalMessages = 0;
+            int32 TotalErrors = 0;
+            int32 TotalWarnings = 0;
             for (const FName& LogName : LogsToCheck)
             {
-                FMessageLog Log(LogName);
-                // FMessageLog doesn't expose an enumeration API directly on the public surface;
-                // the message counts are the best approachable signal.
                 TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
                 Entry->SetStringField(TEXT("log"), LogName.ToString());
-                Entry->SetNumberField(TEXT("num_messages"), Log.NumMessages(EMessageSeverity::Info));
-                Entry->SetNumberField(TEXT("num_warnings"), Log.NumMessages(EMessageSeverity::Warning));
-                Entry->SetNumberField(TEXT("num_errors"), Log.NumMessages(EMessageSeverity::Error));
+
+                FMessageLog Log(LogName);
+                const int32 InfoCount = Log.NumMessages(EMessageSeverity::Info);
+                const int32 WarningCount = Log.NumMessages(EMessageSeverity::Warning);
+                const int32 ErrorCount = Log.NumMessages(EMessageSeverity::Error);
+                Entry->SetNumberField(TEXT("num_messages"), InfoCount);
+                Entry->SetNumberField(TEXT("num_warnings"), WarningCount);
+                Entry->SetNumberField(TEXT("num_errors"), ErrorCount);
+
+                TotalMessages += InfoCount;
+                TotalWarnings += WarningCount;
+                TotalErrors += ErrorCount;
+
+                // If the listing UI is registered, pull the most recent filtered messages so the
+                // client sees actual text, not just counts. This is best-effort; logs that were
+                // never registered (rare for the four above) will report empty messages.
+                TArray<TSharedPtr<FJsonValue>> RecentMessages;
+                if (MessageLogModule && MessageLogModule->IsRegisteredLogListing(LogName))
+                {
+                    TSharedRef<IMessageLogListing> Listing = MessageLogModule->GetLogListing(LogName);
+                    const TArray<TSharedRef<FTokenizedMessage>>& Filtered = Listing->GetFilteredMessages();
+                    const int32 StartIdx = FMath::Max(0, Filtered.Num() - MaxMessagesPerLog);
+                    for (int32 i = StartIdx; i < Filtered.Num(); ++i)
+                    {
+                        const TSharedRef<FTokenizedMessage>& Msg = Filtered[i];
+                        TSharedPtr<FJsonObject> MsgJson = MakeShared<FJsonObject>();
+                        FString SeverityStr;
+                        switch (Msg->GetSeverity())
+                        {
+                            case EMessageSeverity::Error:              SeverityStr = TEXT("error"); break;
+                            case EMessageSeverity::PerformanceWarning: SeverityStr = TEXT("performance_warning"); break;
+                            case EMessageSeverity::Warning:            SeverityStr = TEXT("warning"); break;
+                            case EMessageSeverity::Info:               SeverityStr = TEXT("info"); break;
+                            default:                                   SeverityStr = TEXT("unknown"); break;
+                        }
+                        MsgJson->SetStringField(TEXT("severity"), SeverityStr);
+                        MsgJson->SetStringField(TEXT("text"), Msg->ToText().ToString());
+                        RecentMessages.Add(MakeShared<FJsonValueObject>(MsgJson));
+                    }
+                }
+                Entry->SetArrayField(TEXT("recent_messages"), RecentMessages);
+
                 MessageArr.Add(MakeShared<FJsonValueObject>(Entry));
-                TotalMessages += Log.NumMessages(EMessageSeverity::Info);
             }
 
             Result->SetBoolField(TEXT("success"), true);
             Result->SetArrayField(TEXT("logs"), MessageArr);
             Result->SetNumberField(TEXT("total"), TotalMessages);
-            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: validation/list_errors → %d logs surveyed"), LogsToCheck.Num());
+            Result->SetNumberField(TEXT("total_errors"), TotalErrors);
+            Result->SetNumberField(TEXT("total_warnings"), TotalWarnings);
+            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: validation/list_errors -> %d log(s) surveyed, %d errors, %d warnings"),
+                LogsToCheck.Num(), TotalErrors, TotalWarnings);
             return Result;
         };
 
@@ -235,20 +326,23 @@ TArray<FMCPToolInfo> FValidationService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("validate_selected"),
-        TEXT("Run UObject::IsDataValid on assets currently selected in the Content Browser.\n"
-             "Returns per-asset result (valid/invalid/not_validated) with error + warning text.\n"
-             "Workflow: utility/focus_asset_in_browser first, then call this."))
+        TEXT("Run UEditorValidatorSubsystem on assets selected in the Content Browser plus\n"
+             "the class assets of any selected actors. Uses project-configured validators\n"
+             "(IsDataValid overrides, asset-naming, custom EditorValidatorBase).\n"
+             "Returns validated_count, issue_count, errors[], warnings[] plus per-asset detail.\n"
+             "Workflow: utility/focus_asset_in_browser or actor selection first, then call this."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("validate_level"),
-        TEXT("Validate the current editor world plus every on-disk dependency of its package.\n"
-             "Capped at 256 dep assets to avoid overload. Engine/script deps excluded.\n"
+        TEXT("Validate the current editor level and its on-disk package dependencies via\n"
+             "UEditorValidatorSubsystem. Capped at 256 dep packages; Engine/script excluded.\n"
              "Workflow: Use before checking in a level; follow with content_browser/save for any fixes."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_errors"),
-        TEXT("Return counts of messages in Map Check, Asset Check, AssetTools, and LoadErrors logs.\n"
-             "No params. Useful as a quick health gauge before/after large operations."))
+        TEXT("Survey AssetCheck, MapCheck, AssetTools, and LoadErrors message logs. Returns\n"
+             "counts per severity and up to 32 recent tokenized messages per log where the\n"
+             "log listing UI is registered. No params."))
         .Build());
 
     return Tools;
