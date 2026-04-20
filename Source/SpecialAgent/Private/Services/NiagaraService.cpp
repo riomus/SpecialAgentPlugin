@@ -343,7 +343,7 @@ FMCPResponse FNiagaraService::HandleSetUserFloat(const FMCPRequest& Request)
             return FMCPJson::MakeError(Err);
         }
 
-        Comp->SetNiagaraVariableFloat(VarName, static_cast<float>(Value));
+        Comp->SetVariableFloat(FName(*VarName), static_cast<float>(Value));
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("actor_name"), ActorName);
@@ -388,7 +388,7 @@ FMCPResponse FNiagaraService::HandleSetUserVec3(const FMCPRequest& Request)
             return FMCPJson::MakeError(Err);
         }
 
-        Comp->SetNiagaraVariableVec3(VarName, Value);
+        Comp->SetVariableVec3(FName(*VarName), Value);
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("actor_name"), ActorName);

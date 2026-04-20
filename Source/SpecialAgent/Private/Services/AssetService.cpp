@@ -624,7 +624,7 @@ FMCPResponse FAssetService::HandleGetAssetInfo(const FMCPRequest& Request)
 			}
 			
 			// Nanite info
-			Result->SetBoolField(TEXT("nanite_enabled"), StaticMesh->NaniteSettings.bEnabled);
+			Result->SetBoolField(TEXT("nanite_enabled"), StaticMesh->IsNaniteEnabled());
 			
 			// Lightmap info
 			Result->SetNumberField(TEXT("lightmap_resolution"), StaticMesh->GetLightMapResolution());
