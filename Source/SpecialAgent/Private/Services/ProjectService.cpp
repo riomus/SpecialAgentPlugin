@@ -4,6 +4,7 @@
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Interfaces/IPluginManager.h"
@@ -77,7 +78,7 @@ TArray<FMCPToolInfo> FProjectService::GetAvailableTools() const
     return Tools;
 }
 
-FMCPResponse FProjectService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FProjectService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("get_setting"))
     {

@@ -4,6 +4,7 @@
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Editor.h"
@@ -76,7 +77,7 @@ TArray<FMCPToolInfo> FPIEService::GetAvailableTools() const
     return Tools;
 }
 
-FMCPResponse FPIEService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FPIEService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("start"))
     {
