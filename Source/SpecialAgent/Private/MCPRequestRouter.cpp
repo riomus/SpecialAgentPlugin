@@ -250,7 +250,23 @@ FMCPResponse FMCPRequestRouter::RouteRequest(const FMCPRequest& Request)
 	{
 		return HandleResourcesRead(Request);
 	}
-	
+
+	// Handle resources/templates/list - MCP spec method. We expose no
+	// parameterized resource templates, so return an empty array (clients
+	// like Cursor/Claude Desktop call this during init).
+	if (Request.Method == TEXT("resources/templates/list"))
+	{
+		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+		Result->SetArrayField(TEXT("resourceTemplates"), TArray<TSharedPtr<FJsonValue>>{});
+		return FMCPResponse::Success(Request.Id, Result);
+	}
+
+	// Handle ping - MCP keep-alive. Spec: empty result.
+	if (Request.Method == TEXT("ping"))
+	{
+		return FMCPResponse::Success(Request.Id, MakeShared<FJsonObject>());
+	}
+
 	// Handle prompts/list - return available prompts
 	if (Request.Method == TEXT("prompts/list"))
 	{
