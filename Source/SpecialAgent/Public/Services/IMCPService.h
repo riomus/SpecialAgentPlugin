@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "MCPServer.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 /**
  * MCP Tool Information
@@ -46,9 +47,13 @@ public:
 	 * Handle an MCP request for this service
 	 * @param Request The MCP request
 	 * @param MethodName The method name (without service prefix)
+	 * @param Ctx Request-scoped context: session id, progress token, and
+	 *            SendProgress callback. Safe to ignore if not emitting progress.
 	 * @return The MCP response
 	 */
-	virtual FMCPResponse HandleRequest(const FMCPRequest& Request, const FString& MethodName) = 0;
+	virtual FMCPResponse HandleRequest(const FMCPRequest& Request,
+	                                   const FString& MethodName,
+	                                   const FMCPRequestContext& Ctx) = 0;
 
 	/**
 	 * Get a description of this service

@@ -204,7 +204,7 @@ void FMCPRequestRouter::ValidateServices() const
 		Services.Num(), TotalTools, DeadServices);
 }
 
-FMCPResponse FMCPRequestRouter::RouteRequest(const FMCPRequest& Request)
+FMCPResponse FMCPRequestRouter::RouteRequest(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: RouteRequest called with method: %s"), *Request.Method);
 	
@@ -227,7 +227,7 @@ FMCPResponse FMCPRequestRouter::RouteRequest(const FMCPRequest& Request)
 	
 	if (Request.Method == TEXT("tools/call"))
 	{
-		return HandleToolsCall(Request);
+		return HandleToolsCall(Request, Ctx);
 	}
 
 	// Handle server info request
@@ -323,7 +323,7 @@ FMCPResponse FMCPRequestRouter::RouteRequest(const FMCPRequest& Request)
 
 	// Route to service
 	TSharedPtr<IMCPService> Service = *ServicePtr;
-	return Service->HandleRequest(Request, MethodName);
+	return Service->HandleRequest(Request, MethodName, Ctx);
 }
 
 void FMCPRequestRouter::RegisterService(const FString& ServicePrefix, TSharedPtr<IMCPService> Service)
@@ -416,7 +416,7 @@ FMCPResponse FMCPRequestRouter::HandleToolsList(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
-FMCPResponse FMCPRequestRouter::HandleToolsCall(const FMCPRequest& Request)
+FMCPResponse FMCPRequestRouter::HandleToolsCall(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	// Execute a tool
 	if (!Request.Params.IsValid())
@@ -451,8 +451,8 @@ FMCPResponse FMCPRequestRouter::HandleToolsCall(const FMCPRequest& Request)
 	
 	// Route to service
 	TSharedPtr<IMCPService> Service = *ServicePtr;
-	FMCPResponse ServiceResponse = Service->HandleRequest(ModifiedRequest, MethodName);
-	
+	FMCPResponse ServiceResponse = Service->HandleRequest(ModifiedRequest, MethodName, Ctx);
+
 	// Wrap response in MCP content format
 	return WrapToolResponse(ServiceResponse, ServicePrefix, MethodName);
 }
