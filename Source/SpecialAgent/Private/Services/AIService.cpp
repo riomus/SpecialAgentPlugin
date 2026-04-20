@@ -525,7 +525,11 @@ TArray<FMCPToolInfo> FAIService::GetAvailableTools() const
         .RequiredString(TEXT("key"),        TEXT("Blackboard key name"))
         .RequiredEnum  (TEXT("value_type"), { TEXT("bool"), TEXT("int"), TEXT("float"), TEXT("vector"), TEXT("object"), TEXT("string"), TEXT("name") },
                                              TEXT("Value type — drives which SetValueAs* overload is called"))
-        .RequiredString(TEXT("value"),      TEXT("Value — bool/number/[X,Y,Z]/string per value_type; for 'object' use an actor label"))
+        .RequiredAny   (TEXT("value"),      TEXT("Value whose JSON type must match value_type: "
+                                                 "bool -> boolean; int -> integer; float -> number; "
+                                                 "vector -> [X, Y, Z] number array; "
+                                                 "string/name -> string; "
+                                                 "object -> actor-label string (resolved against the editor world)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(

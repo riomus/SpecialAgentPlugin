@@ -45,13 +45,21 @@ public:
 	FMCPToolBuilder& RequiredArrayOfString(const FString& Field, const FString& Description);
 	FMCPToolBuilder& OptionalArrayOfString(const FString& Field, const FString& Description);
 
+	// Polymorphic (JSON Schema emits no "type" field — any JSON type accepted).
+	// Use when the parameter's JSON type depends on another parameter
+	// (e.g. a "value" whose type is selected by a sibling "value_type" enum).
+	// Always explain the expected shapes in the description.
+	FMCPToolBuilder& RequiredAny(const FString& Field, const FString& Description);
+	FMCPToolBuilder& OptionalAny(const FString& Field, const FString& Description);
+
 	FMCPToolInfo Build() const;
 
 private:
 	FMCPToolInfo Tool;
 
 	// Single internal path: JsonType is one of "string", "number", "integer",
-	// "boolean", "array". EnumValues is optional (null for non-enums).
+	// "boolean", "array", or empty/"" for "any JSON type". EnumValues is
+	// optional (null for non-enums).
 	void AddParam(const FString& Field,
 	              const FString& JsonType,
 	              const FString& Description,

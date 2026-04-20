@@ -114,6 +114,20 @@ FMCPToolBuilder& FMCPToolBuilder::OptionalArrayOfString(const FString& Field, co
 	return *this;
 }
 
+// ---- Polymorphic ("any") ----
+
+FMCPToolBuilder& FMCPToolBuilder::RequiredAny(const FString& Field, const FString& Description)
+{
+	AddParam(Field, TEXT(""), Description, /*bRequired=*/true);
+	return *this;
+}
+
+FMCPToolBuilder& FMCPToolBuilder::OptionalAny(const FString& Field, const FString& Description)
+{
+	AddParam(Field, TEXT(""), Description, /*bRequired=*/false);
+	return *this;
+}
+
 FMCPToolInfo FMCPToolBuilder::Build() const
 {
 	return Tool;
@@ -126,7 +140,10 @@ void FMCPToolBuilder::AddParam(const FString& Field,
                                const TArray<FString>* EnumValues)
 {
 	TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
-	ParamObj->SetStringField(TEXT("type"), JsonType);
+	if (!JsonType.IsEmpty())
+	{
+		ParamObj->SetStringField(TEXT("type"), JsonType);
+	}
 	ParamObj->SetStringField(TEXT("description"), Description);
 
 	if (EnumValues != nullptr)

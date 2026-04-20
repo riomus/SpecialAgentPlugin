@@ -1667,10 +1667,12 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 		TEXT("Set a scalar or vector parameter on an actor's current slot material (via a dynamic MID). "
 			 "Effect: non-destructive runtime parameter write. "
 			 "Params: actor_name (string), parameter_name (string), parameter_type ('scalar'|'vector'), "
-			 "value (number for scalar, [R,G,B,A] for vector), slot_index (integer, default 0)."))
+			 "value (number when parameter_type='scalar'; [R,G,B,A] linear-color array when parameter_type='vector'), "
+			 "slot_index (integer, default 0)."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredString(TEXT("parameter_name"), TEXT("Material parameter name"))
 		.RequiredEnum(TEXT("parameter_type"), {TEXT("scalar"), TEXT("vector")}, TEXT("Parameter type"))
+		.RequiredAny(TEXT("value"), TEXT("Parameter value: number for 'scalar', [R,G,B,A] linear-color array for 'vector'"))
 		.OptionalInteger(TEXT("slot_index"), TEXT("Material slot index (default 0)"))
 		.Build());
 
