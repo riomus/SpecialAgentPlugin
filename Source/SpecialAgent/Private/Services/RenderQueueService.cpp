@@ -9,7 +9,7 @@
 #include "Editor.h"
 #include "Graph/MovieGraphConfig.h"
 #include "LevelSequence.h"
-#include "Executors/MoviePipelineInProcessExecutor.h"
+#include "MoviePipelineInProcessExecutor.h"
 #include "MoviePipelineExecutor.h"
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelinePrimaryConfig.h"
