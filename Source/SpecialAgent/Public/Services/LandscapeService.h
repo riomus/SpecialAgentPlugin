@@ -27,7 +27,7 @@ private:
 	FMCPResponse HandleGetInfo(const FMCPRequest& Request);
 	FMCPResponse HandleSculptHeight(const FMCPRequest& Request);
 	FMCPResponse HandleFlattenArea(const FMCPRequest& Request);
-	FMCPResponse HandleSmoothArea(const FMCPRequest& Request);
+	FMCPResponse HandleSmoothArea(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 	FMCPResponse HandlePaintLayer(const FMCPRequest& Request);
 	FMCPResponse HandleListLayers(const FMCPRequest& Request);
 };

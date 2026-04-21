@@ -35,7 +35,7 @@ FMCPResponse FLandscapeService::HandleRequest(const FMCPRequest& Request, const 
 	if (MethodName == TEXT("get_info"))      return HandleGetInfo(Request);
 	if (MethodName == TEXT("sculpt_height")) return HandleSculptHeight(Request);
 	if (MethodName == TEXT("flatten_area"))  return HandleFlattenArea(Request);
-	if (MethodName == TEXT("smooth_area"))   return HandleSmoothArea(Request);
+	if (MethodName == TEXT("smooth_area"))   return HandleSmoothArea(Request, Ctx);
 	if (MethodName == TEXT("paint_layer"))   return HandlePaintLayer(Request);
 	if (MethodName == TEXT("list_layers"))   return HandleListLayers(Request);
 
@@ -279,7 +279,7 @@ FMCPResponse FLandscapeService::HandleFlattenArea(const FMCPRequest& Request)
 //   Apply a 3x3 box-average filter N times (iterations, default 1).
 // -----------------------------------------------------------------------------
 
-FMCPResponse FLandscapeService::HandleSmoothArea(const FMCPRequest& Request)
+FMCPResponse FLandscapeService::HandleSmoothArea(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	if (!Request.Params.IsValid())
 	{
@@ -295,7 +295,8 @@ FMCPResponse FLandscapeService::HandleSmoothArea(const FMCPRequest& Request)
 	FMCPJson::ReadInteger(Request.Params, TEXT("iterations"), Iterations);
 	Iterations = FMath::Clamp(Iterations, 1, 16);
 
-	auto Task = [X1, Y1, X2, Y2, Iterations]() -> TSharedPtr<FJsonObject>
+	auto SendProgress = Ctx.SendProgress;
+	auto Task = [X1, Y1, X2, Y2, Iterations, SendProgress]() -> TSharedPtr<FJsonObject>
 	{
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
@@ -351,6 +352,8 @@ FMCPResponse FLandscapeService::HandleSmoothArea(const FMCPRequest& Request)
 				}
 			}
 			Swap(Data, Temp);
+			SendProgress((Iter + 1.0) / (double)Iterations, 1.0,
+				FString::Printf(TEXT("smooth_area pass %d/%d"), Iter + 1, Iterations));
 		}
 
 		EditInterface.SetHeightData(X1, Y1, X2, Y2, Data.GetData(), Width, /*InCalcNormals=*/ true);

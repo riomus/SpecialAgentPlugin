@@ -31,9 +31,9 @@ private:
 
 	// Spawn/Delete methods
 	FMCPResponse HandleSpawnActor(const FMCPRequest& Request);
-	FMCPResponse HandleSpawnActorsBatch(const FMCPRequest& Request);
+	FMCPResponse HandleSpawnActorsBatch(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 	FMCPResponse HandleDeleteActor(const FMCPRequest& Request);
-	FMCPResponse HandleDeleteActorsBatch(const FMCPRequest& Request);
+	FMCPResponse HandleDeleteActorsBatch(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 	FMCPResponse HandleDuplicateActor(const FMCPRequest& Request);
 
 	// Transform methods
@@ -62,10 +62,10 @@ private:
 	FMCPResponse HandleGetGroundHeight(const FMCPRequest& Request);
 
 	// Pattern placement methods
-	FMCPResponse HandlePlaceInGrid(const FMCPRequest& Request);
+	FMCPResponse HandlePlaceInGrid(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 	FMCPResponse HandlePlaceAlongSpline(const FMCPRequest& Request);
 	FMCPResponse HandlePlaceInCircle(const FMCPRequest& Request);
-	FMCPResponse HandleScatterInArea(const FMCPRequest& Request);
+	FMCPResponse HandleScatterInArea(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 
 	// Actor state methods (new in Phase 1.A)
 	FMCPResponse HandleSetActorTickEnabled(const FMCPRequest& Request);

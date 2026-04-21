@@ -28,7 +28,7 @@ FString FFoliageService::GetServiceDescription() const
 
 FMCPResponse FFoliageService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
-	if (MethodName == TEXT("paint_in_area"))      return HandlePaintInArea(Request);
+	if (MethodName == TEXT("paint_in_area"))      return HandlePaintInArea(Request, Ctx);
 	if (MethodName == TEXT("remove_from_area"))   return HandleRemoveFromArea(Request);
 	if (MethodName == TEXT("get_density"))        return HandleGetDensity(Request);
 	if (MethodName == TEXT("list_foliage_types")) return HandleListFoliageTypes(Request);
@@ -74,7 +74,7 @@ static UFoliageType* LoadFoliageTypeByPath(const FString& Path)
 //   needed.
 // -----------------------------------------------------------------------------
 
-FMCPResponse FFoliageService::HandlePaintInArea(const FMCPRequest& Request)
+FMCPResponse FFoliageService::HandlePaintInArea(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	if (!Request.Params.IsValid())
 	{
@@ -102,7 +102,8 @@ FMCPResponse FFoliageService::HandlePaintInArea(const FMCPRequest& Request)
 	int32 Seed = 0;
 	FMCPJson::ReadInteger(Request.Params, TEXT("seed"), Seed);
 
-	auto Task = [FoliageAssetPath, Box, Count, Seed]() -> TSharedPtr<FJsonObject>
+	auto SendProgress = Ctx.SendProgress;
+	auto Task = [FoliageAssetPath, Box, Count, Seed, SendProgress]() -> TSharedPtr<FJsonObject>
 	{
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World)
@@ -144,6 +145,9 @@ FMCPResponse FFoliageService::HandlePaintInArea(const FMCPRequest& Request)
 			Inst.Rotation = FRotator(0.0f, Rng.FRandRange(0.0f, 360.0f), 0.0f);
 			Inst.DrawScale3D = FVector3f(1.0f, 1.0f, 1.0f);
 			Created.Add(Inst);
+			if ((i + 1) % 100 == 0 || (i + 1) == Count)
+				SendProgress((i + 1.0) / (double)Count, 1.0,
+					FString::Printf(TEXT("paint_in_area %d/%d"), i + 1, Count));
 		}
 
 		// Add instances via the component-level helper on FFoliageInfo.

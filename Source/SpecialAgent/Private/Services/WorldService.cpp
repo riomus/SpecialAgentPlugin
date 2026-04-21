@@ -154,9 +154,9 @@ FMCPResponse FWorldService::HandleRequest(const FMCPRequest& Request, const FStr
 
 	// Spawn/Delete methods
 	if (MethodName == TEXT("spawn_actor")) return HandleSpawnActor(Request);
-	if (MethodName == TEXT("spawn_actors_batch")) return HandleSpawnActorsBatch(Request);
+	if (MethodName == TEXT("spawn_actors_batch")) return HandleSpawnActorsBatch(Request, Ctx);
 	if (MethodName == TEXT("delete_actor")) return HandleDeleteActor(Request);
-	if (MethodName == TEXT("delete_actors_batch")) return HandleDeleteActorsBatch(Request);
+	if (MethodName == TEXT("delete_actors_batch")) return HandleDeleteActorsBatch(Request, Ctx);
 	if (MethodName == TEXT("duplicate_actor")) return HandleDuplicateActor(Request);
 
 	// Transform methods
@@ -185,10 +185,10 @@ FMCPResponse FWorldService::HandleRequest(const FMCPRequest& Request, const FStr
 	if (MethodName == TEXT("get_ground_height")) return HandleGetGroundHeight(Request);
 
 	// Pattern placement methods
-	if (MethodName == TEXT("place_in_grid")) return HandlePlaceInGrid(Request);
+	if (MethodName == TEXT("place_in_grid")) return HandlePlaceInGrid(Request, Ctx);
 	if (MethodName == TEXT("place_along_spline")) return HandlePlaceAlongSpline(Request);
 	if (MethodName == TEXT("place_in_circle")) return HandlePlaceInCircle(Request);
-	if (MethodName == TEXT("scatter_in_area")) return HandleScatterInArea(Request);
+	if (MethodName == TEXT("scatter_in_area")) return HandleScatterInArea(Request, Ctx);
 
 	// Actor state methods
 	if (MethodName == TEXT("set_actor_tick_enabled")) return HandleSetActorTickEnabled(Request);
@@ -381,7 +381,7 @@ FMCPResponse FWorldService::HandleSpawnActor(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
-FMCPResponse FWorldService::HandleSpawnActorsBatch(const FMCPRequest& Request)
+FMCPResponse FWorldService::HandleSpawnActorsBatch(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
 
@@ -406,21 +406,27 @@ FMCPResponse FWorldService::HandleSpawnActorsBatch(const FMCPRequest& Request)
 		Specs.Add(S);
 	}
 
-	auto Task = [Specs]() -> TSharedPtr<FJsonObject>
+	auto SendProgress = Ctx.SendProgress;
+	auto Task = [Specs, SendProgress]() -> TSharedPtr<FJsonObject>
 	{
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
 
+		const int32 Total = Specs.Num();
 		TArray<TSharedPtr<FJsonValue>> Spawned;
 		TArray<TSharedPtr<FJsonValue>> Errors;
-		for (const FSpawnSpec& S : Specs)
+		for (int32 i = 0; i < Total; ++i)
 		{
+			const FSpawnSpec& S = Specs[i];
 			FString Type, Err;
 			AActor* A = SpawnActorInternal(World, S.ActorClass, S.Loc, S.Rot, S.Scale, Type, Err);
 			if (A)
 				Spawned.Add(MakeShared<FJsonValueObject>(SerializeActor(A)));
 			else
 				Errors.Add(MakeShared<FJsonValueString>(Err));
+			if ((i + 1) % 4 == 0 || (i + 1) == Total)
+				SendProgress((i + 1.0) / (double)Total, 1.0,
+					FString::Printf(TEXT("spawn_actors_batch %d/%d"), i + 1, Total));
 		}
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
@@ -457,7 +463,7 @@ FMCPResponse FWorldService::HandleDeleteActor(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
-FMCPResponse FWorldService::HandleDeleteActorsBatch(const FMCPRequest& Request)
+FMCPResponse FWorldService::HandleDeleteActorsBatch(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
 	const TArray<TSharedPtr<FJsonValue>>* NamesArr = nullptr;
@@ -471,15 +477,18 @@ FMCPResponse FWorldService::HandleDeleteActorsBatch(const FMCPRequest& Request)
 		if (V->TryGetString(S)) Names.Add(S);
 	}
 
-	auto Task = [Names]() -> TSharedPtr<FJsonObject>
+	auto SendProgress = Ctx.SendProgress;
+	auto Task = [Names, SendProgress]() -> TSharedPtr<FJsonObject>
 	{
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
 
+		const int32 Total = Names.Num();
 		int32 Deleted = 0;
 		TArray<TSharedPtr<FJsonValue>> NotFound;
-		for (const FString& Name : Names)
+		for (int32 i = 0; i < Total; ++i)
 		{
+			const FString& Name = Names[i];
 			AActor* A = FMCPActorResolver::ByLabel(World, Name);
 			if (A)
 			{
@@ -490,6 +499,8 @@ FMCPResponse FWorldService::HandleDeleteActorsBatch(const FMCPRequest& Request)
 			{
 				NotFound.Add(MakeShared<FJsonValueString>(Name));
 			}
+			SendProgress((i + 1.0) / (double)Total, 1.0,
+				FString::Printf(TEXT("delete_actors_batch %d/%d"), i + 1, Total));
 		}
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetNumberField(TEXT("deleted"), Deleted);
@@ -1173,7 +1184,7 @@ static TSharedPtr<FJsonObject> SpawnMany(UWorld* World, const FPatternBaseParams
 	return Result;
 }
 
-FMCPResponse FWorldService::HandlePlaceInGrid(const FMCPRequest& Request)
+FMCPResponse FWorldService::HandlePlaceInGrid(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
 	FPatternBaseParams Base;
@@ -1192,18 +1203,36 @@ FMCPResponse FWorldService::HandlePlaceInGrid(const FMCPRequest& Request)
 	Request.Params->TryGetNumberField(TEXT("spacing_x"), SpacingX);
 	Request.Params->TryGetNumberField(TEXT("spacing_y"), SpacingY);
 
-	auto Task = [Base, Origin, CountX, CountY, SpacingX, SpacingY]() -> TSharedPtr<FJsonObject>
+	auto SendProgress = Ctx.SendProgress;
+	auto Task = [Base, Origin, CountX, CountY, SpacingX, SpacingY, SendProgress]() -> TSharedPtr<FJsonObject>
 	{
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
 
-		TArray<FVector> Positions;
-		Positions.Reserve(CountX * CountY);
+		const int32 Total = CountX * CountY;
+		TArray<TSharedPtr<FJsonValue>> Spawned;
+		TArray<TSharedPtr<FJsonValue>> Errors;
+		int32 SpawnIdx = 0;
 		for (int32 iy = 0; iy < CountY; ++iy)
+		{
 			for (int32 ix = 0; ix < CountX; ++ix)
-				Positions.Add(Origin + FVector(ix * SpacingX, iy * SpacingY, 0));
-
-		return SpawnMany(World, Base, Positions);
+			{
+				const FVector Pos = Origin + FVector(ix * SpacingX, iy * SpacingY, 0);
+				FString Type, SpawnErr;
+				AActor* A = SpawnActorInternal(World, Base.ActorClass, Pos, Base.Rotation, Base.Scale, Type, SpawnErr);
+				if (A) Spawned.Add(MakeShared<FJsonValueObject>(SerializeActor(A)));
+				else Errors.Add(MakeShared<FJsonValueString>(SpawnErr));
+				++SpawnIdx;
+				if (SpawnIdx % 8 == 0 || SpawnIdx == Total)
+					SendProgress(SpawnIdx / (double)Total, 1.0,
+						FString::Printf(TEXT("place_in_grid %d/%d"), SpawnIdx, Total));
+			}
+		}
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetArrayField(TEXT("actors"), Spawned);
+		Result->SetNumberField(TEXT("spawned"), Spawned.Num());
+		Result->SetArrayField(TEXT("errors"), Errors);
+		return Result;
 	};
 	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
 	return FMCPResponse::Success(Request.Id, Result);
@@ -1314,7 +1343,7 @@ FMCPResponse FWorldService::HandlePlaceAlongSpline(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
-FMCPResponse FWorldService::HandleScatterInArea(const FMCPRequest& Request)
+FMCPResponse FWorldService::HandleScatterInArea(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
 	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
 	FPatternBaseParams Base;
@@ -1334,14 +1363,15 @@ FMCPResponse FWorldService::HandleScatterInArea(const FMCPRequest& Request)
 	bool bStickToGround = false;
 	Request.Params->TryGetBoolField(TEXT("stick_to_ground"), bStickToGround);
 
-	auto Task = [Base, Min, Max, Count, Seed, bStickToGround]() -> TSharedPtr<FJsonObject>
+	auto SendProgress = Ctx.SendProgress;
+	auto Task = [Base, Min, Max, Count, Seed, bStickToGround, SendProgress]() -> TSharedPtr<FJsonObject>
 	{
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
 
 		FRandomStream Rand(Seed == 0 ? FMath::RandRange(1, 1000000) : Seed);
-		TArray<FVector> Positions;
-		Positions.Reserve(Count);
+		TArray<TSharedPtr<FJsonValue>> Spawned;
+		TArray<TSharedPtr<FJsonValue>> Errors;
 		for (int32 i = 0; i < Count; ++i)
 		{
 			FVector P(
@@ -1356,9 +1386,19 @@ FMCPResponse FWorldService::HandleScatterInArea(const FMCPRequest& Request)
 				if (World->LineTraceSingleByChannel(Hit, FVector(P.X, P.Y, Max.Z + 100.0), FVector(P.X, P.Y, Min.Z - 100.0), ECC_Visibility, QP))
 					P = Hit.Location;
 			}
-			Positions.Add(P);
+			FString Type, SpawnErr;
+			AActor* A = SpawnActorInternal(World, Base.ActorClass, P, Base.Rotation, Base.Scale, Type, SpawnErr);
+			if (A) Spawned.Add(MakeShared<FJsonValueObject>(SerializeActor(A)));
+			else Errors.Add(MakeShared<FJsonValueString>(SpawnErr));
+			if ((i + 1) % 8 == 0 || (i + 1) == Count)
+				SendProgress((i + 1.0) / (double)Count, 1.0,
+					FString::Printf(TEXT("scatter_in_area %d/%d"), i + 1, Count));
 		}
-		return SpawnMany(World, Base, Positions);
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetArrayField(TEXT("actors"), Spawned);
+		Result->SetNumberField(TEXT("spawned"), Spawned.Num());
+		Result->SetArrayField(TEXT("errors"), Errors);
+		return Result;
 	};
 	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
 	return FMCPResponse::Success(Request.Id, Result);

@@ -24,7 +24,7 @@ public:
 	virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
 
 private:
-	FMCPResponse HandlePaintInArea(const FMCPRequest& Request);
+	FMCPResponse HandlePaintInArea(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 	FMCPResponse HandleRemoveFromArea(const FMCPRequest& Request);
 	FMCPResponse HandleGetDensity(const FMCPRequest& Request);
 	FMCPResponse HandleListFoliageTypes(const FMCPRequest& Request);
