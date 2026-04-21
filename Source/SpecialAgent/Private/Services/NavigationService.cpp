@@ -26,7 +26,7 @@ FString FNavigationService::GetServiceDescription() const
 
 FMCPResponse FNavigationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
-	if (MethodName == TEXT("rebuild_navmesh")) return HandleRebuildNavMesh(Request);
+	if (MethodName == TEXT("rebuild_navmesh")) return HandleRebuildNavMesh(Request, Ctx);
 	if (MethodName == TEXT("test_path")) return HandleTestPath(Request);
 	if (MethodName == TEXT("get_navmesh_bounds")) return HandleGetNavMeshBounds(Request);
 	if (MethodName == TEXT("find_nearest_reachable_point")) return HandleFindNearestReachablePoint(Request);
@@ -34,43 +34,132 @@ FMCPResponse FNavigationService::HandleRequest(const FMCPRequest& Request, const
 	return MethodNotFound(Request.Id, TEXT("navigation"), MethodName);
 }
 
-FMCPResponse FNavigationService::HandleRebuildNavMesh(const FMCPRequest& Request)
+FMCPResponse FNavigationService::HandleRebuildNavMesh(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
 {
-	auto Task = []() -> TSharedPtr<FJsonObject>
+	const auto SendProgress = Ctx.SendProgress;
+	SendProgress(0.0, 1.0, TEXT("navmesh build starting"));
+
+	// Step 1: kick the build on the game thread, capture initial task counts.
+	struct FKickResult
 	{
+		bool bEditorBuildInvoked = false;
+		int32 InitialRemaining = 0;
+		bool bFailed = false;
+		FString Error;
+	};
+
+	auto KickTask = []() -> FKickResult
+	{
+		FKickResult R;
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World)
 		{
-			return FMCPJson::MakeError(TEXT("No editor world found"));
+			R.bFailed = true;
+			R.Error = TEXT("No editor world found");
+			return R;
 		}
 
 		UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World);
 		if (!NavSys)
 		{
-			return FMCPJson::MakeError(TEXT("No UNavigationSystemV1 on the world"));
+			R.bFailed = true;
+			R.Error = TEXT("No UNavigationSystemV1 on the world");
+			return R;
 		}
 
 		// Prefer the editor build path so dirty state is cleared and feedback
 		// is consistent with the editor Build menu.
-		const bool bEditorBuildSucceeded = FEditorBuildUtils::EditorBuild(
+		R.bEditorBuildInvoked = FEditorBuildUtils::EditorBuild(
 			World, FBuildOptions::BuildAIPaths, /*bAllowLightingDialog=*/false);
 
-		if (!bEditorBuildSucceeded)
+		if (!R.bEditorBuildInvoked)
 		{
 			// Fall back to the direct API if the editor build pipeline refused.
 			NavSys->Build();
 		}
 
-		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
-		Result->SetBoolField(TEXT("editor_build_invoked"), bEditorBuildSucceeded);
-		Result->SetNumberField(TEXT("remaining_build_tasks"), NavSys->GetNumRemainingBuildTasks());
-
-		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: navigation/rebuild_navmesh (editor_build=%s, remaining=%d)"),
-			bEditorBuildSucceeded ? TEXT("ok") : TEXT("fallback"), NavSys->GetNumRemainingBuildTasks());
-		return Result;
+		// Use at least 1 so progress math is safe when tasks are already queued.
+		R.InitialRemaining = FMath::Max(1,
+			NavSys->GetNumRemainingBuildTasks() + NavSys->GetNumRunningBuildTasks());
+		return R;
 	};
 
-	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	const FKickResult Kick = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<FKickResult>(KickTask);
+
+	if (Kick.bFailed)
+	{
+		TSharedPtr<FJsonObject> ErrResult = FMCPJson::MakeError(Kick.Error);
+		return FMCPResponse::Success(Request.Id, ErrResult);
+	}
+
+	// Step 2: poll on the background thread until all tasks complete or timeout.
+	struct FPollState
+	{
+		int32 Remaining = 0;
+		int32 Running   = 0;
+		bool bValid     = false;
+	};
+
+	constexpr double TimeoutSeconds = 300.0;
+	const double StartTime = FPlatformTime::Seconds();
+	bool bTimedOut = false;
+	FPollState LastPoll;
+
+	while (true)
+	{
+		auto PollTask = []() -> FPollState
+		{
+			FPollState S;
+			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (!World) return S;
+			UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World);
+			if (!NavSys) return S;
+			S.Remaining = NavSys->GetNumRemainingBuildTasks();
+			S.Running   = NavSys->GetNumRunningBuildTasks();
+			S.bValid    = true;
+			return S;
+		};
+
+		const FPollState S = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<FPollState>(PollTask);
+		LastPoll = S;
+		if (!S.bValid) break;
+
+		const int32 Outstanding = S.Remaining + S.Running;
+		if (Outstanding <= 0) break;
+
+		const double Progress = FMath::Clamp(
+			double(Kick.InitialRemaining - Outstanding) / double(Kick.InitialRemaining),
+			0.0, 1.0);
+		SendProgress(Progress, 1.0,
+			FString::Printf(TEXT("navmesh build: %d running, %d remaining"), S.Running, S.Remaining));
+
+		if (FPlatformTime::Seconds() - StartTime > TimeoutSeconds)
+		{
+			bTimedOut = true;
+			break;
+		}
+
+		FPlatformProcess::Sleep(0.5f);
+	}
+
+	SendProgress(1.0, 1.0, bTimedOut
+		? TEXT("navmesh build: timeout waiting for completion")
+		: TEXT("navmesh build complete"));
+
+	// Build JSON response preserving existing response shape.
+	TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+	Result->SetBoolField(TEXT("editor_build_invoked"), Kick.bEditorBuildInvoked);
+	Result->SetNumberField(TEXT("remaining_build_tasks"), LastPoll.bValid ? LastPoll.Remaining : 0);
+	if (bTimedOut)
+	{
+		Result->SetBoolField(TEXT("timed_out"), true);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: navigation/rebuild_navmesh (editor_build=%s, timed_out=%s, remaining=%d)"),
+		Kick.bEditorBuildInvoked ? TEXT("ok") : TEXT("fallback"),
+		bTimedOut ? TEXT("true") : TEXT("false"),
+		LastPoll.bValid ? LastPoll.Remaining : 0);
+
 	return FMCPResponse::Success(Request.Id, Result);
 }
 

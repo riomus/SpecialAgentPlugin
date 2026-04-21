@@ -24,7 +24,7 @@ public:
 	virtual TArray<FMCPToolInfo> GetAvailableTools() const override;
 
 private:
-	FMCPResponse HandleRebuildNavMesh(const FMCPRequest& Request);
+	FMCPResponse HandleRebuildNavMesh(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 	FMCPResponse HandleTestPath(const FMCPRequest& Request);
 	FMCPResponse HandleGetNavMeshBounds(const FMCPRequest& Request);
 	FMCPResponse HandleFindNearestReachablePoint(const FMCPRequest& Request);
