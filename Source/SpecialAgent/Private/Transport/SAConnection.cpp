@@ -176,6 +176,8 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         return;
     }
 
+    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: POST /mcp (single-body) method=%s"), *Msg.Method);
+
     // Session id machinery: mint on initialize, validate otherwise.
     FString MintedSessionId;  // non-empty only when we minted one for 'initialize'
     if (Msg.Method == TEXT("initialize"))
@@ -187,12 +189,14 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
         if (Sid.IsEmpty())
         {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 400 — missing Mcp-Session-Id on method=%s"), *Msg.Method);
             Writer.WriteSingleBodyString(400, TEXT("application/json"),
                 TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
             return;
         }
         if (!FSASessionRegistry::Get().IsSessionValid(Sid))
         {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 404 — unknown session %s on method=%s"), *Sid, *Msg.Method);
             Writer.WriteSingleBodyString(404, TEXT("application/json"),
                 TEXT("{\"error\":\"unknown session; re-initialize\"}"));
             return;
@@ -227,6 +231,10 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
     FMCPRequest Msg;
     const bool bParsedOk = FSpecialAgentMCPServer::ParseRequest(BodyStr, Msg);
 
+    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: POST /mcp (SSE) method=%s parsed=%d"),
+        bParsedOk ? *Msg.Method : TEXT("<unparsed>"),
+        bParsedOk ? 1 : 0);
+
     // Session id machinery: mint on initialize, validate otherwise.
     // Must happen BEFORE BeginSSE so we can still send HTTP error status codes.
     FString MintedSessionId;  // non-empty only when we minted one for 'initialize'
@@ -241,12 +249,14 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
             const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
             if (Sid.IsEmpty())
             {
+                UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: SSE 400 — missing Mcp-Session-Id on method=%s"), *Msg.Method);
                 Writer.WriteSingleBodyString(400, TEXT("application/json"),
                     TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
                 return;
             }
             if (!FSASessionRegistry::Get().IsSessionValid(Sid))
             {
+                UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: SSE 404 — unknown session %s on method=%s"), *Sid, *Msg.Method);
                 Writer.WriteSingleBodyString(404, TEXT("application/json"),
                     TEXT("{\"error\":\"unknown session; re-initialize\"}"));
                 return;
@@ -325,17 +335,20 @@ void FSAConnection::HandleGetSSE(const FSAHttpRequest& Req)
     const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
     if (Sid.IsEmpty())
     {
+        UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: GET /sse 400 — missing Mcp-Session-Id"));
         Writer.WriteSingleBodyString(400, TEXT("application/json"),
             TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
         return;
     }
     if (!FSASessionRegistry::Get().IsSessionValid(Sid))
     {
+        UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: GET /sse 404 — unknown session %s"), *Sid);
         Writer.WriteSingleBodyString(404, TEXT("application/json"),
             TEXT("{\"error\":\"unknown session\"}"));
         return;
     }
 
+    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET /sse session=%s opening stream"), *Sid);
     if (!Writer.BeginSSE()) return;
 
     // Prime the stream so strict HTTP clients see a chunk immediately.
@@ -374,6 +387,14 @@ uint32 FSAConnection::Run()
     FSAHttpRequest Req;
     if (ReadFullRequest(Buf, Req))
     {
+        const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
+        UE_LOG(LogTemp, Log,
+            TEXT("SpecialAgent: %s %s Accept=%s Session=%s body=%dB"),
+            *Req.Verb, *Req.Path,
+            *Req.GetHeader(TEXT("Accept")),
+            Sid.IsEmpty() ? TEXT("<none>") : *Sid,
+            Req.Body.Num());
+
         if (Req.Verb == TEXT("OPTIONS"))
         {
             HandleOptions();
@@ -392,8 +413,13 @@ uint32 FSAConnection::Run()
         }
         else
         {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 404 for %s %s"), *Req.Verb, *Req.Path);
             HandleNotFound();
         }
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: request read failed or timed out"));
     }
     if (Owner) Owner->Retire(this);
     return 0;
