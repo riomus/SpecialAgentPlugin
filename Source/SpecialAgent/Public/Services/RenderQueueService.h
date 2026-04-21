@@ -19,4 +19,5 @@ private:
     FMCPResponse HandleQueueSequence(const FMCPRequest& Request);
     FMCPResponse HandleSetOutput(const FMCPRequest& Request);
     FMCPResponse HandleGetStatus(const FMCPRequest& Request);
+    FMCPResponse HandleStartRender(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 };

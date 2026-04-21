@@ -9,6 +9,7 @@
 #include "Editor.h"
 #include "Graph/MovieGraphConfig.h"
 #include "LevelSequence.h"
+#include "Executors/MoviePipelineInProcessExecutor.h"
 #include "MoviePipelineExecutor.h"
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelinePrimaryConfig.h"
@@ -25,6 +26,7 @@ FMCPResponse FRenderQueueService::HandleRequest(const FMCPRequest& Request, cons
     if (MethodName == TEXT("queue_sequence")) return HandleQueueSequence(Request);
     if (MethodName == TEXT("set_output"))     return HandleSetOutput(Request);
     if (MethodName == TEXT("get_status"))     return HandleGetStatus(Request);
+    if (MethodName == TEXT("start_render"))   return HandleStartRender(Request, Ctx);
 
     return MethodNotFound(Request.Id, TEXT("render_queue"), MethodName);
 }
@@ -64,6 +66,15 @@ TArray<FMCPToolInfo> FRenderQueueService::GetAvailableTools() const
              "Params: none. "
              "Workflow: call after queue_sequence / during render to monitor progress. "
              "Warning: 'complete' here means is_consumed==true; fresh jobs show 'queued'."))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("start_render"),
+        TEXT("Start rendering the current Movie Render Queue using the in-process executor. "
+             "Returns {success, frames_rendered?}. Emits notifications/progress every 500 ms based on "
+             "UMoviePipelineExecutorBase::GetStatusProgress(). Workflow: queue_sequence -> set_output -> start_render. "
+             "Warning: blocks the handler until rendering finishes — can take minutes to hours. "
+             "Emits notifications/progress over the session's SSE stream, so call from a client with "
+             "Accept: text/event-stream if you want live progress."))
         .Build());
 
     return Tools;
@@ -324,5 +335,91 @@ FMCPResponse FRenderQueueService::HandleGetStatus(const FMCPRequest& Request)
     };
 
     TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FRenderQueueService::HandleStartRender(const FMCPRequest& Request, const FMCPRequestContext& Ctx)
+{
+    const auto SendProgress = Ctx.SendProgress;
+    SendProgress(0.0, 1.0, TEXT("movie render queue: starting"));
+
+    // Step 1: kick on the game thread
+    struct FKick { bool bOk = false; FString Error; };
+    auto KickTask = []() -> FKick
+    {
+        FKick K;
+        if (!GEditor) { K.Error = TEXT("GEditor unavailable"); return K; }
+        UMoviePipelineQueueSubsystem* Subsys = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+        if (!Subsys) { K.Error = TEXT("MoviePipelineQueueSubsystem not available"); return K; }
+        if (Subsys->IsRendering())
+        {
+            K.Error = TEXT("A render is already in progress");
+            return K;
+        }
+        UMoviePipelineQueue* Queue = Subsys->GetQueue();
+        if (!Queue || Queue->GetJobs().Num() == 0)
+        {
+            K.Error = TEXT("Queue is empty — call render_queue/queue_sequence first");
+            return K;
+        }
+        UMoviePipelineExecutorBase* Exec = Subsys->RenderQueueWithExecutor(UMoviePipelineInProcessExecutor::StaticClass());
+        if (!Exec) { K.Error = TEXT("RenderQueueWithExecutor returned null"); return K; }
+        K.bOk = true;
+        return K;
+    };
+    FKick Kick = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<FKick>(KickTask);
+    if (!Kick.bOk)
+    {
+        SendProgress(1.0, 1.0, FString::Printf(TEXT("movie render queue: failed — %s"), *Kick.Error));
+        TSharedPtr<FJsonObject> Err = FMCPJson::MakeError(Kick.Error);
+        return FMCPResponse::Success(Request.Id, Err);
+    }
+
+    // Step 2: poll loop
+    struct FPoll { bool bActive = false; float Progress = 0.f; };
+    const double StartTime = FPlatformTime::Seconds();
+    constexpr double HardTimeoutSeconds = 6 * 60 * 60;  // 6 hours — sanity cap
+    bool bTimedOut = false;
+    float LastEmittedProgress = -1.f;
+
+    while (true)
+    {
+        auto PollTask = []() -> FPoll
+        {
+            FPoll P;
+            if (!GEditor) return P;
+            UMoviePipelineQueueSubsystem* Subsys = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+            if (!Subsys) return P;
+            UMoviePipelineExecutorBase* Exec = Subsys->GetActiveExecutor();
+            if (!Exec) return P;  // finished / never started
+            P.bActive = Subsys->IsRendering();
+            P.Progress = FMath::Clamp(Exec->GetStatusProgress(), 0.f, 1.f);
+            return P;
+        };
+        const FPoll P = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<FPoll>(PollTask);
+
+        // Emit only when progress has moved — keeps the SSE stream quiet when executor is idle.
+        if (P.Progress != LastEmittedProgress)
+        {
+            SendProgress(double(P.Progress), 1.0,
+                FString::Printf(TEXT("movie render queue: %.1f%%"), P.Progress * 100.f));
+            LastEmittedProgress = P.Progress;
+        }
+
+        if (!P.bActive) break;
+        if (FPlatformTime::Seconds() - StartTime > HardTimeoutSeconds)
+        {
+            bTimedOut = true;
+            break;
+        }
+        FPlatformProcess::Sleep(0.5f);
+    }
+
+    SendProgress(1.0, 1.0, bTimedOut
+        ? TEXT("movie render queue: timeout (6h cap)")
+        : TEXT("movie render queue: complete"));
+
+    TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+    Result->SetBoolField(TEXT("timed_out"), bTimedOut);
     return FMCPResponse::Success(Request.Id, Result);
 }
