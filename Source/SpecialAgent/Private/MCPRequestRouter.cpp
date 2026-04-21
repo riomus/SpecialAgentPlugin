@@ -335,11 +335,22 @@ void FMCPRequestRouter::RegisterService(const FString& ServicePrefix, TSharedPtr
 FMCPResponse FMCPRequestRouter::HandleInitialize(const FMCPRequest& Request)
 {
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: HandleInitialize called, building response..."));
-	
+
+	// Echo back the client's requested protocolVersion — the MCP spec says the
+	// server MUST respond with a version it supports, and in practice clients
+	// (Claude Code, Cursor, claude-desktop) disconnect if the response version
+	// doesn't match their own. Default to 2024-11-05 when no version provided.
+	FString RequestedVersion = TEXT("2024-11-05");
+	if (Request.Params.IsValid())
+	{
+		Request.Params->TryGetStringField(TEXT("protocolVersion"), RequestedVersion);
+	}
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: initialize protocolVersion=%s"), *RequestedVersion);
+
 	// MCP initialization handshake
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-	
-	Result->SetStringField(TEXT("protocolVersion"), TEXT("2024-11-05"));
+
+	Result->SetStringField(TEXT("protocolVersion"), RequestedVersion);
 	Result->SetStringField(TEXT("instructions"), BuildSpecialAgentInstructions());
 	
 	TSharedPtr<FJsonObject> ServerInfo = MakeShared<FJsonObject>();
