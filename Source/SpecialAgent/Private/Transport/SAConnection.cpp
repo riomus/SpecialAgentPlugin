@@ -28,8 +28,35 @@ namespace
             }
         }
 
-        // Phase 3a: placeholder SendProgress (bound to session SSE stream in 3b.2).
-        Ctx.SendProgress = [](double, double, const FString&) {};
+        // Real SendProgress: serialise notifications/progress JSON-RPC message
+        // and route to the session's registered SSE stream via the registry.
+        // No-op if the session has no active GET /sse stream — handlers may
+        // always call this without checking.
+        const FString SessionIdCopy = Ctx.SessionId;
+        const TSharedPtr<FJsonValue> TokenCopy = Ctx.ProgressToken;
+        Ctx.SendProgress = [SessionIdCopy, TokenCopy](double Progress, double Total, const FString& Message)
+        {
+            if (SessionIdCopy.IsEmpty()) return;
+
+            TSharedRef<FJsonObject> Notification = MakeShared<FJsonObject>();
+            Notification->SetStringField(TEXT("jsonrpc"), TEXT("2.0"));
+            Notification->SetStringField(TEXT("method"), TEXT("notifications/progress"));
+
+            TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+            if (TokenCopy.IsValid())
+            {
+                Params->SetField(TEXT("progressToken"), TokenCopy);
+            }
+            Params->SetNumberField(TEXT("progress"), Progress);
+            Params->SetNumberField(TEXT("total"),    Total);
+            if (!Message.IsEmpty())
+            {
+                Params->SetStringField(TEXT("message"), Message);
+            }
+            Notification->SetObjectField(TEXT("params"), Params);
+
+            FSASessionRegistry::Get().SendNotification(SessionIdCopy, Notification);
+        };
         return Ctx;
     }
 }
@@ -287,6 +314,51 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
     }
 }
 
+void FSAConnection::HandleGetSSE(const FSAHttpRequest& Req)
+{
+    const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
+    if (Sid.IsEmpty())
+    {
+        Writer.WriteSingleBodyString(400, TEXT("application/json"),
+            TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
+        return;
+    }
+    if (!FSASessionRegistry::Get().IsSessionValid(Sid))
+    {
+        Writer.WriteSingleBodyString(404, TEXT("application/json"),
+            TEXT("{\"error\":\"unknown session\"}"));
+        return;
+    }
+
+    if (!Writer.BeginSSE()) return;
+
+    ActiveSessionIdForStream = Sid;
+    FSASessionRegistry::Get().RegisterStream(Sid, this);
+
+    // Keep-alive loop. Runs on this FRunnable until bStopping or socket death.
+    // Notifications pushed via FSASessionRegistry::SendNotification -> PushSSEEvent
+    // interleave with keep-alives safely under Writer's SSEWriteLock.
+    while (!bStopping && !Writer.IsDead())
+    {
+        for (int32 i = 0;
+             i < SATransport::KeepAliveIntervalSeconds * 10
+                 && !bStopping
+                 && !Writer.IsDead();
+             ++i)
+        {
+            FPlatformProcess::Sleep(0.1f);
+        }
+        if (!bStopping && !Writer.IsDead())
+        {
+            Writer.WriteKeepAlive();
+        }
+    }
+
+    FSASessionRegistry::Get().UnregisterStream(Sid, this);
+    ActiveSessionIdForStream.Empty();
+    Writer.Finish();
+}
+
 uint32 FSAConnection::Run()
 {
     TArray<uint8> Buf;
@@ -303,8 +375,7 @@ uint32 FSAConnection::Run()
         }
         else if (Req.Verb == TEXT("GET") && Req.Path == TEXT("/sse"))
         {
-            // Phase 3b — for Phase 1 we return 501 so the path is reachable but stubbed.
-            Writer.WriteSingleBodyString(501, TEXT("text/plain"), TEXT("SSE GET not yet implemented"));
+            HandleGetSSE(Req);
         }
         else if (Req.Verb == TEXT("POST") && Req.Path == TEXT("/mcp"))
         {
