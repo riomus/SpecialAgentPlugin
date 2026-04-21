@@ -54,6 +54,7 @@ bool FSAHttpResponse::WriteSingleBody(int32 StatusCode, const FString& ContentTy
     Head += FString::Printf(TEXT("Content-Length: %d\r\n"), Body.Num());
     Head += TEXT("Connection: close\r\n");
     Head += TEXT("Access-Control-Allow-Origin: *\r\n");
+    Head += TEXT("Access-Control-Expose-Headers: Mcp-Session-Id\r\n");
     for (const auto& KV : ExtraHeaders)
     {
         Head += FString::Printf(TEXT("%s: %s\r\n"), *KV.Key, *KV.Value);
@@ -76,12 +77,16 @@ bool FSAHttpResponse::BeginSSE(const TMap<FString, FString>& ExtraHeaders)
 {
     FScopeLock Lock(&SSEWriteLock);
     if (IsDead()) return false;
+    // NB: we close the socket after Finish(), so advertise Connection: close.
+    // Advertising keep-alive then closing triggers reconnect/retry loops in
+    // strict HTTP clients (Claude Code, claude-desktop).
     FString Head = TEXT("HTTP/1.1 200 OK\r\n")
                    TEXT("Content-Type: text/event-stream\r\n")
                    TEXT("Transfer-Encoding: chunked\r\n")
                    TEXT("Cache-Control: no-cache, no-store, must-revalidate\r\n")
-                   TEXT("Connection: keep-alive\r\n")
+                   TEXT("Connection: close\r\n")
                    TEXT("Access-Control-Allow-Origin: *\r\n")
+                   TEXT("Access-Control-Expose-Headers: Mcp-Session-Id\r\n")
                    TEXT("X-Accel-Buffering: no\r\n");
     for (const auto& KV : ExtraHeaders) Head += FString::Printf(TEXT("%s: %s\r\n"), *KV.Key, *KV.Value);
     Head += TEXT("\r\n");
