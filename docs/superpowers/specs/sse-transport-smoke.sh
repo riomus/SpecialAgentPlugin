@@ -8,7 +8,7 @@
 
 set -euo pipefail
 HOST="${HOST:-http://127.0.0.1:8767}"
-SESSION_ENFORCED="${SESSION_ENFORCED:-0}"
+SESSION_ENFORCED="${SESSION_ENFORCED:-1}"
 FAIL=0
 pass() { echo "ok  $1"; }
 fail() { echo "FAIL $1: $2"; FAIL=1; }

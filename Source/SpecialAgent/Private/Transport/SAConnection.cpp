@@ -11,6 +11,56 @@
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 
+namespace
+{
+    FMCPRequestContext BuildContextFromRequest(const FSAHttpRequest& Req, const FMCPRequest& Msg)
+    {
+        FMCPRequestContext Ctx;
+        Ctx.SessionId = Req.GetHeader(TEXT("Mcp-Session-Id"));
+
+        // Extract progressToken from params._meta.progressToken when present.
+        if (Msg.Params.IsValid())
+        {
+            const TSharedPtr<FJsonObject>* MetaObj = nullptr;
+            if (Msg.Params->TryGetObjectField(TEXT("_meta"), MetaObj))
+            {
+                Ctx.ProgressToken = (*MetaObj)->TryGetField(TEXT("progressToken"));
+            }
+        }
+
+        // Real SendProgress: serialise notifications/progress JSON-RPC message
+        // and route to the session's registered SSE stream via the registry.
+        // No-op if the session has no active GET /sse stream — handlers may
+        // always call this without checking.
+        const FString SessionIdCopy = Ctx.SessionId;
+        const TSharedPtr<FJsonValue> TokenCopy = Ctx.ProgressToken;
+        Ctx.SendProgress = [SessionIdCopy, TokenCopy](double Progress, double Total, const FString& Message)
+        {
+            if (SessionIdCopy.IsEmpty()) return;
+
+            TSharedRef<FJsonObject> Notification = MakeShared<FJsonObject>();
+            Notification->SetStringField(TEXT("jsonrpc"), TEXT("2.0"));
+            Notification->SetStringField(TEXT("method"), TEXT("notifications/progress"));
+
+            TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+            if (TokenCopy.IsValid())
+            {
+                Params->SetField(TEXT("progressToken"), TokenCopy);
+            }
+            Params->SetNumberField(TEXT("progress"), Progress);
+            Params->SetNumberField(TEXT("total"),    Total);
+            if (!Message.IsEmpty())
+            {
+                Params->SetStringField(TEXT("message"), Message);
+            }
+            Notification->SetObjectField(TEXT("params"), Params);
+
+            FSASessionRegistry::Get().SendNotification(SessionIdCopy, Notification);
+        };
+        return Ctx;
+    }
+}
+
 FSAConnection::FSAConnection(FSATcpServer* InOwner, FSocket* InSocket,
                              TSharedPtr<FMCPRequestRouter> InRouter)
     : Owner(InOwner), Socket(InSocket), Router(InRouter), Writer(InSocket) {}
@@ -106,10 +156,13 @@ void FSAConnection::HandleNotFound()
 
 void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
 {
+    if (Req.AcceptContains(TEXT("text/event-stream")))
+    {
+        HandlePostMCPSSE(Req);
+        return;
+    }
+
     // Parse JSON-RPC (body must already be fully read).
-    // Phase 1: synchronous dispatch on a background task (matches today's
-    // post-threading-fix behaviour). Context is empty for now — session
-    // wiring lands in Phase 3.
     const FString BodyStr = FString::ConstructFromPtrSize(
         UTF8_TO_TCHAR((const ANSICHAR*)Req.Body.GetData()), Req.Body.Num());
 
@@ -123,18 +176,187 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         return;
     }
 
+    // Session id machinery: mint on initialize, validate otherwise.
+    FString MintedSessionId;  // non-empty only when we minted one for 'initialize'
+    if (Msg.Method == TEXT("initialize"))
+    {
+        MintedSessionId = FSASessionRegistry::Get().MintSession();
+    }
+    else
+    {
+        const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
+        if (Sid.IsEmpty())
+        {
+            Writer.WriteSingleBodyString(400, TEXT("application/json"),
+                TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
+            return;
+        }
+        if (!FSASessionRegistry::Get().IsSessionValid(Sid))
+        {
+            Writer.WriteSingleBodyString(404, TEXT("application/json"),
+                TEXT("{\"error\":\"unknown session; re-initialize\"}"));
+            return;
+        }
+    }
+
+    FMCPRequestContext Ctx = BuildContextFromRequest(Req, Msg);
+    if (!MintedSessionId.IsEmpty()) Ctx.SessionId = MintedSessionId;
+
     // Dispatch on a background thread so game-thread dispatcher can safely block.
     TPromise<FString> P;
     auto Fut = P.GetFuture();
     AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
-        [Router = Router, Msg = MoveTemp(Msg), Promise = MoveTemp(P)]() mutable
+        [Router = Router, Msg = MoveTemp(Msg), Ctx = MoveTemp(Ctx), Promise = MoveTemp(P)]() mutable
         {
-            FMCPRequestContext Ctx;   // Phase 3 fills this in
             FMCPResponse R = Router->RouteRequest(Msg, Ctx);
             Promise.SetValue(FSpecialAgentMCPServer::FormatResponse(R));
         });
     const FString Json = Fut.Get();
-    Writer.WriteSingleBodyString(200, TEXT("application/json"), Json);
+
+    TMap<FString, FString> ExtraHeaders;
+    if (!MintedSessionId.IsEmpty()) ExtraHeaders.Add(TEXT("Mcp-Session-Id"), MintedSessionId);
+    Writer.WriteSingleBodyString(200, TEXT("application/json"), Json, ExtraHeaders);
+}
+
+void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
+{
+    // Parse up front so we can emit a parse-error event in SSE mode too.
+    const FString BodyStr = FString::ConstructFromPtrSize(
+        UTF8_TO_TCHAR((const ANSICHAR*)Req.Body.GetData()), Req.Body.Num());
+
+    FMCPRequest Msg;
+    const bool bParsedOk = FSpecialAgentMCPServer::ParseRequest(BodyStr, Msg);
+
+    // Session id machinery: mint on initialize, validate otherwise.
+    // Must happen BEFORE BeginSSE so we can still send HTTP error status codes.
+    FString MintedSessionId;  // non-empty only when we minted one for 'initialize'
+    if (bParsedOk)
+    {
+        if (Msg.Method == TEXT("initialize"))
+        {
+            MintedSessionId = FSASessionRegistry::Get().MintSession();
+        }
+        else
+        {
+            const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
+            if (Sid.IsEmpty())
+            {
+                Writer.WriteSingleBodyString(400, TEXT("application/json"),
+                    TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
+                return;
+            }
+            if (!FSASessionRegistry::Get().IsSessionValid(Sid))
+            {
+                Writer.WriteSingleBodyString(404, TEXT("application/json"),
+                    TEXT("{\"error\":\"unknown session; re-initialize\"}"));
+                return;
+            }
+        }
+    }
+
+    TMap<FString, FString> ExtraHeaders;
+    if (!MintedSessionId.IsEmpty()) ExtraHeaders.Add(TEXT("Mcp-Session-Id"), MintedSessionId);
+    if (!Writer.BeginSSE(ExtraHeaders)) return;
+
+    if (!bParsedOk)
+    {
+        Writer.WriteEvent(TEXT("message"), FSpecialAgentMCPServer::FormatResponse(
+            FMCPResponse::Error(TEXT(""), -32700, TEXT("Parse error: Invalid JSON"))));
+        Writer.Finish();
+        return;
+    }
+
+    FMCPRequestContext Ctx = BuildContextFromRequest(Req, Msg);
+    if (!MintedSessionId.IsEmpty()) Ctx.SessionId = MintedSessionId;
+
+    // Dispatch on background thread. The current connection thread stays on
+    // the socket to flush keep-alives while the router runs, preventing any
+    // client-side HTTP read timeout from firing during long handlers (e.g.
+    // material/* normal-map compute, asset imports, PIE start).
+    std::atomic<bool> bDone{ false };
+    TPromise<FString> P;
+    auto Fut = P.GetFuture();
+    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
+        [Router = Router, Msg, Ctx = MoveTemp(Ctx), &bDone, Promise = MoveTemp(P)]() mutable
+        {
+            FMCPResponse R = Router->RouteRequest(Msg, Ctx);
+            Promise.SetValue(FSpecialAgentMCPServer::FormatResponse(R));
+            bDone.store(true, std::memory_order_release);
+        });
+
+    // Keep-alive ticker. Wait up to kKeepAliveIntervalSeconds in 100 ms slices
+    // so we respond to bStopping / socket death within one slice. When the
+    // slice elapses without completion, flush a ": keepalive\n\n" frame.
+    // NOTE: capturing &bDone is safe because Fut.Get() below blocks this
+    // function until the background task has run.
+    while (!bDone.load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
+    {
+        for (int32 i = 0;
+             i < SATransport::KeepAliveIntervalSeconds * 10
+                 && !bDone.load(std::memory_order_acquire)
+                 && !bStopping
+                 && !Writer.IsDead();
+             ++i)
+        {
+            FPlatformProcess::Sleep(0.1f);
+        }
+        if (!bDone.load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
+        {
+            Writer.WriteKeepAlive();
+        }
+    }
+
+    if (!Writer.IsDead())
+    {
+        const FString Json = Fut.Get();
+        Writer.WriteEvent(TEXT("message"), Json);
+        Writer.Finish();
+    }
+}
+
+void FSAConnection::HandleGetSSE(const FSAHttpRequest& Req)
+{
+    const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
+    if (Sid.IsEmpty())
+    {
+        Writer.WriteSingleBodyString(400, TEXT("application/json"),
+            TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
+        return;
+    }
+    if (!FSASessionRegistry::Get().IsSessionValid(Sid))
+    {
+        Writer.WriteSingleBodyString(404, TEXT("application/json"),
+            TEXT("{\"error\":\"unknown session\"}"));
+        return;
+    }
+
+    if (!Writer.BeginSSE()) return;
+
+    ActiveSessionIdForStream = Sid;
+    FSASessionRegistry::Get().RegisterStream(Sid, this);
+
+    // Keep-alive loop. Runs on this FRunnable until bStopping or socket death.
+    // Notifications pushed via FSASessionRegistry::SendNotification -> PushSSEEvent
+    // interleave with keep-alives safely under Writer's SSEWriteLock.
+    while (!bStopping && !Writer.IsDead())
+    {
+        for (int32 i = 0;
+             i < SATransport::KeepAliveIntervalSeconds * 10
+                 && !bStopping
+                 && !Writer.IsDead();
+             ++i)
+        {
+            FPlatformProcess::Sleep(0.1f);
+        }
+        if (!bStopping && !Writer.IsDead())
+        {
+            Writer.WriteKeepAlive();
+        }
+    }
+
+    FSASessionRegistry::Get().UnregisterStream(Sid, this);
+    ActiveSessionIdForStream.Empty();
+    Writer.Finish();
 }
 
 uint32 FSAConnection::Run()
@@ -153,8 +375,7 @@ uint32 FSAConnection::Run()
         }
         else if (Req.Verb == TEXT("GET") && Req.Path == TEXT("/sse"))
         {
-            // Phase 3b — for Phase 1 we return 501 so the path is reachable but stubbed.
-            Writer.WriteSingleBodyString(501, TEXT("text/plain"), TEXT("SSE GET not yet implemented"));
+            HandleGetSSE(Req);
         }
         else if (Req.Verb == TEXT("POST") && Req.Path == TEXT("/mcp"))
         {

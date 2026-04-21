@@ -33,7 +33,6 @@ public class SpecialAgent : ModuleRules
 				"HTTP",
 				"Sockets",
 				"Networking",
-				"HTTPServer",
 				"ApplicationCore",
 			}
 		);
