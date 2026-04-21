@@ -162,9 +162,14 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         return;
     }
 
-    // Parse JSON-RPC (body must already be fully read).
-    const FString BodyStr = FString::ConstructFromPtrSize(
-        UTF8_TO_TCHAR((const ANSICHAR*)Req.Body.GetData()), Req.Body.Num());
+    // Parse JSON-RPC. Req.Body is a raw byte buffer — convert it to FString
+    // via an explicit-length UTF-8 converter. Do NOT use UTF8_TO_TCHAR with
+    // ConstructFromPtrSize + byte count: UTF8_TO_TCHAR expects a null-
+    // terminated input and ConstructFromPtrSize's length is in TCHARs,
+    // so the old form read past the buffer and passed a byte count as a
+    // TCHAR count, producing corrupted JSON that failed to parse.
+    FUTF8ToTCHAR Converter((const ANSICHAR*)Req.Body.GetData(), Req.Body.Num());
+    const FString BodyStr(Converter.Length(), Converter.Get());
 
     FMCPRequest Msg;
     if (!FSpecialAgentMCPServer::ParseRequest(BodyStr, Msg))
@@ -228,8 +233,9 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
 void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
 {
     // Parse up front so we can emit a parse-error event in SSE mode too.
-    const FString BodyStr = FString::ConstructFromPtrSize(
-        UTF8_TO_TCHAR((const ANSICHAR*)Req.Body.GetData()), Req.Body.Num());
+    // See HandlePostMCP for why we must use an explicit-length UTF-8 converter.
+    FUTF8ToTCHAR Converter((const ANSICHAR*)Req.Body.GetData(), Req.Body.Num());
+    const FString BodyStr(Converter.Length(), Converter.Get());
 
     FMCPRequest Msg;
     const bool bParsedOk = FSpecialAgentMCPServer::ParseRequest(BodyStr, Msg);
