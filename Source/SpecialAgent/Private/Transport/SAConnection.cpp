@@ -258,6 +258,12 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
     if (!MintedSessionId.IsEmpty()) ExtraHeaders.Add(TEXT("Mcp-Session-Id"), MintedSessionId);
     if (!Writer.BeginSSE(ExtraHeaders)) return;
 
+    // Prime the stream so clients with short read-idle timeouts (e.g. Claude
+    // Code / undici) see at least one chunk before the handler starts working.
+    // Without this, a ~5 s idle timeout kills the stream before our ticker
+    // fires its first keep-alive.
+    Writer.WriteKeepAlive();
+
     if (!bParsedOk)
     {
         Writer.WriteEvent(TEXT("message"), FSpecialAgentMCPServer::FormatResponse(
@@ -331,6 +337,9 @@ void FSAConnection::HandleGetSSE(const FSAHttpRequest& Req)
     }
 
     if (!Writer.BeginSSE()) return;
+
+    // Prime the stream so strict HTTP clients see a chunk immediately.
+    Writer.WriteKeepAlive();
 
     ActiveSessionIdForStream = Sid;
     FSASessionRegistry::Get().RegisterStream(Sid, this);

@@ -4,10 +4,11 @@
 
 namespace SATransport
 {
-    // SSE keep-alive frame cadence. Set conservatively below typical client
-    // HTTP-read timeouts (30–60 s). Bumping this also bumps the worst-case
-    // editor-shutdown wait.
-    constexpr int32 KeepAliveIntervalSeconds = 15;
+    // SSE keep-alive frame cadence. Must be shorter than the client's
+    // HTTP-read-idle timeout. Claude Code's undici-based client drops streams
+    // that go silent for more than a few seconds, so 5 s is conservative.
+    // Bumping this also bumps the worst-case editor-shutdown wait.
+    constexpr int32 KeepAliveIntervalSeconds = 5;
 
     // Maximum concurrent TCP connections. Editor use never approaches this;
     // the 17th client gets 503 Service Unavailable.
