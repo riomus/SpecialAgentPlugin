@@ -99,7 +99,21 @@ bool FSAHttpResponse::WriteEvent(const FString& EventName, const FString& Data)
 {
     FScopeLock Lock(&SSEWriteLock);
     if (IsDead()) return false;
-    FString SSE = FString::Printf(TEXT("event: %s\ndata: %s\n\n"), *EventName, *Data);
+    // SSE: each newline in Data must become its own "data: " line; a blank line
+    // terminates the event. Without this split, multiline payloads (e.g. pretty-
+    // printed JSON) get truncated by the client at the first '\n'.
+    FString SSE = FString::Printf(TEXT("event: %s\n"), *EventName);
+    TArray<FString> Lines;
+    Data.ParseIntoArray(Lines, TEXT("\n"), /*CullEmpty=*/false);
+    for (FString& Line : Lines)
+    {
+        // Strip a trailing '\r' if the caller used CRLF separators.
+        if (Line.EndsWith(TEXT("\r"))) Line.LeftChopInline(1);
+        SSE += TEXT("data: ");
+        SSE += Line;
+        SSE += TEXT("\n");
+    }
+    SSE += TEXT("\n");   // blank line terminates the event
     return WriteAll(WrapChunk(SSE));
 }
 

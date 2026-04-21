@@ -122,8 +122,11 @@ FString FSpecialAgentMCPServer::FormatResponse(const FMCPResponse& Response)
 		JsonObject->SetObjectField(TEXT("error"), Response.ErrorObject);
 	}
 
+	// Condensed JSON (single line, no whitespace): required so the response fits
+	// on one SSE data: line, and cheaper to ship over the wire in either mode.
 	FString OutputString;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutputString);
 	FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
 	return OutputString;
 }
