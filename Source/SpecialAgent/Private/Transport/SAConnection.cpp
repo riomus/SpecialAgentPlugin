@@ -106,6 +106,12 @@ void FSAConnection::HandleNotFound()
 
 void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
 {
+    if (Req.AcceptContains(TEXT("text/event-stream")))
+    {
+        HandlePostMCPSSE(Req);
+        return;
+    }
+
     // Parse JSON-RPC (body must already be fully read).
     // Phase 1: synchronous dispatch on a background task (matches today's
     // post-threading-fix behaviour). Context is empty for now — session
@@ -135,6 +141,71 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         });
     const FString Json = Fut.Get();
     Writer.WriteSingleBodyString(200, TEXT("application/json"), Json);
+}
+
+void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
+{
+    // Parse up front so we can emit a parse-error event in SSE mode too.
+    const FString BodyStr = FString::ConstructFromPtrSize(
+        UTF8_TO_TCHAR((const ANSICHAR*)Req.Body.GetData()), Req.Body.Num());
+
+    FMCPRequest Msg;
+    const bool bParsedOk = FSpecialAgentMCPServer::ParseRequest(BodyStr, Msg);
+
+    if (!Writer.BeginSSE()) return;
+
+    if (!bParsedOk)
+    {
+        Writer.WriteEvent(TEXT("message"), FSpecialAgentMCPServer::FormatResponse(
+            FMCPResponse::Error(TEXT(""), -32700, TEXT("Parse error: Invalid JSON"))));
+        Writer.Finish();
+        return;
+    }
+
+    // Dispatch on background thread. The current connection thread stays on
+    // the socket to flush keep-alives while the router runs, preventing any
+    // client-side HTTP read timeout from firing during long handlers (e.g.
+    // material/* normal-map compute, asset imports, PIE start).
+    std::atomic<bool> bDone{ false };
+    TPromise<FString> P;
+    auto Fut = P.GetFuture();
+    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
+        [Router = Router, Msg, &bDone, Promise = MoveTemp(P)]() mutable
+        {
+            FMCPRequestContext Ctx;    // Phase 3 fills this in
+            FMCPResponse R = Router->RouteRequest(Msg, Ctx);
+            Promise.SetValue(FSpecialAgentMCPServer::FormatResponse(R));
+            bDone.store(true, std::memory_order_release);
+        });
+
+    // Keep-alive ticker. Wait up to kKeepAliveIntervalSeconds in 100 ms slices
+    // so we respond to bStopping / socket death within one slice. When the
+    // slice elapses without completion, flush a ": keepalive\n\n" frame.
+    // NOTE: capturing &bDone is safe because Fut.Get() below blocks this
+    // function until the background task has run.
+    while (!bDone.load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
+    {
+        for (int32 i = 0;
+             i < SATransport::KeepAliveIntervalSeconds * 10
+                 && !bDone.load(std::memory_order_acquire)
+                 && !bStopping
+                 && !Writer.IsDead();
+             ++i)
+        {
+            FPlatformProcess::Sleep(0.1f);
+        }
+        if (!bDone.load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
+        {
+            Writer.WriteKeepAlive();
+        }
+    }
+
+    if (!Writer.IsDead())
+    {
+        const FString Json = Fut.Get();
+        Writer.WriteEvent(TEXT("message"), Json);
+        Writer.Finish();
+    }
 }
 
 uint32 FSAConnection::Run()

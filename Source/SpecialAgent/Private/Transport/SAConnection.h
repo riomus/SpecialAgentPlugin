@@ -39,6 +39,7 @@ private:
     void HandleGetHealth();
     void HandleOptions();
     void HandlePostMCP(const struct FSAHttpRequest& Req);
+    void HandlePostMCPSSE(const struct FSAHttpRequest& Req);
     void HandleNotFound();
 
     bool ReadFullRequest(TArray<uint8>& OutBuffer, struct FSAHttpRequest& OutReq);
