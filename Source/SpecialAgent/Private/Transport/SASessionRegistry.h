@@ -20,6 +20,13 @@ public:
 
     bool IsSessionValid(const FString& SessionId) const;
 
+    /** Permissive mode: accept a client-asserted session id as valid.
+     *  If the id is already known, no-op and returns false. Otherwise adds it
+     *  to the active set and returns true (so caller can log). Used after
+     *  editor restart: Claude Code's cached session id should keep working
+     *  instead of forcing a reconnect loop. */
+    bool AdoptSession(const FString& SessionId);
+
     /** Push a notification to the session's SSE stream. Returns false if the
      *  session has no registered stream or the write failed. */
     bool SendNotification(const FString& SessionId, const TSharedRef<FJsonObject>& Notification);

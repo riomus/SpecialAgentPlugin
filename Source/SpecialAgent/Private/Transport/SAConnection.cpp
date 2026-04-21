@@ -196,10 +196,13 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         }
         if (!FSASessionRegistry::Get().IsSessionValid(Sid))
         {
-            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 404 — unknown session %s on method=%s"), *Sid, *Msg.Method);
-            Writer.WriteSingleBodyString(404, TEXT("application/json"),
-                TEXT("{\"error\":\"unknown session; re-initialize\"}"));
-            return;
+            // Permissive: adopt the client-asserted id instead of forcing
+            // a reconnect. Survives editor restart (registry is in-memory)
+            // without Claude Code stuck on a stale cached session id.
+            if (FSASessionRegistry::Get().AdoptSession(Sid))
+            {
+                UE_LOG(LogTemp, Log, TEXT("SpecialAgent: adopted client session %s on method=%s"), *Sid, *Msg.Method);
+            }
         }
     }
 
@@ -256,10 +259,10 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
             }
             if (!FSASessionRegistry::Get().IsSessionValid(Sid))
             {
-                UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: SSE 404 — unknown session %s on method=%s"), *Sid, *Msg.Method);
-                Writer.WriteSingleBodyString(404, TEXT("application/json"),
-                    TEXT("{\"error\":\"unknown session; re-initialize\"}"));
-                return;
+                if (FSASessionRegistry::Get().AdoptSession(Sid))
+                {
+                    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: SSE adopted client session %s on method=%s"), *Sid, *Msg.Method);
+                }
             }
         }
     }
@@ -342,10 +345,10 @@ void FSAConnection::HandleGetSSE(const FSAHttpRequest& Req)
     }
     if (!FSASessionRegistry::Get().IsSessionValid(Sid))
     {
-        UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: GET /sse 404 — unknown session %s"), *Sid);
-        Writer.WriteSingleBodyString(404, TEXT("application/json"),
-            TEXT("{\"error\":\"unknown session\"}"));
-        return;
+        if (FSASessionRegistry::Get().AdoptSession(Sid))
+        {
+            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET /sse adopted client session %s"), *Sid);
+        }
     }
 
     UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET /sse session=%s opening stream"), *Sid);

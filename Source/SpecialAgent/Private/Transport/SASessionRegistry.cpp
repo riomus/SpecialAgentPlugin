@@ -24,6 +24,14 @@ bool FSASessionRegistry::IsSessionValid(const FString& SessionId) const
     return ActiveSessions.Contains(SessionId);
 }
 
+bool FSASessionRegistry::AdoptSession(const FString& SessionId)
+{
+    FRWScopeLock W(Lock, SLT_Write);
+    if (ActiveSessions.Contains(SessionId)) return false;
+    ActiveSessions.Add(SessionId);
+    return true;
+}
+
 void FSASessionRegistry::RegisterStream(const FString& SessionId, FSAConnection* Conn)
 {
     FSAConnection* Replaced = nullptr;
