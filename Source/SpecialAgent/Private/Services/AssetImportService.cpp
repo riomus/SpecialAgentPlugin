@@ -125,77 +125,126 @@ FMCPResponse FAssetImportService::HandleRequest(const FMCPRequest& Request, cons
         bool bRecursive = false;
         FMCPJson::ReadBool(Request.Params, TEXT("recursive"), bRecursive);
 
-        auto Task = [SourceFolder, DestinationPath, bRecursive]() -> TSharedPtr<FJsonObject>
+        // Step 1: validate folder and discover files on the game thread.
+        struct FDiscoveryResult
         {
-            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-
-            IFileManager& FileManager = IFileManager::Get();
-            if (!FileManager.DirectoryExists(*SourceFolder))
-            {
-                Result->SetBoolField(TEXT("success"), false);
-                Result->SetStringField(TEXT("error"), FString::Printf(TEXT("Source folder does not exist: %s"), *SourceFolder));
-                return Result;
-            }
-
+            bool bFolderMissing = false;
             TArray<FString> Files;
-            const FString WildcardPattern = SourceFolder / TEXT("*.*");
-            if (bRecursive)
+        };
+
+        FDiscoveryResult Discovery = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<FDiscoveryResult>(
+            [SourceFolder, bRecursive]() -> FDiscoveryResult
             {
-                FileManager.FindFilesRecursive(Files, *SourceFolder, TEXT("*.*"), /*Files=*/true, /*Directories=*/false);
-            }
-            else
-            {
-                FileManager.FindFiles(Files, *WildcardPattern, /*Files=*/true, /*Directories=*/false);
-                for (FString& File : Files)
+                FDiscoveryResult Out;
+                IFileManager& FileManager = IFileManager::Get();
+                if (!FileManager.DirectoryExists(*SourceFolder))
                 {
-                    File = SourceFolder / File;
+                    Out.bFolderMissing = true;
+                    return Out;
                 }
-            }
 
-            if (Files.Num() == 0)
+                const FString WildcardPattern = SourceFolder / TEXT("*.*");
+                if (bRecursive)
+                {
+                    FileManager.FindFilesRecursive(Out.Files, *SourceFolder, TEXT("*.*"), /*Files=*/true, /*Directories=*/false);
+                }
+                else
+                {
+                    FileManager.FindFiles(Out.Files, *WildcardPattern, /*Files=*/true, /*Directories=*/false);
+                    for (FString& File : Out.Files)
+                    {
+                        File = SourceFolder / File;
+                    }
+                }
+                return Out;
+            });
+
+        if (Discovery.bFolderMissing)
+        {
+            TSharedPtr<FJsonObject> ErrResult = MakeShared<FJsonObject>();
+            ErrResult->SetBoolField(TEXT("success"), false);
+            ErrResult->SetStringField(TEXT("error"), FString::Printf(TEXT("Source folder does not exist: %s"), *SourceFolder));
+            return FMCPResponse::Success(Request.Id, ErrResult);
+        }
+
+        const TArray<FString>& FilesToImport = Discovery.Files;
+        const int32 Total = FilesToImport.Num();
+
+        if (Total == 0)
+        {
+            Ctx.SendProgress(1.0, 1.0, TEXT("import_folder: empty folder"));
+
+            TSharedPtr<FJsonObject> EmptyResult = MakeShared<FJsonObject>();
+            EmptyResult->SetBoolField(TEXT("success"), true);
+            EmptyResult->SetNumberField(TEXT("imported_count"), 0);
+            EmptyResult->SetNumberField(TEXT("files_processed"), 0);
+            EmptyResult->SetStringField(TEXT("note"), TEXT("No files found in source folder"));
+            return FMCPResponse::Success(Request.Id, EmptyResult);
+        }
+
+        // Step 2: import files one at a time, emitting progress after each.
+        Ctx.SendProgress(0.0, 1.0, FString::Printf(TEXT("import_folder: 0/%d"), Total));
+
+        int32 Succeeded = 0;
+        int32 Failed = 0;
+        TArray<TSharedPtr<FJsonValue>> PathsArray;
+        TArray<TSharedPtr<FJsonValue>> FailedFilesArray;
+
+        for (int32 i = 0; i < Total; ++i)
+        {
+            const FString File = FilesToImport[i];
+
+            TArray<FString> Imported = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TArray<FString>>(
+                [File, DestinationPath]() -> TArray<FString>
+                {
+                    UAssetImportTask* Task = BuildImportTask(File, DestinationPath);
+                    TArray<UAssetImportTask*> Tasks{Task};
+
+                    FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+                    AssetToolsModule.Get().ImportAssetTasks(Tasks);
+
+                    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: import_folder file='%s' Dest='%s' Imported=%d"),
+                        *File, *DestinationPath, Task->GetObjects().Num());
+
+                    return Task->ImportedObjectPaths;
+                });
+
+            if (Imported.Num() > 0)
             {
-                Result->SetBoolField(TEXT("success"), true);
-                Result->SetNumberField(TEXT("imported_count"), 0);
-                Result->SetNumberField(TEXT("files_processed"), 0);
-                Result->SetStringField(TEXT("note"), TEXT("No files found in source folder"));
-                return Result;
-            }
-
-            TArray<UAssetImportTask*> Tasks;
-            Tasks.Reserve(Files.Num());
-            for (const FString& File : Files)
-            {
-                Tasks.Add(BuildImportTask(File, DestinationPath));
-            }
-
-            FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
-            AssetToolsModule.Get().ImportAssetTasks(Tasks);
-
-            int32 TotalImported = 0;
-            TArray<TSharedPtr<FJsonValue>> PathsArray;
-            for (UAssetImportTask* T : Tasks)
-            {
-                TotalImported += T->GetObjects().Num();
-                for (const FString& P : T->ImportedObjectPaths)
+                ++Succeeded;
+                for (const FString& P : Imported)
                 {
                     PathsArray.Add(MakeShared<FJsonValueString>(P));
                 }
             }
+            else
+            {
+                ++Failed;
+                FailedFilesArray.Add(MakeShared<FJsonValueString>(File));
+            }
 
-            Result->SetBoolField(TEXT("success"), true);
-            Result->SetNumberField(TEXT("files_processed"), Files.Num());
-            Result->SetNumberField(TEXT("imported_count"), TotalImported);
-            Result->SetArrayField(TEXT("imported_paths"), PathsArray);
-            Result->SetStringField(TEXT("source_folder"), SourceFolder);
-            Result->SetStringField(TEXT("destination_path"), DestinationPath);
+            const double Progress = double(i + 1) / double(Total);
+            Ctx.SendProgress(Progress, 1.0,
+                FString::Printf(TEXT("import_folder: %d/%d (%s)"),
+                    i + 1, Total, *FPaths::GetCleanFilename(File)));
+        }
 
-            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: import_folder '%s' → %d files, %d imported objects"),
-                *SourceFolder, Files.Num(), TotalImported);
+        Ctx.SendProgress(1.0, 1.0,
+            FString::Printf(TEXT("import_folder: complete (%d ok, %d failed)"), Succeeded, Failed));
 
-            return Result;
-        };
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: import_folder '%s' → %d files, %d succeeded, %d failed"),
+            *SourceFolder, Total, Succeeded, Failed);
 
-        TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetNumberField(TEXT("files_processed"), Total);
+        Result->SetNumberField(TEXT("imported_count"), Succeeded);
+        Result->SetNumberField(TEXT("failed_count"), Failed);
+        Result->SetArrayField(TEXT("imported_paths"), PathsArray);
+        Result->SetArrayField(TEXT("failed_files"), FailedFilesArray);
+        Result->SetStringField(TEXT("source_folder"), SourceFolder);
+        Result->SetStringField(TEXT("destination_path"), DestinationPath);
+
         return FMCPResponse::Success(Request.Id, Result);
     }
 
