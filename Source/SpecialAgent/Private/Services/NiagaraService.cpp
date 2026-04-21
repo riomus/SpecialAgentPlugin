@@ -5,6 +5,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "NiagaraActor.h"
 #include "NiagaraComponent.h"
@@ -19,7 +20,7 @@ FString FNiagaraService::GetServiceDescription() const
     return TEXT("Niagara VFX spawning and parameter control");
 }
 
-FMCPResponse FNiagaraService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FNiagaraService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("spawn_emitter"))   return HandleSpawnEmitter(Request);
     if (MethodName == TEXT("set_parameter"))   return HandleSetParameter(Request);

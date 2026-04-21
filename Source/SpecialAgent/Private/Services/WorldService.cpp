@@ -2,6 +2,7 @@
 // WorldService Implementation - Core world/actor manipulation methods
 
 #include "Services/WorldService.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "Services/PythonService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
@@ -143,7 +144,7 @@ static AActor* SpawnActorInternal(UWorld* World, const FString& ActorClass, cons
 // ============================================================================
 // Request Router
 // ============================================================================
-FMCPResponse FWorldService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FWorldService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	// Query methods
 	if (MethodName == TEXT("list_actors")) return HandleListActors(Request);

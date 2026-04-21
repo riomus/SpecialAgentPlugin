@@ -4,6 +4,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -20,7 +21,7 @@ FString FPCGService::GetServiceDescription() const
     return TEXT("Procedural Content Generation - discover, execute, and spawn PCG graphs");
 }
 
-FMCPResponse FPCGService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FPCGService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("list_graphs"))     return HandleListGraphs(Request);
     if (MethodName == TEXT("execute_graph"))   return HandleExecuteGraph(Request);

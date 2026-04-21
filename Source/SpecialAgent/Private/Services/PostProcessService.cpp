@@ -3,6 +3,7 @@
 #include "Services/PostProcessService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
@@ -39,7 +40,7 @@ FString FPostProcessService::GetServiceDescription() const
 	return TEXT("Post-process volumes - spawn and tune exposure, bloom, DOF, color grading, indirect GI");
 }
 
-FMCPResponse FPostProcessService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FPostProcessService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("spawn_volume")) return HandleSpawnVolume(Request);
 	if (MethodName == TEXT("set_exposure")) return HandleSetExposure(Request);

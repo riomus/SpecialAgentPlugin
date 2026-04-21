@@ -4,6 +4,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "AssetToolsModule.h"
@@ -27,7 +28,7 @@ FString FSequencerService::GetServiceDescription() const
     return TEXT("Level Sequence creation, bindings, tracks, keyframes, playback");
 }
 
-FMCPResponse FSequencerService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FSequencerService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("create")) return HandleCreate(Request);
     if (MethodName == TEXT("add_actor_binding")) return HandleAddActorBinding(Request);

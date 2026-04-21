@@ -5,6 +5,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -27,7 +28,7 @@ FString FPerformanceService::GetServiceDescription() const
 	return TEXT("Performance analysis - level statistics, bounds checking, overlap detection, triangle counts, and draw-call estimates.");
 }
 
-FMCPResponse FPerformanceService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FPerformanceService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("get_statistics"))         return HandleGetStatistics(Request);
 	if (MethodName == TEXT("get_actor_bounds"))       return HandleGetActorBounds(Request);

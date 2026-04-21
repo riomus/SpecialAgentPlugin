@@ -2,6 +2,7 @@
 
 #include "Services/PythonService.h"
 #include "GameThreadDispatcher.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "IPythonScriptPlugin.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -76,7 +77,7 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	return Tools;
 }
 
-FMCPResponse FPythonService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FPythonService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("execute")) return HandleExecute(Request);
 	if (MethodName == TEXT("execute_file")) return HandleExecuteFile(Request);

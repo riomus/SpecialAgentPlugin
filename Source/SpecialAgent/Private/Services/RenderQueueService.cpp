@@ -3,6 +3,7 @@
 #include "Services/RenderQueueService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Editor.h"
@@ -19,7 +20,7 @@ FString FRenderQueueService::GetServiceDescription() const
     return TEXT("Movie Render Queue sequence rendering");
 }
 
-FMCPResponse FRenderQueueService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FRenderQueueService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("queue_sequence")) return HandleQueueSequence(Request);
     if (MethodName == TEXT("set_output"))     return HandleSetOutput(Request);

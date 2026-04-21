@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Services/SoundService.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPActorResolver.h"
@@ -20,7 +21,7 @@ FString FSoundService::GetServiceDescription() const
     return TEXT("Sound playback and ambient sound actors");
 }
 
-FMCPResponse FSoundService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FSoundService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("play_2d"))              return HandlePlay2D(Request);
     if (MethodName == TEXT("play_at_location"))     return HandlePlayAtLocation(Request);

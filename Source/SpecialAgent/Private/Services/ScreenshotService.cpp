@@ -2,6 +2,7 @@
 
 #include "Services/ScreenshotService.h"
 #include "GameThreadDispatcher.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "EditorViewportClient.h"
@@ -76,7 +77,7 @@ TArray<FMCPToolInfo> FScreenshotService::GetAvailableTools() const
 	return Tools;
 }
 
-FMCPResponse FScreenshotService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FScreenshotService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("capture")) return HandleCapture(Request);
 	if (MethodName == TEXT("save")) return HandleSave(Request);

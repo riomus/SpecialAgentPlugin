@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Services/SkyService.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPActorResolver.h"
@@ -48,7 +49,7 @@ FString FSkyService::GetServiceDescription() const
 	return TEXT("Sky & atmosphere - spawn SkyAtmosphere/HeightFog/VolumetricCloud/SkyLight; set sun angle");
 }
 
-FMCPResponse FSkyService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FSkyService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("spawn_sky_atmosphere")) return HandleSpawnSkyAtmosphere(Request);
 	if (MethodName == TEXT("spawn_height_fog")) return HandleSpawnHeightFog(Request);

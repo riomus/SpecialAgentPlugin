@@ -5,6 +5,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -61,7 +62,7 @@ FString FPhysicsService::GetServiceDescription() const
     return TEXT("Physics simulation and body property control");
 }
 
-FMCPResponse FPhysicsService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FPhysicsService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("set_simulate_physics"))  return HandleSetSimulatePhysics(Request);
     if (MethodName == TEXT("apply_impulse"))         return HandleApplyImpulse(Request);

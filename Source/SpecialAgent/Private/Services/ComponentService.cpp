@@ -5,6 +5,7 @@
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -73,7 +74,7 @@ FString FComponentService::GetServiceDescription() const
     return TEXT("Actor component add/remove/query/property editing");
 }
 
-FMCPResponse FComponentService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FComponentService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("add"))            return HandleAdd(Request);
     if (MethodName == TEXT("remove"))         return HandleRemove(Request);

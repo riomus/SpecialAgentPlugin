@@ -3,6 +3,7 @@
 #include "Services/DecalService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPActorResolver.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
@@ -41,7 +42,7 @@ FString FDecalService::GetServiceDescription() const
 	return TEXT("Decals - spawn ADecalActor, set decal material and projected size");
 }
 
-FMCPResponse FDecalService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FDecalService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("spawn")) return HandleSpawn(Request);
 	if (MethodName == TEXT("set_material")) return HandleSetMaterial(Request);

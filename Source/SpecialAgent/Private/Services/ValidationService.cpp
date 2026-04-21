@@ -1,4 +1,5 @@
 #include "Services/ValidationService.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
@@ -128,7 +129,7 @@ FString FValidationService::GetServiceDescription() const
     return TEXT("Asset and level validation via UEditorValidatorSubsystem");
 }
 
-FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FValidationService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("validate_selected"))
     {

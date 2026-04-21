@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "MCPServer.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 class IMCPService;
 
@@ -22,9 +23,10 @@ public:
 	/**
 	 * Route a request to the appropriate service
 	 * @param Request The incoming MCP request
+	 * @param Ctx Request-scoped context (session id, progress callback, etc.)
 	 * @return The MCP response
 	 */
-	FMCPResponse RouteRequest(const FMCPRequest& Request);
+	FMCPResponse RouteRequest(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 
 	/**
 	 * Register a service handler
@@ -48,7 +50,7 @@ private:
 	FMCPResponse HandleToolsList(const FMCPRequest& Request);
 	
 	/** Handle tools/call request */
-	FMCPResponse HandleToolsCall(const FMCPRequest& Request);
+	FMCPResponse HandleToolsCall(const FMCPRequest& Request, const FMCPRequestContext& Ctx);
 	
 	/** Handle server info request */
 	FMCPResponse HandleServerInfo(const FMCPRequest& Request);

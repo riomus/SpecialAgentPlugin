@@ -2,6 +2,7 @@
 
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "Editor.h"
@@ -17,7 +18,7 @@ FString FHLODService::GetServiceDescription() const
     return TEXT("Hierarchical LOD build, clear, and setup configuration");
 }
 
-FMCPResponse FHLODService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FHLODService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("build"))       return HandleBuild(Request);
     if (MethodName == TEXT("clear"))       return HandleClear(Request);

@@ -3,6 +3,7 @@
 #include "Services/RenderingService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
 
 #include "CoreGlobals.h"
@@ -17,7 +18,7 @@ FString FRenderingService::GetServiceDescription() const
     return TEXT("Scalability, view modes, Nanite / Lumen toggles, high-res screenshot");
 }
 
-FMCPResponse FRenderingService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FRenderingService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("set_scalability"))      return HandleSetScalability(Request);
     if (MethodName == TEXT("set_view_mode"))        return HandleSetViewMode(Request);

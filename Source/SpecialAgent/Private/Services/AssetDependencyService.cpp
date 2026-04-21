@@ -3,6 +3,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -82,7 +83,7 @@ FString FAssetDependencyService::GetServiceDescription() const
     return TEXT("Query asset references, referencers, and dependency graphs via Asset Registry");
 }
 
-FMCPResponse FAssetDependencyService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FAssetDependencyService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("get_references"))
     {

@@ -3,6 +3,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "AssetImportTask.h"
 #include "AssetToolsModule.h"
@@ -78,7 +79,7 @@ FString FAssetImportService::GetServiceDescription() const
     return TEXT("Import FBX / textures / sounds / data tables via IAssetTools::ImportAssetTasks");
 }
 
-FMCPResponse FAssetImportService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FAssetImportService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     if (MethodName == TEXT("import_fbx") ||
         MethodName == TEXT("import_texture") ||

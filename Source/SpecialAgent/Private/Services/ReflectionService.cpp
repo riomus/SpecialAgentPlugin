@@ -4,6 +4,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPToolBuilder.h"
 #include "MCPCommon/MCPJson.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "UObject/UObjectIterator.h"
 #include "UObject/Class.h"
@@ -98,7 +99,7 @@ FString FReflectionService::GetServiceDescription() const
 	return TEXT("UObject / UClass / UProperty / UFunction introspection");
 }
 
-FMCPResponse FReflectionService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FReflectionService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
 	if (MethodName == TEXT("list_classes"))    return HandleListClasses(Request);
 	if (MethodName == TEXT("get_class_info"))  return HandleGetClassInfo(Request);

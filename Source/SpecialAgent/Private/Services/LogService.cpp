@@ -5,6 +5,7 @@
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPRequestContext.h"
 
 #include "CoreGlobals.h"
 #include "Engine/Engine.h"
@@ -171,7 +172,7 @@ TArray<FMCPToolInfo> FLogService::GetAvailableTools() const
     return Tools;
 }
 
-FMCPResponse FLogService::HandleRequest(const FMCPRequest& Request, const FString& MethodName)
+FMCPResponse FLogService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
     // Ensure the ring device is installed.
     SpecialAgentLogRing::Get();
