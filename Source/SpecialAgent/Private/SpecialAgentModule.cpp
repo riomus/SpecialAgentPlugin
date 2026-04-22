@@ -53,8 +53,11 @@ void FSpecialAgentModule::StartupModule()
 		UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: MCP Server auto-start is disabled"));
 	}
 
-	// Register status bar widget
-	RegisterStatusBarWidget();
+	// Register status bar widget (editor UI only — skip in commandlets like cook)
+	if (!IsRunningCommandlet())
+	{
+		RegisterStatusBarWidget();
+	}
 
 	// Touch the processor on the game thread so its FTickableEditorObject
 	// registration happens on the right thread before any HTTP worker enqueues.
