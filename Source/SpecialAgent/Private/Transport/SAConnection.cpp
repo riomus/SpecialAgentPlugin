@@ -1,6 +1,7 @@
 #include "Transport/SAConnection.h"
 #include "Transport/SAHttpParser.h"
 #include "Transport/SATransportConstants.h"
+#include "Transport/SATransportRouting.h"
 #include "Transport/SATcpServer.h"
 #include "Transport/SASessionRegistry.h"
 #include "MCPServer.h"
@@ -181,7 +182,7 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: POST /mcp (single-body) method=%s"), *Msg.Method);
+    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: POST %s (single-body) method=%s"), *Req.Path, *Msg.Method);
 
     // Session id machinery: mint on initialize, validate otherwise.
     FString MintedSessionId;  // non-empty only when we minted one for 'initialize'
@@ -194,12 +195,17 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
         const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
         if (Sid.IsEmpty())
         {
-            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 400 — missing Mcp-Session-Id on method=%s"), *Msg.Method);
-            Writer.WriteSingleBodyString(400, TEXT("application/json"),
-                TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
-            return;
+            if (!SATransportRouting::AllowsOptionalSessionId(Req.Path))
+            {
+                UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 400 — missing Mcp-Session-Id on path=%s method=%s"), *Req.Path, *Msg.Method);
+                Writer.WriteSingleBodyString(400, TEXT("application/json"),
+                    TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
+                return;
+            }
+
+            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: allowing sessionless request on compatibility path=%s method=%s"), *Req.Path, *Msg.Method);
         }
-        if (!FSASessionRegistry::Get().IsSessionValid(Sid))
+        else if (!FSASessionRegistry::Get().IsSessionValid(Sid))
         {
             // Permissive: adopt the client-asserted id instead of forcing
             // a reconnect. Survives editor restart (registry is in-memory)
@@ -227,6 +233,12 @@ void FSAConnection::HandlePostMCP(const FSAHttpRequest& Req)
 
     TMap<FString, FString> ExtraHeaders;
     if (!MintedSessionId.IsEmpty()) ExtraHeaders.Add(TEXT("Mcp-Session-Id"), MintedSessionId);
+    if (SATransportRouting::ShouldSuppressResponse(Req.Path, Msg.Method, Msg.Id))
+    {
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: suppressing notification response on path=%s method=%s"), *Req.Path, *Msg.Method);
+        Writer.WriteSingleBody(202, TEXT("text/plain"), TConstArrayView<uint8>{}, ExtraHeaders);
+        return;
+    }
     Writer.WriteSingleBodyString(200, TEXT("application/json"), Json, ExtraHeaders);
 }
 
@@ -240,7 +252,8 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
     FMCPRequest Msg;
     const bool bParsedOk = FSpecialAgentMCPServer::ParseRequest(BodyStr, Msg);
 
-    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: POST /mcp (SSE) method=%s parsed=%d"),
+    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: POST %s (SSE) method=%s parsed=%d"),
+        *Req.Path,
         bParsedOk ? *Msg.Method : TEXT("<unparsed>"),
         bParsedOk ? 1 : 0);
 
@@ -258,12 +271,17 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
             const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
             if (Sid.IsEmpty())
             {
-                UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: SSE 400 — missing Mcp-Session-Id on method=%s"), *Msg.Method);
-                Writer.WriteSingleBodyString(400, TEXT("application/json"),
-                    TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
-                return;
+                if (!SATransportRouting::AllowsOptionalSessionId(Req.Path))
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: SSE 400 — missing Mcp-Session-Id on path=%s method=%s"), *Req.Path, *Msg.Method);
+                    Writer.WriteSingleBodyString(400, TEXT("application/json"),
+                        TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
+                    return;
+                }
+
+                UE_LOG(LogTemp, Log, TEXT("SpecialAgent: allowing sessionless SSE request on compatibility path=%s method=%s"), *Req.Path, *Msg.Method);
             }
-            if (!FSASessionRegistry::Get().IsSessionValid(Sid))
+            else if (!FSASessionRegistry::Get().IsSessionValid(Sid))
             {
                 if (FSASessionRegistry::Get().AdoptSession(Sid))
                 {
@@ -271,6 +289,28 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
                 }
             }
         }
+    }
+
+    if (bParsedOk && SATransportRouting::ShouldSuppressResponse(Req.Path, Msg.Method, Msg.Id))
+    {
+        FMCPRequestContext Ctx = BuildContextFromRequest(Req, Msg);
+        if (!MintedSessionId.IsEmpty()) Ctx.SessionId = MintedSessionId;
+
+        TPromise<void> P;
+        auto Fut = P.GetFuture();
+        AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
+            [Router = Router, Msg, Ctx = MoveTemp(Ctx), Promise = MoveTemp(P)]() mutable
+            {
+                Router->RouteRequest(Msg, Ctx);
+                Promise.SetValue();
+            });
+        Fut.Wait();
+
+        TMap<FString, FString> ExtraHeaders;
+        if (!MintedSessionId.IsEmpty()) ExtraHeaders.Add(TEXT("Mcp-Session-Id"), MintedSessionId);
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: suppressing SSE notification response on path=%s method=%s"), *Req.Path, *Msg.Method);
+        Writer.WriteSingleBody(202, TEXT("text/plain"), TConstArrayView<uint8>{}, ExtraHeaders);
+        return;
     }
 
     TMap<FString, FString> ExtraHeaders;
@@ -344,27 +384,35 @@ void FSAConnection::HandleGetSSE(const FSAHttpRequest& Req)
     const FString Sid = Req.GetHeader(TEXT("Mcp-Session-Id"));
     if (Sid.IsEmpty())
     {
-        UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: GET /sse 400 — missing Mcp-Session-Id"));
-        Writer.WriteSingleBodyString(400, TEXT("application/json"),
-            TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
-        return;
+        if (!SATransportRouting::AllowsOptionalSessionId(Req.Path))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: GET %s 400 — missing Mcp-Session-Id"), *Req.Path);
+            Writer.WriteSingleBodyString(400, TEXT("application/json"),
+                TEXT("{\"error\":\"missing Mcp-Session-Id\"}"));
+            return;
+        }
+
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET %s opening anonymous compatibility stream"), *Req.Path);
     }
-    if (!FSASessionRegistry::Get().IsSessionValid(Sid))
+    else if (!FSASessionRegistry::Get().IsSessionValid(Sid))
     {
         if (FSASessionRegistry::Get().AdoptSession(Sid))
         {
-            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET /sse adopted client session %s"), *Sid);
+            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET %s adopted client session %s"), *Req.Path, *Sid);
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET /sse session=%s opening stream"), *Sid);
+    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET %s session=%s opening stream"), *Req.Path, Sid.IsEmpty() ? TEXT("<none>") : *Sid);
     if (!Writer.BeginSSE()) return;
 
     // Prime the stream so strict HTTP clients see a chunk immediately.
     Writer.WriteKeepAlive();
 
-    ActiveSessionIdForStream = Sid;
-    FSASessionRegistry::Get().RegisterStream(Sid, this);
+    if (!Sid.IsEmpty())
+    {
+        ActiveSessionIdForStream = Sid;
+        FSASessionRegistry::Get().RegisterStream(Sid, this);
+    }
 
     // Keep-alive loop. Runs on this FRunnable until bStopping or socket death.
     // Notifications pushed via FSASessionRegistry::SendNotification -> PushSSEEvent
@@ -385,8 +433,11 @@ void FSAConnection::HandleGetSSE(const FSAHttpRequest& Req)
         }
     }
 
-    FSASessionRegistry::Get().UnregisterStream(Sid, this);
-    ActiveSessionIdForStream.Empty();
+    if (!Sid.IsEmpty())
+    {
+        FSASessionRegistry::Get().UnregisterStream(Sid, this);
+        ActiveSessionIdForStream.Empty();
+    }
     Writer.Finish();
 }
 
@@ -412,11 +463,11 @@ uint32 FSAConnection::Run()
         {
             HandleGetHealth();
         }
-        else if (Req.Verb == TEXT("GET") && Req.Path == TEXT("/sse"))
+        else if (SATransportRouting::IsSSEGetRoute(Req.Verb, Req.Path))
         {
             HandleGetSSE(Req);
         }
-        else if (Req.Verb == TEXT("POST") && Req.Path == TEXT("/mcp"))
+        else if (SATransportRouting::IsMCPPostRoute(Req.Verb, Req.Path))
         {
             HandlePostMCP(Req);
         }

@@ -41,6 +41,7 @@ bool FSpecialAgentMCPServer::StartServer(int32 Port)
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: MCP server started on port %d (raw TCP transport)"), ServerPort);
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: POST http://localhost:%d/mcp — JSON-RPC 2.0 endpoint"), ServerPort);
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET  http://localhost:%d/sse — long-lived notifications stream"), ServerPort);
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Codex compatibility endpoint http://localhost:%d/codex"), ServerPort);
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: GET  http://localhost:%d/health — debug probe"), ServerPort);
 	return true;
 }

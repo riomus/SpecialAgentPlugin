@@ -121,14 +121,13 @@ curl http://localhost:8767/health
 
 ### 2. Configure Your MCP Client
 
-Add SpecialAgent to your MCP client configuration:
+Add SpecialAgent to your Codex MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "SpecialAgent": {
-      "url": "http://localhost:8767/sse",
-      "transport": "sse"
+      "url": "http://localhost:8767/codex"
     }
   }
 }

@@ -1,6 +1,7 @@
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "Transport/SAHttpParser.h"
+#include "Transport/SATransportRouting.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -95,6 +96,53 @@ bool FSAHttpParserHeadersTooLarge::RunTest(const FString&)
     TestEqual(TEXT("Parse result"),
         (int32)SAHttpParser::Parse(Buf, Req, Consumed),
         (int32)ESAHttpParseResult::HeadersTooLarge);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSATransportRoutingCodexAliases,
+    "SpecialAgent.Transport.Routing.CodexAliases",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSATransportRoutingCodexAliases::RunTest(const FString&)
+{
+    TestTrue(TEXT("/codex is marked as the Codex compatibility route"),
+        SATransportRouting::IsCodexCompatibilityRoute(TEXT("/codex")));
+    TestFalse(TEXT("/mcp is not marked as the Codex compatibility route"),
+        SATransportRouting::IsCodexCompatibilityRoute(TEXT("/mcp")));
+
+    TestTrue(TEXT("POST /codex uses MCP handler"),
+        SATransportRouting::IsMCPPostRoute(TEXT("POST"), TEXT("/codex")));
+    TestTrue(TEXT("POST /mcp still uses MCP handler"),
+        SATransportRouting::IsMCPPostRoute(TEXT("POST"), TEXT("/mcp")));
+    TestFalse(TEXT("GET /codex does not use MCP POST handler"),
+        SATransportRouting::IsMCPPostRoute(TEXT("GET"), TEXT("/codex")));
+
+    TestTrue(TEXT("GET /codex uses SSE handler"),
+        SATransportRouting::IsSSEGetRoute(TEXT("GET"), TEXT("/codex")));
+    TestTrue(TEXT("GET /sse still uses SSE handler"),
+        SATransportRouting::IsSSEGetRoute(TEXT("GET"), TEXT("/sse")));
+    TestFalse(TEXT("POST /codex does not use SSE GET handler"),
+        SATransportRouting::IsSSEGetRoute(TEXT("POST"), TEXT("/codex")));
+
+    TestTrue(TEXT("/codex allows requests without Mcp-Session-Id"),
+        SATransportRouting::AllowsOptionalSessionId(TEXT("/codex")));
+    TestFalse(TEXT("/mcp still requires Mcp-Session-Id after initialize"),
+        SATransportRouting::AllowsOptionalSessionId(TEXT("/mcp")));
+
+    TestTrue(TEXT("notifications/initialized is treated as a notification"),
+        SATransportRouting::IsNotificationMethod(TEXT("notifications/initialized")));
+    TestTrue(TEXT("initialized is treated as a notification"),
+        SATransportRouting::IsNotificationMethod(TEXT("initialized")));
+    TestFalse(TEXT("initialize is not treated as a notification"),
+        SATransportRouting::IsNotificationMethod(TEXT("initialize")));
+
+    TestTrue(TEXT("/codex suppresses responses for notifications without ids"),
+        SATransportRouting::ShouldSuppressResponse(TEXT("/codex"), TEXT("notifications/initialized"), TEXT("")));
+    TestFalse(TEXT("/codex still responds to initialize"),
+        SATransportRouting::ShouldSuppressResponse(TEXT("/codex"), TEXT("initialize"), TEXT("")));
+    TestFalse(TEXT("/mcp keeps legacy notification responses"),
+        SATransportRouting::ShouldSuppressResponse(TEXT("/mcp"), TEXT("notifications/initialized"), TEXT("")));
+
     return true;
 }
 

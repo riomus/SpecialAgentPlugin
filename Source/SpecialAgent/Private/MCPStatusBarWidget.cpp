@@ -107,8 +107,8 @@ FReply SMCPStatusBarWidget::OnStatusClicked()
 {
 	TSharedPtr<FSpecialAgentMCPServer> Server = MCPServer.Pin();
 	
-	// MCP configuration JSON - use /mcp endpoint for streamable HTTP transport
-	const FString ConfigJson = TEXT("{\n  \"mcpServers\": {\n    \"SpecialAgent\": {\n      \"url\": \"http://localhost:8767/mcp\"\n    }\n  }\n}");
+	// MCP configuration JSON - use /codex for Codex streamable HTTP compatibility.
+	const FString ConfigJson = TEXT("{\n  \"mcpServers\": {\n    \"SpecialAgent\": {\n      \"url\": \"http://localhost:8767/codex\"\n    }\n  }\n}");
 	
 	FText Message;
 	SNotificationItem::ECompletionState State;
@@ -119,7 +119,7 @@ FReply SMCPStatusBarWidget::OnStatusClicked()
 			// Copy config to clipboard
 			FPlatformApplicationMisc::ClipboardCopy(*ConfigJson);
 			Message = FText::Format(
-				LOCTEXT("MCPConnectedMessage", "MCP Server Connected ({0} client(s))\n\nConfiguration copied to clipboard!\n\nEndpoints:\n• SSE: http://localhost:8767/sse\n• Message: http://localhost:8767/message\n• Health: http://localhost:8767/health"),
+				LOCTEXT("MCPConnectedMessage", "MCP Server Connected ({0} client(s))\n\nConfiguration copied to clipboard!\n\nEndpoints:\n• Codex: http://localhost:8767/codex\n• MCP: http://localhost:8767/mcp\n• SSE: http://localhost:8767/sse\n• Health: http://localhost:8767/health"),
 				FText::AsNumber(ConnectedClients)
 			);
 			State = SNotificationItem::CS_Success;
@@ -128,7 +128,7 @@ FReply SMCPStatusBarWidget::OnStatusClicked()
 		case EMCPServerStatus::Listening:
 			// Copy config to clipboard
 			FPlatformApplicationMisc::ClipboardCopy(*ConfigJson);
-			Message = LOCTEXT("MCPListeningMessage", "MCP Server Listening - Configuration copied to clipboard!\n\nPaste this into your MCP client config:\n{\n  \"mcpServers\": {\n    \"SpecialAgent\": {\n      \"url\": \"http://localhost:8767/mcp\"\n    }\n  }\n}");
+			Message = LOCTEXT("MCPListeningMessage", "MCP Server Listening - Configuration copied to clipboard!\n\nPaste this into your MCP client config:\n{\n  \"mcpServers\": {\n    \"SpecialAgent\": {\n      \"url\": \"http://localhost:8767/codex\"\n    }\n  }\n}");
 			State = SNotificationItem::CS_Pending;
 			break;
 
@@ -204,4 +204,3 @@ EActiveTimerReturnType SMCPStatusBarWidget::UpdateStatus(double InCurrentTime, f
 }
 
 #undef LOCTEXT_NAMESPACE
-
