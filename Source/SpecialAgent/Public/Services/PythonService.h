@@ -28,5 +28,17 @@ public:
 private:
 	FMCPResponse HandleExecuteFile(const FMCPRequest& Request);
 	FMCPResponse HandleListModules(const FMCPRequest& Request);
+
+	// Live introspection of the running 'unreal' module (game-thread Python).
+	FMCPResponse HandleHelp(const FMCPRequest& Request);
+	FMCPResponse HandleInspectClass(const FMCPRequest& Request);
+	FMCPResponse HandleListSubsystems(const FMCPRequest& Request);
+	FMCPResponse HandleSearchSymbol(const FMCPRequest& Request);
+	FMCPResponse HandleGetFunctionSignature(const FMCPRequest& Request);
+	FMCPResponse HandleListEnumValues(const FMCPRequest& Request);
+	FMCPResponse HandleGetAssetClassForPath(const FMCPRequest& Request);
+
+	// Pure C++ scan of an input snippet against deprecations.md (no Python).
+	FMCPResponse HandleDiffAgainstDeprecated(const FMCPRequest& Request);
 };
 
