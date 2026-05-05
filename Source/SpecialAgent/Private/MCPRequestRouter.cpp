@@ -109,6 +109,53 @@ namespace
 		bLoaded = true;
 		return Cached;
 	}
+
+	static TArray<TSharedPtr<FJsonValue>> BuildDocResources()
+	{
+		TArray<TSharedPtr<FJsonValue>> Resources;
+
+		auto AddResource = [&Resources](const FString& Uri, const FString& Name, const FString& Description)
+		{
+			TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+			R->SetStringField(TEXT("uri"), Uri);
+			R->SetStringField(TEXT("name"), Name);
+			R->SetStringField(TEXT("description"), Description);
+			R->SetStringField(TEXT("mimeType"), TEXT("text/markdown"));
+			Resources.Add(MakeShared<FJsonValueObject>(R));
+		};
+
+		AddResource(TEXT("mcp://unreal/cheatsheet"),
+			TEXT("UE5 Python cheat sheet"),
+			TEXT("Always-on rules: subsystems, idempotency, shader compile, sampler types, redraw, idioms."));
+
+		AddResource(TEXT("mcp://unreal/deprecations"),
+			TEXT("Deprecated to modern API table"),
+			TEXT("Mapping consumed by python/diff_against_deprecated."));
+
+		AddResource(TEXT("mcp://unreal/services"),
+			TEXT("MCP services + tools index"),
+			TEXT("Auto-generated browsable index of all registered services and their tools."));
+
+		const FString DocsDir = GetSpecialAgentDocsDir();
+		if (!DocsDir.IsEmpty())
+		{
+			const FString IdiomsDir = FPaths::Combine(DocsDir, TEXT("idioms"));
+			TArray<FString> IdiomFiles;
+			IFileManager::Get().FindFiles(IdiomFiles, *(IdiomsDir / TEXT("*.md")), true, false);
+			for (const FString& File : IdiomFiles)
+			{
+				const FString Stem = FPaths::GetBaseFilename(File);
+				FString DisplayName = Stem;
+				DisplayName.ReplaceInline(TEXT("_"), TEXT(" "));
+				AddResource(
+					FString::Printf(TEXT("mcp://unreal/idioms/%s"), *Stem),
+					FString::Printf(TEXT("Idiom: %s"), *DisplayName),
+					TEXT("Cookbook entry — short example + gotcha."));
+			}
+		}
+
+		return Resources;
+	}
 }
 
 FMCPRequestRouter::FMCPRequestRouter()
@@ -526,13 +573,12 @@ FMCPResponse FMCPRequestRouter::WrapToolResponse(const FMCPResponse& ServiceResp
 
 FMCPResponse FMCPRequestRouter::HandleResourcesList(const FMCPRequest& Request)
 {
-	// MCP resources/list - return empty list for now (resources may cause client issues)
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-	TArray<TSharedPtr<FJsonValue>> Resources;
+	TArray<TSharedPtr<FJsonValue>> Resources = BuildDocResources();
 	Result->SetArrayField(TEXT("resources"), Resources);
-	
-	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Returning empty resources list"));
-	
+
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: resources/list returning %d entries"), Resources.Num());
+
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
