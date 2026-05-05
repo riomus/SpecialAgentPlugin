@@ -48,79 +48,66 @@
 #include "Services/ModelingService.h"
 #include "Services/InputService.h"
 
+#include "Interfaces/IPluginManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
+
 namespace
 {
+	static FString GetSpecialAgentDocsDir()
+	{
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("SpecialAgent"));
+		if (!Plugin.IsValid())
+		{
+			return FString();
+		}
+		return FPaths::Combine(Plugin->GetContentDir(), TEXT("Docs"));
+	}
+
 	static FString BuildSpecialAgentInstructions()
 	{
-		// Compact service map — keep under ~1500 tokens.
-		return TEXT(
-			"SpecialAgent controls Unreal Editor via MCP tools.\n"
-			"WORKFLOW: screenshot/capture -> inspect/select/trace -> act -> screenshot/capture to verify.\n"
-			"SCREEN COORDS: normalized 0-1 (0.5,0.5 = center).\n"
-			"CAMERA REDRAW: viewport/set_*, viewport/focus_actor, viewport/orbit_around_actor, viewport/set_fov, "
-			"viewport/set_view_mode, viewport/toggle_game_view, viewport/bookmark_restore, and python/execute "
-			"scripts that write camera data only update view state — the editor repaints on the NEXT tick. "
-			"Call viewport/force_redraw between any camera change and screenshot/capture (or screenshot/save) "
-			"so the captured frame reflects the new view.\n"
-			"\n"
-			"KEY TOOLS:\n"
-			"  viewport/trace_from_screen - world location + surface normal at screen point\n"
-			"  viewport/force_redraw      - synchronously repaint viewports; use before screenshot after any camera change\n"
-			"  utility/select_at_screen   - click to inspect actor (full info)\n"
-			"  assets/get_bounds          - mesh dimensions, pivot offset before spawn\n"
-			"  assets/get_info            - materials, collision, LODs\n"
-			"  python/execute             - full UE5 Python API fallback for anything not covered\n"
-			"\n"
-			"SERVICES (45 prefixes):\n"
-			"  world           - actor spawn/transform/delete/patterns/spatial queries (35)\n"
-			"  lighting        - light spawn/config/build (6)\n"
-			"  foliage         - procedural foliage (5)\n"
-			"  landscape       - sculpt/paint/layers (6)\n"
-			"  streaming       - sub-level loading (5)\n"
-			"  navigation      - navmesh build/test (4)\n"
-			"  world_partition - cell loading (5)\n"
-			"  gameplay        - trigger volumes/player starts (6)\n"
-			"  performance     - stats/overlaps/triangles (5)\n"
-			"  assets          - asset registry + metadata (16)\n"
-			"  content_browser - UI-level asset ops (9)\n"
-			"  asset_import    - FBX/texture/sound/csv import (6)\n"
-			"  asset_deps      - references/referencers (4)\n"
-			"  data_table      - row read/write (7)\n"
-			"  validation      - asset/level validation (3)\n"
-			"  blueprint       - BP create/compile/edit (10)\n"
-			"  material        - materials + instances + params (8)\n"
-			"  reflection      - UClass/UProperty/UFunction introspection (5)\n"
-			"  component       - actor components (7)\n"
-			"  physics         - physics simulation (7)\n"
-			"  animation       - skeletal anim (5)\n"
-			"  ai              - AI pawn/BT/blackboard (5)\n"
-			"  input           - input mapping (4)\n"
-			"  sound           - sound playback (4)\n"
-			"  post_process    - PP volumes (6)\n"
-			"  sky             - sky/atmosphere/fog/cloud (5)\n"
-			"  decal           - decal actors (3)\n"
-			"  sequencer       - Level Sequence (6)\n"
-			"  niagara         - Niagara VFX (6)\n"
-			"  render_queue    - Movie Render Queue (3)\n"
-			"  rendering       - scalability/view modes/screenshot (5)\n"
-			"  pie             - Play In Editor control (8)\n"
-			"  console         - console commands + CVars (4)\n"
-			"  log             - log tail/categories (4)\n"
-			"  level           - level open/new/save (5)\n"
-			"  editor_mode     - landscape/foliage/modeling mode (3)\n"
-			"  project         - settings + plugins (8)\n"
-			"  source_control  - SCM (5)\n"
-			"  pcg             - PCG graphs (3)\n"
-			"  modeling        - mesh booleans/extrude/simplify (4)\n"
-			"  hlod            - Hierarchical LOD (3)\n"
-			"  utility         - save/undo/select/transactions (18)\n"
-			"  viewport        - camera + view mode + bookmarks + force_redraw (14)\n"
-			"  screenshot      - viewport capture (2)\n"
-			"  python          - arbitrary Python execution (3)\n"
-			"\n"
-			"PLACEMENT: 1) trace_from_screen for location+normal, 2) assets/get_bounds for pivot, "
-			"3) spawn ONE actor, 4) screenshot, 5) adjust rotation using surface normal."
-		);
+		static FString Cached;
+		static bool bLoaded = false;
+		if (bLoaded) return Cached;
+
+		auto FallbackHardcoded = []() -> FString
+		{
+			return TEXT(
+				"SpecialAgent controls Unreal Editor via MCP tools. "
+				"See Content/Docs/ue5_python_cheatsheet.md (missing on disk — using fallback). "
+				"WORKFLOW: screenshot/capture -> inspect/select/trace -> act -> screenshot/capture. "
+				"After camera changes, call viewport/force_redraw before screenshot. "
+				"Prefer specific service tools; fall back to python/execute for the long tail. "
+				"Use unreal.get_editor_subsystem(unreal.EditorActorSubsystem) — NOT deprecated EditorLevelLibrary."
+			);
+		};
+
+		const FString DocsDir = GetSpecialAgentDocsDir();
+		if (DocsDir.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: plugin not found, using fallback instructions"));
+			Cached = FallbackHardcoded();
+			bLoaded = true;
+			return Cached;
+		}
+
+		const FString CheatSheetPath = FPaths::Combine(DocsDir, TEXT("ue5_python_cheatsheet.md"));
+		if (!FFileHelper::LoadFileToString(Cached, *CheatSheetPath))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("SpecialAgent: cheat sheet not found at %s — using fallback"), *CheatSheetPath);
+			Cached = FallbackHardcoded();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Log,
+				TEXT("SpecialAgent: loaded instructions cheat sheet (%d bytes) from %s"),
+				Cached.Len(), *CheatSheetPath);
+		}
+
+		bLoaded = true;
+		return Cached;
 	}
 }
 
