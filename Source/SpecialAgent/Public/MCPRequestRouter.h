@@ -42,6 +42,9 @@ public:
 	 */
 	void ValidateServices() const;
 
+	/** Read-only accessor used by automation tests; returns the registered services map. */
+	const TMap<FString, TSharedPtr<IMCPService>>& GetServicesForTest() const { return Services; }
+
 private:
 	/** Handle MCP initialize request */
 	FMCPResponse HandleInitialize(const FMCPRequest& Request);
