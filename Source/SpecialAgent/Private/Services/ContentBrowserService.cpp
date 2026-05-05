@@ -447,7 +447,9 @@ TArray<FMCPToolInfo> FContentBrowserService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("duplicate"),
         TEXT("Duplicate an asset to a new path and focus the duplicate in the content browser.\n"
-             "Params: source_path (string), destination_path (string)."))
+             "Params: source_path (string, required, full object path), destination_path (string, required, target object path).\n"
+             "Workflow: pair with assets/create_folder if the target directory is new; content_browser/save afterwards.\n"
+             "Warning: editing the duplicate triggers a recompile if it's a material; prefer modifying the parent."))
         .RequiredString(TEXT("source_path"), TEXT("Source asset path"))
         .RequiredString(TEXT("destination_path"), TEXT("New asset path for the duplicate"))
         .Build());
@@ -472,7 +474,8 @@ TArray<FMCPToolInfo> FContentBrowserService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("get_metadata"),
         TEXT("Read a metadata tag from a loaded asset. Returns empty string if absent.\n"
-             "Params: asset_path (string), tag (string, FName-compatible)."))
+             "Params: asset_path (string, required), tag (string, required, FName-compatible).\n"
+             "Workflow: pair with content_browser/set_metadata to verify a write."))
         .RequiredString(TEXT("asset_path"), TEXT("Asset path"))
         .RequiredString(TEXT("tag"), TEXT("Metadata key"))
         .Build());

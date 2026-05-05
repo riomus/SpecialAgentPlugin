@@ -428,6 +428,7 @@ TArray<FMCPToolInfo> FAssetImportService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("get_import_settings_template"),
         TEXT("Return a JSON example of parameter shapes for all asset_import tools. No side effects.\n"
+             "Params: (none).\n"
              "Workflow: Call once, copy the relevant block, substitute real paths, then call the target import tool."))
         .Build());
 

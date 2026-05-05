@@ -911,6 +911,7 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("save_level");
 		Tool.Description = TEXT("Save the current editor level to disk. Persists unsaved actor edits via FEditorFileUtils::SaveCurrentLevel; returns {success, message}. "
+			"Params: (none). "
 			"Workflow: call after world/spawn_actor or bulk edits to commit changes. "
 			"Warning: writes to source control if active; may prompt for checkout.");
 		Tools.Add(Tool);
@@ -975,6 +976,7 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_selection");
 		Tool.Description = TEXT("Get the currently selected actors in the editor. Returns {selected_actors:[{name,class}], count}. "
+			"Params: (none). "
 			"Workflow: call after utility/select_actor, select_by_class, or select_at_screen to confirm the working set before mutating.");
 		Tools.Add(Tool);
 	}
@@ -984,6 +986,7 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_selection_bounds");
 		Tool.Description = TEXT("Get detailed transform and bounds data for each currently selected actor. Returns per-actor {name, id, class, location, rotation, scale, forward/right/up_vector, bounds:{min,max,center,extent,size}}. "
+			"Params: (none). "
 			"Workflow: select first via utility/select_actor or select_at_screen, then call to size/position follow-up spawns.");
 		Tools.Add(Tool);
 	}
@@ -1018,7 +1021,8 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	// ---------- Phase 1.A additions ----------
 	Tools.Add(FMCPToolBuilder(TEXT("focus_asset_in_browser"),
 		TEXT("Navigate the Content Browser to an asset. Effect: opens Content Browser and highlights the asset. "
-			 "Params: asset_path (string, e.g. /Game/Meshes/Rock.Rock)."))
+			 "Params: asset_path (string, required, e.g. /Game/Meshes/Rock.Rock). "
+			 "Workflow: pair with assets/get_info to inspect the highlighted asset."))
 		.RequiredString(TEXT("asset_path"), TEXT("Full asset path /Game/..."))
 		.Build());
 
@@ -1026,6 +1030,7 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("deselect_all");
 		Tool.Description = TEXT("Clear the editor selection. Effect: nothing selected. "
+			"Params: (none). "
 			"Workflow: call before select_by_class to avoid accumulating selection.");
 		Tools.Add(Tool);
 	}
@@ -1033,13 +1038,16 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("invert_selection");
-		Tool.Description = TEXT("Invert current editor selection. Effect: previously-selected become deselected and vice versa.");
+		Tool.Description = TEXT("Invert current editor selection. Effect: previously-selected become deselected and vice versa. "
+			"Params: (none). "
+			"Workflow: pair with utility/select_by_class to grab the complement set in one shot.");
 		Tools.Add(Tool);
 	}
 
 	Tools.Add(FMCPToolBuilder(TEXT("select_by_class"),
 		TEXT("Select all actors of a given class. Effect: adds matches to selection (or replaces). "
-			 "Params: class_name (string, class name), add_to_selection (bool, optional default false)."))
+			 "Params: class_name (string, required, class name), add_to_selection (bool, optional, default false). "
+			 "Workflow: pair with utility/get_selection or get_selection_bounds to inspect the matches."))
 		.RequiredString(TEXT("class_name"), TEXT("Class name to match"))
 		.OptionalBool(TEXT("add_to_selection"), TEXT("Add to current selection instead of replacing"))
 		.Build());
@@ -1047,14 +1055,18 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("group_selected");
-		Tool.Description = TEXT("Group currently selected actors into an AGroupActor. Effect: binds them so editor operations move them together.");
+		Tool.Description = TEXT("Group currently selected actors into an AGroupActor. Effect: binds them so editor operations move them together. "
+			"Params: (none). "
+			"Workflow: select_by_class or select_actor first; pair with utility/ungroup to undo.");
 		Tools.Add(Tool);
 	}
 
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("ungroup");
-		Tool.Description = TEXT("Ungroup any selected AGroupActors. Effect: child actors are released and group actors destroyed.");
+		Tool.Description = TEXT("Ungroup any selected AGroupActors. Effect: child actors are released and group actors destroyed. "
+			"Params: (none). "
+			"Workflow: opposite of utility/group_selected; child actors retain their world transforms.");
 		Tools.Add(Tool);
 	}
 
@@ -1068,13 +1080,16 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("end_transaction");
-		Tool.Description = TEXT("Close the current undo/redo transaction. Effect: finalizes the group for undo stack.");
+		Tool.Description = TEXT("Close the current undo/redo transaction. Effect: finalizes the group for undo stack. "
+			"Params: (none). "
+			"Workflow: must follow utility/begin_transaction; everything between becomes one undo step.");
 		Tools.Add(Tool);
 	}
 
 	Tools.Add(FMCPToolBuilder(TEXT("show_notification"),
 		TEXT("Display a toast notification in the editor. Effect: transient popup visible to the user. "
-			 "Params: message (string), duration (number, seconds, optional default 4)."))
+			 "Params: message (string, required), duration (number, seconds, optional, default 4). "
+			 "Workflow: useful for surfacing scripted-step progress to the user; non-blocking."))
 		.RequiredString(TEXT("message"), TEXT("Notification text"))
 		.OptionalNumber(TEXT("duration"), TEXT("Expire time in seconds (default 4)"))
 		.Build());

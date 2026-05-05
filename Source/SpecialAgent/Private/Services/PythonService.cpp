@@ -248,8 +248,8 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	// diff_against_deprecated — pure C++ scan
 	Tools.Add(FMCPToolBuilder(TEXT("diff_against_deprecated"),
 		TEXT("Scan a Python snippet for calls to deprecated UE5 APIs and suggest modern replacements.\n"
-		     "Params: snippet (string, required).\n"
-		     "Workflow: paste your draft before python/execute — finds EditorLevelLibrary, EditorAssetLibrary, etc.\n"
+		     "Params: snippet (string, required, Python source to scan).\n"
+		     "Workflow: paste your draft before python/execute — flags every entry from the deprecated-to-modern table and points at the modern subsystem to use instead.\n"
 		     "Warning: substring match against Content/Docs/deprecations.md; false positives possible inside string literals."))
 		.RequiredString(TEXT("snippet"), TEXT("Python source to scan"))
 		.Build());

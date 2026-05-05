@@ -350,13 +350,15 @@ TArray<FMCPToolInfo> FDataTableService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("list_tables"),
-        TEXT("List all UDataTable assets in the project. No params.\n"
+        TEXT("List all UDataTable assets in the project.\n"
+             "Params: (none).\n"
              "Workflow: Follow with list_rows / get_row_struct to inspect a specific table."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_rows"),
         TEXT("List row names of a data table.\n"
-             "Params: table_path (string, /Game/... asset path)."))
+             "Params: table_path (string, required, /Game/... asset path).\n"
+             "Workflow: pair with data_table/get_row to read individual rows."))
         .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
         .Build());
 
@@ -387,7 +389,9 @@ TArray<FMCPToolInfo> FDataTableService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("delete_row"),
         TEXT("Remove a row from a DataTable.\n"
-             "Params: table_path (string), row_name (string)."))
+             "Params: table_path (string, required), row_name (string, required, FName key).\n"
+             "Workflow: pair with content_browser/save to persist; data_table/list_rows to verify.\n"
+             "Warning: irreversible without an open undo transaction."))
         .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
         .RequiredString(TEXT("row_name"), TEXT("Row key (FName)"))
         .Build());

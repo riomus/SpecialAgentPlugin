@@ -745,14 +745,14 @@ TArray<FMCPToolInfo> FInputService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("add_enhanced_mapping"),
-            TEXT("Add a key mapping to a UInputMappingContext for a given UInputAction. Calls Context->MapKey, MarkPackageDirty, and optionally saves via UEditorAssetLibrary::SaveAsset. "
-                 "Params: context_path (string, IMC asset object path), action_path (string, IA asset object path), key (string, EKeys name e.g. SpaceBar), save (bool, default true). "
+            TEXT("Add a key mapping to a UInputMappingContext for a given UInputAction. Calls Context->MapKey, MarkPackageDirty, and optionally persists the asset. "
+                 "Params: context_path (string, required, IMC asset object path), action_path (string, required, IA asset object path), key (string, required, EKeys name e.g. SpaceBar), save (bool, optional, default true). "
                  "Workflow: pairs with input/get_mapping_context to verify. "
                  "Warning: MapKey does NOT dedupe — repeating the call adds another mapping for the same action+key."))
         .RequiredString(TEXT("context_path"), TEXT("Object path of the UInputMappingContext asset"))
         .RequiredString(TEXT("action_path"),  TEXT("Object path of the UInputAction asset"))
         .RequiredString(TEXT("key"),          TEXT("Key name (EKeys::, e.g. SpaceBar, W, Gamepad_FaceButton_Bottom)"))
-        .OptionalBool  (TEXT("save"),         TEXT("Persist via UEditorAssetLibrary::SaveAsset (default true)"))
+        .OptionalBool  (TEXT("save"),         TEXT("Persist the IMC asset to disk (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(

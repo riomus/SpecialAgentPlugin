@@ -32,6 +32,7 @@ TArray<FMCPToolInfo> FConsoleService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("list_commands"),
         TEXT("Return a curated list of commonly-used console commands and CVars. "
+             "Params: (none). "
              "Workflow: inspect before calling console/execute or console/set_cvar."))
         .Build());
 

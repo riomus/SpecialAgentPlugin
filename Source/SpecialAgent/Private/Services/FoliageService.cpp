@@ -464,7 +464,9 @@ TArray<FMCPToolInfo> FFoliageService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(
 			TEXT("remove_from_area"),
 			TEXT("Remove foliage instances inside a bounding box. If foliage_type omitted, removes all types.\n"
-			     "Params: min ([X,Y,Z] cm), max ([X,Y,Z] cm), foliage_type (string, asset path, optional)."))
+			     "Params: min ([X,Y,Z] cm, required), max ([X,Y,Z] cm, required), foliage_type (string, asset path, optional).\n"
+			     "Workflow: pair with foliage/list_foliage_types to discover registered types before targeted removal.\n"
+			     "Warning: irreversible without an open undo transaction; wrap in utility/begin_transaction first."))
 		.RequiredVec3  (TEXT("min"),          TEXT("Bounding box min corner"))
 		.RequiredVec3  (TEXT("max"),          TEXT("Bounding box max corner"))
 		.OptionalString(TEXT("foliage_type"), TEXT("Asset path; when omitted, removes all types"))
@@ -483,14 +485,17 @@ TArray<FMCPToolInfo> FFoliageService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(
 			TEXT("list_foliage_types"),
 			TEXT("Enumerate UFoliageType entries currently registered on the level's InstancedFoliageActor.\n"
-			     "Params: none.\n"
-			     "Returns: array of {asset_path, name, class, instance_count}."))
+			     "Params: (none).\n"
+			     "Returns: array of {asset_path, name, class, instance_count}.\n"
+			     "Workflow: call before paint_in_area / remove_from_area to confirm types are registered."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("add_foliage_type"),
 			TEXT("Load a UFoliageType asset by path and register it on the level's InstancedFoliageActor. Idempotent.\n"
-			     "Params: foliage_type (string, asset path)."))
+			     "Params: foliage_type (string, required, asset path).\n"
+			     "Workflow: must precede paint_in_area for that type; pair with list_foliage_types to verify.\n"
+			     "Warning: re-registering an already-registered type is a no-op (safe)."))
 		.RequiredString(TEXT("foliage_type"), TEXT("Asset path to UFoliageType"))
 		.Build());
 

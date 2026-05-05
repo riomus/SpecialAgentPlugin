@@ -1501,10 +1501,10 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("create_folder"),
-			TEXT("Create a Content Browser folder. Ensures the given virtual directory exists via UEditorAssetLibrary::MakeDirectory. "
-			     "Params: directory_path (string, e.g. /Game/MyNewFolder). "
-			     "Workflow: call before move/duplicate when targeting a new folder. "
-			     "Warning: returns success if the folder already exists."))
+			TEXT("Create a Content Browser folder. Ensures the given virtual directory exists. "
+			     "Params: directory_path (string, required, e.g. /Game/MyNewFolder). "
+			     "Workflow: call before assets/move or content_browser/duplicate when targeting a new folder. "
+			     "Warning: returns success if the folder already exists (idempotent)."))
 		.RequiredString(TEXT("directory_path"), TEXT("Full content directory path, e.g. /Game/MyNewFolder"))
 		.Build());
 
@@ -1530,9 +1530,9 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("move"),
-			TEXT("Move an asset between folders. Delegates to UEditorAssetLibrary::RenameAsset, which supports cross-directory moves and updates references. "
-			     "Params: source_path (string, full object path), destination_path (string, full destination object path e.g. /Game/New/Foo.Foo). "
-			     "Workflow: call create_folder first if the destination directory is new. "
+			TEXT("Move an asset between folders. Cross-directory moves with reference fixup. "
+			     "Params: source_path (string, required, full object path), destination_path (string, required, full destination object path e.g. /Game/New/Foo.Foo). "
+			     "Workflow: call assets/create_folder first if the destination directory is new. "
 			     "Warning: leaves a redirector at the source unless the project fixes them up on save."))
 		.RequiredString(TEXT("source_path"),      TEXT("Existing asset object path"))
 		.RequiredString(TEXT("destination_path"), TEXT("Full destination object path (e.g. /Game/NewFolder/Foo.Foo)"))
@@ -1551,8 +1551,8 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("save"),
-			TEXT("Save an asset. Persists a modified asset via UEditorAssetLibrary::SaveAsset. "
-			     "Params: asset_path (string), only_if_dirty (bool, optional, default true — skip when clean). "
+			TEXT("Save an asset. Persists a modified asset to its package on disk. "
+			     "Params: asset_path (string, required), only_if_dirty (bool, optional, default true — skip when clean). "
 			     "Workflow: call after set_metadata, duplicate, or any reflection-driven edit. "
 			     "Warning: skips source-control checkout prompts; ensure the file is writable."))
 		.RequiredString(TEXT("asset_path"),    TEXT("Asset object path to save"))

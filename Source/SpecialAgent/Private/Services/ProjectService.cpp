@@ -43,11 +43,13 @@ TArray<FMCPToolInfo> FProjectService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("get_version"),
         TEXT("Get the current Unreal Engine version. Returns {version} as the string form of FEngineVersion::Current (e.g. '5.7.0-...'). "
+             "Params: (none). "
              "Workflow: useful for guarding scripts that call version-specific APIs."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_plugins"),
         TEXT("List all discovered plugins with their enabled state. "
+             "Params: (none). "
              "Workflow: feed plugin names to project/enable_plugin or project/disable_plugin."))
         .Build());
 
@@ -67,11 +69,13 @@ TArray<FMCPToolInfo> FProjectService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("get_content_path"),
         TEXT("Get the absolute filesystem path of the project's Content/ directory. Returns {path}. "
+             "Params: (none). "
              "Workflow: use to resolve /Game/... asset paths to on-disk locations for python/execute_file or Mount points."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_project_path"),
         TEXT("Get the absolute filesystem path of the active .uproject file. Returns {path}. "
+             "Params: (none). "
              "Workflow: combine with assets/* tools when scripting out-of-editor tooling."))
         .Build());
 

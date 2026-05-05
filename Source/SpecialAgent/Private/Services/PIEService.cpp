@@ -33,18 +33,21 @@ TArray<FMCPToolInfo> FPIEService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("stop"),
         TEXT("Stop the active Play-In-Editor session. Calls GEditor->RequestEndPlayMap(). "
+             "Params: (none). "
              "Workflow: use pie/is_playing after to confirm. "
              "Warning: no-op when no PIE session is running."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("pause"),
         TEXT("Pause the active PIE world. Uses UGameplayStatics::SetGamePaused(true). "
+             "Params: (none). "
              "Workflow: pair with pie/resume or pie/step_frame. "
              "Warning: fails if PIE is not running."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("resume"),
         TEXT("Resume the paused PIE world. Uses UGameplayStatics::SetGamePaused(false). "
+             "Params: (none). "
              "Workflow: use after pie/pause. "
              "Warning: fails if PIE is not running."))
         .Build());
@@ -59,18 +62,22 @@ TArray<FMCPToolInfo> FPIEService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("toggle_simulate"),
         TEXT("Toggle between Play and Simulate modes in the active PIE session. "
+             "Params: (none). "
              "Workflow: use mid-session to swap inputs vs. editor selection. "
              "Warning: requires an active PIE session."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("is_playing"),
         TEXT("Query whether a PIE session is currently active. Returns playing (bool) and "
-             "paused (bool) flags. Workflow: poll after pie/start or pie/stop."))
+             "paused (bool) flags. "
+             "Params: (none). "
+             "Workflow: poll after pie/start or pie/stop."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_world_context"),
         TEXT("Return world context paths. editor_world (string, always present) and pie_world "
              "(string, present only while PIE is running). "
+             "Params: (none). "
              "Workflow: use to disambiguate which world subsequent calls target."))
         .Build());
 

@@ -54,6 +54,7 @@ TArray<FMCPToolInfo> FEditorModeService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("get_current"),
         TEXT("Return the IDs of all currently active editor modes as a string array. "
+             "Params: (none). "
              "Workflow: call after editor_mode/activate to confirm."))
         .Build());
 

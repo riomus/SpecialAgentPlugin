@@ -743,6 +743,7 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_transform");
 		Tool.Description = TEXT("Get the active editor viewport camera transform. Returns {success, location:[X,Y,Z], rotation:[Pitch,Yaw,Roll]}. "
+			"Params: (none). "
 			"Workflow: call before bookmark_save, or use the result to compute offsets for subsequent set_location calls.");
 		Tools.Add(Tool);
 	}
@@ -819,6 +820,7 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("toggle_game_view");
 		Tool.Description = TEXT("Toggle editor viewport Game View mode. Effect: hides editor-only icons/gizmos if on. "
+			"Params: (none). "
 			"Workflow: call before screenshot to capture an in-game framing; follow with viewport/force_redraw so the toggle is reflected in the next capture.");
 		Tools.Add(Tool);
 	}
@@ -841,7 +843,8 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(TEXT("set_grid_snap"),
 		TEXT("Enable/disable position grid snap and optionally pick the grid size index. "
 			 "Effect: mutates ULevelEditorViewportSettings. "
-			 "Params: enabled (bool), grid_size_index (integer >=0, optional; indexes into Pow2GridSizes/DecimalGridSizes)."))
+			 "Params: enabled (bool, required), grid_size_index (integer >=0, optional; indexes into Pow2GridSizes/DecimalGridSizes). "
+			 "Workflow: pair with viewport/get_transform to confirm; world/spawn_actor will then snap to the configured grid."))
 		.RequiredBool(TEXT("enabled"), TEXT("true=snap to grid, false=disable"))
 		.OptionalInteger(TEXT("grid_size_index"), TEXT("Index into the grid size array"))
 		.Build());
@@ -850,6 +853,7 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("toggle_realtime");
 		Tool.Description = TEXT("Toggle viewport realtime mode. Effect: when on, viewport animates; off saves CPU. "
+			"Params: (none). "
 			"Workflow: disable when positioning camera precisely, enable for playback preview.");
 		Tools.Add(Tool);
 	}

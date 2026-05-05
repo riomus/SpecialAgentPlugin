@@ -494,8 +494,9 @@ TArray<FMCPToolInfo> FLandscapeService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_info"),
 			TEXT("Report landscape dimensions, component counts, and material.\n"
-			     "Params: none.\n"
-			     "Returns: {actor_name, component_size_quads, subsection_size_quads, num_subsections, min_x, min_y, max_x, max_y, size_x_quads, size_y_quads, component_count, material_path}."))
+			     "Params: (none).\n"
+			     "Returns: {actor_name, component_size_quads, subsection_size_quads, num_subsections, min_x, min_y, max_x, max_y, size_x_quads, size_y_quads, component_count, material_path}.\n"
+			     "Workflow: call first to discover valid quad extents before sculpt_height / flatten_area / paint_layer."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
@@ -514,7 +515,9 @@ TArray<FMCPToolInfo> FLandscapeService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(
 			TEXT("flatten_area"),
 			TEXT("Flatten a rectangular landscape region to a target world-Z height (cm).\n"
-			     "Params: x1,y1,x2,y2 (int quad coords), target_z_cm (number, world cm)."))
+			     "Params: x1,y1,x2,y2 (int quad coords, required), target_z_cm (number, world cm, required).\n"
+			     "Workflow: pair with landscape/get_info to find valid quad extents.\n"
+			     "Warning: only mutates the active edit layer; runtime regeneration may delay visible change."))
 		.RequiredInteger(TEXT("x1"),          TEXT("Min X in quad coords"))
 		.RequiredInteger(TEXT("y1"),          TEXT("Min Y in quad coords"))
 		.RequiredInteger(TEXT("x2"),          TEXT("Max X in quad coords"))
@@ -550,8 +553,9 @@ TArray<FMCPToolInfo> FLandscapeService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(
 			TEXT("list_layers"),
 			TEXT("Enumerate landscape weightmap layers (and their LayerInfo assets) on the current ALandscape.\n"
-			     "Params: none.\n"
-			     "Returns: {layers: [{layer_name, asset_path?, has_info}]}."))
+			     "Params: (none).\n"
+			     "Returns: {layers: [{layer_name, asset_path?, has_info}]}.\n"
+			     "Workflow: call before paint_layer to confirm a valid layer_name."))
 		.Build());
 
 	return Tools;

@@ -1592,6 +1592,7 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_level_info");
 		Tool.Description = TEXT("Return level name, path, actor count, and bounds. Effect: summary of the active editor world. "
+			"Params: (none). "
 			"Workflow: call first when starting to explore a scene.");
 		Tools.Add(Tool);
 	}
@@ -1626,7 +1627,9 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("delete_actor"),
 		TEXT("Delete one actor by label. Effect: removes the actor from the level. "
-			 "Params: actor_name (string)."))
+			 "Params: actor_name (string, required). "
+			 "Workflow: pair with world/find_actors_by_tag to gather candidates first; world/delete_actors_batch is faster for many. "
+			 "Warning: irreversible without an open undo transaction; wrap in utility/begin_transaction first."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label to delete"))
 		.Build());
 
@@ -1639,7 +1642,9 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("duplicate_actor"),
 		TEXT("Duplicate an existing actor. Effect: copies the actor (via editor copy/paste) and returns the new label. "
-			 "Params: actor_name (string), new_location ([X,Y,Z], optional)."))
+			 "Params: actor_name (string, required), new_location ([X,Y,Z], optional). "
+			 "Workflow: pair with world/set_actor_label to give the duplicate a meaningful name. "
+			 "Warning: components with non-default settings may not deep-copy reliably — verify before relying on the duplicate."))
 		.RequiredString(TEXT("actor_name"), TEXT("The actor name to duplicate"))
 		.OptionalVec3(TEXT("new_location"), TEXT("Optional new location for the duplicate"))
 		.Build());
@@ -1657,21 +1662,24 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_actor_location"),
 		TEXT("Move an actor to a new world location. Effect: replaces location; rotation and scale preserved. "
-			 "Params: actor_name (string), location ([X,Y,Z] cm)."))
+			 "Params: actor_name (string, required), location ([X,Y,Z] cm, required). "
+			 "Workflow: prefer world/set_actor_transform when also changing rotation/scale to avoid intermediate states."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredVec3(TEXT("location"), TEXT("New location [X, Y, Z] cm"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_actor_rotation"),
 		TEXT("Rotate an actor in world space. Effect: replaces rotation. "
-			 "Params: actor_name (string), rotation ([Pitch,Yaw,Roll] deg)."))
+			 "Params: actor_name (string, required), rotation ([Pitch,Yaw,Roll] deg, required). "
+			 "Workflow: pair with viewport/trace_from_screen — use the returned surface normal to align actors to terrain."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredVec3(TEXT("rotation"), TEXT("Rotation [Pitch, Yaw, Roll] deg"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_actor_scale"),
 		TEXT("Scale an actor. Effect: replaces component scale. "
-			 "Params: actor_name (string), scale ([X,Y,Z], 1=original)."))
+			 "Params: actor_name (string, required), scale ([X,Y,Z], 1=original, required). "
+			 "Workflow: pair with assets/get_bounds first to pick a scale that matches the surrounding objects."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredVec3(TEXT("scale"), TEXT("Scale [X, Y, Z]"))
 		.Build());
@@ -1698,7 +1706,9 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_actor_material"),
 		TEXT("Apply a material to all MeshComponents of an actor at a given slot. Effect: updates runtime material. "
-			 "Params: actor_name (string), material_path (string, /Game/.../Mat.Mat), slot_index (integer, default 0)."))
+			 "Params: actor_name (string, required), material_path (string, required, /Game/.../Mat.Mat), slot_index (integer, optional, default 0). "
+			 "Workflow: pair with material/create_instance to make a per-actor MIC before assigning here. "
+			 "Warning: replaces the slot's material directly — use world/set_material_parameter for non-destructive runtime tweaks."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredString(TEXT("material_path"), TEXT("Material asset path /Game/..."))
 		.OptionalInteger(TEXT("slot_index"), TEXT("Material slot index (default 0)"))
@@ -1707,9 +1717,11 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(TEXT("set_material_parameter"),
 		TEXT("Set a scalar or vector parameter on an actor's current slot material (via a dynamic MID). "
 			 "Effect: non-destructive runtime parameter write. "
-			 "Params: actor_name (string), parameter_name (string), parameter_type ('scalar'|'vector'), "
-			 "value (number when parameter_type='scalar'; [R,G,B,A] linear-color array when parameter_type='vector'), "
-			 "slot_index (integer, default 0)."))
+			 "Params: actor_name (string, required), parameter_name (string, required), parameter_type ('scalar'|'vector', required), "
+			 "value (number when parameter_type='scalar'; [R,G,B,A] linear-color array when parameter_type='vector', required), "
+			 "slot_index (integer, optional, default 0). "
+			 "Workflow: discovery via reflection/get_class_info on the underlying material parent if you don't know the parameter name. "
+			 "Warning: creates a per-instance MID — survives editor session but does not persist on the asset."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredString(TEXT("parameter_name"), TEXT("Material parameter name"))
 		.RequiredEnum(TEXT("parameter_type"), {TEXT("scalar"), TEXT("vector")}, TEXT("Parameter type"))
@@ -1720,27 +1732,31 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 	// ---------- Organization ----------
 	Tools.Add(FMCPToolBuilder(TEXT("create_folder"),
 		TEXT("Create an outliner folder by setting WorldSettings's folder path. Effect: folder appears in outliner. "
-			 "Params: folder_path (string, slashes for nesting)."))
+			 "Params: folder_path (string, required, slashes for nesting). "
+			 "Workflow: pair with world/move_actor_to_folder to move actors into the new folder."))
 		.RequiredString(TEXT("folder_path"), TEXT("Folder path, e.g. 'Lighting/Sun'"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("move_actor_to_folder"),
 		TEXT("Move an actor into an outliner folder. Effect: updates actor's folder path. "
-			 "Params: actor_name (string), folder_path (string)."))
+			 "Params: actor_name (string, required), folder_path (string, required). "
+			 "Workflow: world/create_folder first if the folder doesn't already exist."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredString(TEXT("folder_path"), TEXT("Target folder path"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("add_actor_tag"),
-		TEXT("Add a tag to an actor. Effect: adds FName to Actor->Tags if absent. "
-			 "Params: actor_name (string), tag (string)."))
+		TEXT("Add a tag to an actor. Effect: adds FName to Actor->Tags if absent (idempotent). "
+			 "Params: actor_name (string, required), tag (string, required). "
+			 "Workflow: pair with world/find_actors_by_tag to gather tagged actors later."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredString(TEXT("tag"), TEXT("Tag to add"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("remove_actor_tag"),
 		TEXT("Remove a tag from an actor. Effect: removes FName from Actor->Tags if present. "
-			 "Params: actor_name (string), tag (string)."))
+			 "Params: actor_name (string, required), tag (string, required). "
+			 "Workflow: pair with world/find_actors_by_tag to verify the tag was present."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredString(TEXT("tag"), TEXT("Tag to remove"))
 		.Build());
@@ -1750,7 +1766,8 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("measure_distance");
 		Tool.Description = TEXT("Compute 3D and 2D distance between two points or actors. Effect: returns {distance,distance_2d,point_a,point_b}. "
-			"Params: point_a/point_b ([X,Y,Z]) OR actor_a/actor_b (label); any combination allowed.");
+			"Params: point_a/point_b ([X,Y,Z]) OR actor_a/actor_b (string label); any combination allowed. "
+			"Workflow: pair with world/find_actors_in_radius / find_actors_in_bounds for spatial reasoning.");
 		TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
 		P->SetStringField(TEXT("type"), TEXT("array"));
 		P->SetStringField(TEXT("description"), TEXT("Point A [X,Y,Z]"));
@@ -1772,14 +1789,16 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("find_actors_in_radius"),
 		TEXT("Find actors within a sphere. Effect: returns matches with distance. "
-			 "Params: center ([X,Y,Z]), radius (number, cm)."))
+			 "Params: center ([X,Y,Z], required), radius (number, cm, required). "
+			 "Workflow: pair with world/delete_actors_batch or utility/select_actor for spatial cleanup or selection."))
 		.RequiredVec3(TEXT("center"), TEXT("Center point [X,Y,Z]"))
 		.RequiredNumber(TEXT("radius"), TEXT("Radius in cm"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("find_actors_in_bounds"),
 		TEXT("Find actors whose location is inside an axis-aligned box. Effect: returns matching actors. "
-			 "Params: min/max ([X,Y,Z] cm)."))
+			 "Params: min/max ([X,Y,Z] cm, required). "
+			 "Workflow: cheaper than find_actors_in_radius for axis-aligned regions; pair with bulk operations."))
 		.RequiredVec3(TEXT("min"), TEXT("Box min corner [X,Y,Z]"))
 		.RequiredVec3(TEXT("max"), TEXT("Box max corner [X,Y,Z]"))
 		.Build());
@@ -1804,7 +1823,9 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 	// ---------- Pattern placement ----------
 	Tools.Add(FMCPToolBuilder(TEXT("place_in_grid"),
 		TEXT("Spawn a grid of actors. Effect: CountX*CountY actors spaced by SpacingX/Y around origin. "
-			 "Params: actor_class, origin ([X,Y,Z]), count_x/count_y (integer), spacing_x/y (number), rotation?, scale?."))
+			 "Params: actor_class (string, required), origin ([X,Y,Z], required), count_x/count_y (integer, required), spacing_x/y (number, optional, default 100), rotation ([P,Y,R], optional), scale ([X,Y,Z], optional). "
+			 "Workflow: prefer over a python loop of world/spawn_actor for moderate counts; for thousands prefer foliage/paint_in_area. "
+			 "Warning: count_x*count_y can be huge — review before calling, no automatic cap."))
 		.RequiredString(TEXT("actor_class"), TEXT("Asset path or class name"))
 		.RequiredVec3(TEXT("origin"), TEXT("Grid origin [X,Y,Z]"))
 		.RequiredInteger(TEXT("count_x"), TEXT("Grid columns"))
@@ -1830,7 +1851,8 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("place_in_circle"),
 		TEXT("Spawn N actors evenly distributed on a circle. Effect: returns spawned actor list. "
-			 "Params: actor_class, center ([X,Y,Z]), radius (number), count (integer), face_outward (bool, optional)."))
+			 "Params: actor_class (string, required), center ([X,Y,Z], required), radius (number, required), count (integer, required), face_outward (bool, optional). "
+			 "Workflow: pair with world/get_ground_height to project each spawn onto terrain; viewport/force_redraw before screenshotting."))
 		.RequiredString(TEXT("actor_class"), TEXT("Asset path or class name"))
 		.RequiredVec3(TEXT("center"), TEXT("Circle center [X,Y,Z]"))
 		.RequiredNumber(TEXT("radius"), TEXT("Circle radius in cm"))
@@ -1842,8 +1864,10 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("scatter_in_area"),
 		TEXT("Randomly scatter N actors in an axis-aligned box. Effect: uses seeded RNG; optionally snaps to ground. "
-			 "Params: actor_class, min/max ([X,Y,Z]), count (integer), seed (integer, optional), "
-			 "stick_to_ground (bool, optional), rotation?, scale?."))
+			 "Params: actor_class (string, required), min/max ([X,Y,Z], required), count (integer, required), seed (integer, optional), "
+			 "stick_to_ground (bool, optional), rotation ([P,Y,R], optional), scale ([X,Y,Z], optional). "
+			 "Workflow: prefer over python random-loops; pass seed for reproducible runs. "
+			 "Warning: stick_to_ground raycasts each spawn — slow for thousands; prefer foliage/paint_in_area for vegetation."))
 		.RequiredString(TEXT("actor_class"), TEXT("Asset path or class name"))
 		.RequiredVec3(TEXT("min"), TEXT("Box min corner [X,Y,Z]"))
 		.RequiredVec3(TEXT("max"), TEXT("Box max corner [X,Y,Z]"))
@@ -1857,29 +1881,34 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 	// ---------- Actor state ----------
 	Tools.Add(FMCPToolBuilder(TEXT("set_actor_tick_enabled"),
 		TEXT("Enable/disable an actor's tick function. Effect: toggles Actor::SetActorTickEnabled. "
-			 "Params: actor_name (string), enabled (bool)."))
+			 "Params: actor_name (string, required), enabled (bool, required). "
+			 "Workflow: useful for freezing animation while authoring; pair with pie/start to confirm runtime behaviour."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredBool(TEXT("enabled"), TEXT("true=tick on, false=tick off"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_actor_hidden"),
 		TEXT("Hide/show an actor in both editor and game. Effect: toggles SetActorHiddenInGame and SetIsTemporarilyHiddenInEditor. "
-			 "Params: actor_name (string), hidden (bool)."))
+			 "Params: actor_name (string, required), hidden (bool, required). "
+			 "Workflow: pair with viewport/force_redraw before screenshotting to confirm visibility flip."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredBool(TEXT("hidden"), TEXT("true=hide, false=show"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_actor_collision"),
 		TEXT("Enable/disable an actor's collision. Effect: Actor::SetActorEnableCollision. "
-			 "Params: actor_name (string), enabled (bool)."))
+			 "Params: actor_name (string, required), enabled (bool, required). "
+			 "Workflow: useful when an actor blocks line-traces during placement; re-enable before runtime."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.RequiredBool(TEXT("enabled"), TEXT("true=enable, false=disable"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("attach_to"),
 		TEXT("Attach one actor to another. Effect: child becomes parented to parent. "
-			 "Params: child (string, label), parent (string, label), socket (string, optional), "
-			 "rule (enum 'keep_world'|'keep_relative'|'snap_to_target', default 'keep_world')."))
+			 "Params: child (string, required, label), parent (string, required, label), socket (string, optional), "
+			 "rule (enum 'keep_world'|'keep_relative'|'snap_to_target', optional, default 'keep_world'). "
+			 "Workflow: pair with world/detach to undo. "
+			 "Warning: attachment cycles will be silently rejected; verify with utility/get_selection_bounds."))
 		.RequiredString(TEXT("child"), TEXT("Child actor label"))
 		.RequiredString(TEXT("parent"), TEXT("Parent actor label"))
 		.OptionalString(TEXT("socket"), TEXT("Optional socket name on parent's root"))
@@ -1889,7 +1918,8 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(TEXT("detach"),
 		TEXT("Detach an actor from its parent. Effect: keeps world transform. "
-			 "Params: actor_name (string)."))
+			 "Params: actor_name (string, required). "
+			 "Workflow: opposite of world/attach_to; world transform is preserved."))
 		.RequiredString(TEXT("actor_name"), TEXT("Actor label"))
 		.Build());
 

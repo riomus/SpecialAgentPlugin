@@ -331,19 +331,23 @@ TArray<FMCPToolInfo> FValidationService::GetAvailableTools() const
              "the class assets of any selected actors. Uses project-configured validators\n"
              "(IsDataValid overrides, asset-naming, custom EditorValidatorBase).\n"
              "Returns validated_count, issue_count, errors[], warnings[] plus per-asset detail.\n"
+             "Params: (none).\n"
              "Workflow: utility/focus_asset_in_browser or actor selection first, then call this."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("validate_level"),
         TEXT("Validate the current editor level and its on-disk package dependencies via\n"
              "UEditorValidatorSubsystem. Capped at 256 dep packages; Engine/script excluded.\n"
+             "Params: (none).\n"
              "Workflow: Use before checking in a level; follow with content_browser/save for any fixes."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_errors"),
         TEXT("Survey AssetCheck, MapCheck, AssetTools, and LoadErrors message logs. Returns\n"
              "counts per severity and up to 32 recent tokenized messages per log where the\n"
-             "log listing UI is registered. No params."))
+             "log listing UI is registered.\n"
+             "Params: (none).\n"
+             "Workflow: pair with validation/validate_level to inspect post-validation messages."))
         .Build());
 
     return Tools;

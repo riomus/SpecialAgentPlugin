@@ -39,17 +39,20 @@ TArray<FMCPToolInfo> FLevelService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("save_as"),
         TEXT("Save the current level as a new asset. The editor shows a path dialog. "
+             "Params: (none). "
              "Workflow: use after level/new or to fork an existing level. "
              "Warning: returns success=false if the user cancels the dialog."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_current_path"),
         TEXT("Return the package name / file path of the currently open level. "
+             "Params: (none). "
              "Workflow: call before level/open to compare."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_templates"),
         TEXT("Return the built-in new-level templates recognized by this service. "
+             "Params: (none). "
              "Workflow: pick one and feed its name to level/new when template support is added."))
         .Build());
 

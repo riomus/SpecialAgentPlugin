@@ -150,11 +150,13 @@ TArray<FMCPToolInfo> FLogService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(TEXT("clear"),
         TEXT("Clear the in-memory log ring buffer. "
+             "Params: (none). "
              "Workflow: call before a sequence you want to isolate, then log/tail to read it."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_categories"),
         TEXT("List a curated set of common log categories. "
+             "Params: (none). "
              "Workflow: use before log/set_category_verbosity."))
         .Build());
 

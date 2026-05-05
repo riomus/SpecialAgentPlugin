@@ -71,7 +71,9 @@ TArray<FMCPToolInfo> FRenderQueueService::GetAvailableTools() const
     Tools.Add(FMCPToolBuilder(TEXT("start_render"),
         TEXT("Start rendering the current Movie Render Queue using the in-process executor. "
              "Returns {success, frames_rendered?}. Emits notifications/progress every 500 ms based on "
-             "UMoviePipelineExecutorBase::GetStatusProgress(). Workflow: queue_sequence -> set_output -> start_render. "
+             "UMoviePipelineExecutorBase::GetStatusProgress(). "
+             "Params: (none). "
+             "Workflow: queue_sequence -> set_output -> start_render. "
              "Warning: blocks the handler until rendering finishes — can take minutes to hours. "
              "Emits notifications/progress over the session's SSE stream, so call from a client with "
              "Accept: text/event-stream if you want live progress."))

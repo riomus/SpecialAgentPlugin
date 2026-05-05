@@ -526,7 +526,9 @@ TArray<FMCPToolInfo> FLightingService::GetAvailableTools() const
 	Tools.Add(FMCPToolBuilder(
 			TEXT("set_light_cast_shadows"),
 			TEXT("Toggle shadow casting on a light actor.\n"
-			     "Params: actor_name (string), cast_shadows (bool)."))
+			     "Params: actor_name (string, required, light actor label), cast_shadows (bool, required).\n"
+			     "Workflow: pair with lighting/build_lighting to bake the change into static lights.\n"
+			     "Warning: dynamic lights re-evaluate shadows immediately; static lights need a rebuild."))
 		.RequiredString(TEXT("actor_name"),   TEXT("Light actor label"))
 		.RequiredBool  (TEXT("cast_shadows"), TEXT("Enable or disable shadow casting"))
 		.Build());
