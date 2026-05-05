@@ -906,8 +906,11 @@ FMCPResponse FMCPRequestRouter::HandlePromptsGet(const FMCPRequest& Request)
 			"Help me place objects in the level: %s\n\n"
 			"Use Python (python/execute) with the unreal module to:\n"
 			"1. First screenshot to see the current state\n"
-			"2. Use unreal.EditorLevelLibrary or unreal.EditorAssetLibrary as needed\n"
-			"3. Place/modify the requested objects\n"
+			"2. Acquire modern subsystems: "
+			"eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem); "
+			"easset = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem). "
+			"Do NOT use unreal.EditorLevelLibrary / unreal.EditorAssetLibrary — both deprecated.\n"
+			"3. Place/modify the requested objects via eas.spawn_actor_from_class / spawn_actor_from_object\n"
 			"4. Screenshot again to verify the results"
 		), *Description));
 		Messages.Add(MakeShared<FJsonValueObject>(Msg));
@@ -1046,7 +1049,10 @@ FMCPResponse FMCPRequestRouter::HandlePromptsGet(const FMCPRequest& Request)
 		Msg->SetStringField(TEXT("role"), TEXT("user"));
 		Msg->SetStringField(TEXT("content"), FString::Printf(TEXT(
 			"Build a landscape of size=%s with layers=[%s]:\n"
-			"1. python/execute to create the landscape actor (UE editor API fallback)\n"
+			"1. python/execute to create the landscape actor: "
+			"eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem); "
+			"eas.spawn_actor_from_class(unreal.Landscape, unreal.Vector(0,0,0)). "
+			"Do NOT use deprecated EditorLevelLibrary.\n"
 			"2. landscape/sculpt to shape a few regions\n"
 			"3. landscape/paint_layer for each layer in the list\n"
 			"4. screenshot/capture to verify"
@@ -1073,7 +1079,11 @@ FMCPResponse FMCPRequestRouter::HandlePromptsGet(const FMCPRequest& Request)
 		Msg->SetStringField(TEXT("role"), TEXT("user"));
 		Msg->SetStringField(TEXT("content"), TEXT(
 			"Set up navigation for the current level:\n"
-			"1. python/execute to spawn a NavMeshBoundsVolume covering the playable area\n"
+			"1. python/execute to spawn the bounds volume: "
+			"eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem); "
+			"eas.spawn_actor_from_class(unreal.NavMeshBoundsVolume, unreal.Vector(0,0,0)) — "
+			"then set its scale/extent to cover the playable area. "
+			"Do NOT use deprecated EditorLevelLibrary.\n"
 			"2. navigation/rebuild_navmesh\n"
 			"3. navigation/test_path between two sample points to confirm it works\n"
 			"4. screenshot/capture in nav view mode to verify coverage"
