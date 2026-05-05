@@ -22,7 +22,7 @@
 - Automation tests: Editor → Window → Test Automation → filter `SpecialAgent.*` → Run.
 - End-to-end MCP probes: `curl http://localhost:8767/codex` per the README.
 
-**Total tasks:** 17. Phases 1-4 are sequential foundation; Phase 5 is the description audit (one failing test + nine fix batches).
+**Total tasks:** 16. Phases 1-4 are sequential foundation; Phase 5 is the description audit (one failing test + nine fix batches).
 
 ---
 
@@ -507,9 +507,13 @@ FMCPResponse FMCPRequestRouter::HandleResourcesRead(const FMCPRequest& Request)
         return MakeError(TEXT("unknown URI"));
     }
 
-    const FString FullPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(DocsRoot, RelKey));
+    FString FullPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(DocsRoot, RelKey));
+    // Normalize separators on both sides so StartsWith is reliable across Windows + Unix
+    FString NormalizedRoot = DocsRoot;
+    FPaths::NormalizeFilename(NormalizedRoot);
+    FPaths::NormalizeFilename(FullPath);
     // Belt-and-suspenders: resolved path must still live under DocsRoot.
-    if (!FullPath.StartsWith(DocsRoot))
+    if (!FullPath.StartsWith(NormalizedRoot))
     {
         UE_LOG(LogTemp, Warning,
             TEXT("SpecialAgent: resources/read rejected path traversal: %s"), *FullPath);
@@ -683,7 +687,11 @@ if (MethodName == TEXT("help")) return HandleHelp(Request);
 
 - [ ] **Step 4: Implement `HandleHelp`**
 
-Pattern: build a short Python wrapper that resolves the symbol, calls `help()`, captures stdout, writes JSON to temp file. Reuse the temp-file mechanism from `HandleExecute`. Skeleton:
+Pattern: build a short Python wrapper that resolves the symbol, calls `help()`, captures stdout, writes JSON to temp file. Reuse the temp-file mechanism from `HandleExecute`.
+
+**Safety note for the wrapper text in Tasks 7-13:** the LLM-supplied `symbol` / `class_name` / `enum_name` / `asset_path` strings are interpolated **into a Python source literal**. A stray apostrophe, backslash, or newline would break the wrapper. Always pass these via `repr()` inside the Python or escape with `Symbol.ReplaceCharWithEscapedChar()` before `FString::Printf`. The skeleton below uses `repr()`-style triple-single-quoted literals to sidestep the problem.
+
+Skeleton:
 
 ```cpp
 FMCPResponse FPythonService::HandleHelp(const FMCPRequest& Request)
@@ -709,6 +717,11 @@ FMCPResponse FPythonService::HandleHelp(const FMCPRequest& Request)
         const FString TempFile = FPaths::Combine(FPaths::ProjectIntermediateDir(),
             TEXT("mcp_python_help.json"));
 
+        // Build a triple-single-quoted Python literal so quotes/newlines in `Symbol`
+        // can't break out. We still defensively strip ''' since Python rejects nested
+        // triple-single inside a triple-single literal.
+        const FString SafeSymbol = Symbol.Replace(TEXT("'''"), TEXT(""));
+
         const FString Wrap = FString::Printf(TEXT(
             "import io, sys, json, inspect, importlib\n"
             "_buf = io.StringIO()\n"
@@ -717,8 +730,9 @@ FMCPResponse FPythonService::HandleHelp(const FMCPRequest& Request)
             "_doc = ''\n"
             "_sig = ''\n"
             "_ok = True\n"
+            "_sym = '''%s'''\n"
             "try:\n"
-            "    _parts = '%s'.split('.')\n"
+            "    _parts = _sym.split('.')\n"
             "    obj = importlib.import_module(_parts[0])\n"
             "    for p in _parts[1:]:\n"
             "        obj = getattr(obj, p)\n"
@@ -734,8 +748,8 @@ FMCPResponse FPythonService::HandleHelp(const FMCPRequest& Request)
             "finally:\n"
             "    sys.stdout = _old\n"
             "    with open(r'%s', 'w', encoding='utf-8') as _f:\n"
-            "        json.dump({'symbol':'%s','doc':_doc,'signature':_sig,'success':_ok}, _f)\n"
-        ), *Symbol, *TempFile, *Symbol);
+            "        json.dump({'symbol':_sym,'doc':_doc,'signature':_sig,'success':_ok}, _f)\n"
+        ), *SafeSymbol, *TempFile);
 
         FPythonCommandEx Cmd;
         Cmd.Command = Wrap;
@@ -925,6 +939,16 @@ Smoke probe: existing `/Game/StarterContent/Materials/M_Basic_Floor` → `class_
 
 **Why:** Pure C++ regex scan of an input snippet against `deprecations.md`. No Python execution, no game-thread dispatch.
 
+**Includes:** add to the top of `PythonService.cpp` if not already present:
+
+```cpp
+#include "Interfaces/IPluginManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+```
+
+(`FFileHelper` and `IPluginManager.h` are already used elsewhere in this file path-wise but the includes need to be present in `PythonService.cpp` specifically.)
+
 - [ ] **Step 1: Tool description**
 
 ```cpp
@@ -969,12 +993,20 @@ static const TArray<FDeprecationEntry>& GetDeprecationsTable()
 
     TArray<FString> Lines;
     Body.ParseIntoArrayLines(Lines, /*CullEmpty=*/false);
+    bool bSeenHeader = false;
     for (const FString& Line : Lines)
     {
         // Need a leading '|', three pipes, no header / divider lines.
         if (!Line.StartsWith(TEXT("| "))) continue;
         if (Line.Contains(TEXT("|---"))) continue;
-        if (Line.Contains(TEXT("Deprecated"))) continue;
+        // Skip the first header row only (where columns 1/2 are the literal headings),
+        // not every row that happens to mention "Deprecated" in its Notes column.
+        if (!bSeenHeader)
+        {
+            bSeenHeader = true;
+            // The header row contains the literal column titles; skip it once and continue.
+            if (Line.Contains(TEXT("Deprecated")) && Line.Contains(TEXT("Modern"))) continue;
+        }
 
         TArray<FString> Cols;
         Line.ParseIntoArray(Cols, TEXT("|"), /*InCullEmpty=*/false);
