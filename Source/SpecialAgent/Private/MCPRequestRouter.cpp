@@ -584,30 +584,115 @@ FMCPResponse FMCPRequestRouter::HandleResourcesList(const FMCPRequest& Request)
 
 FMCPResponse FMCPRequestRouter::HandleResourcesRead(const FMCPRequest& Request)
 {
-	// Get the URI from params
 	FString Uri;
 	if (Request.Params.IsValid())
 	{
 		Request.Params->TryGetStringField(TEXT("uri"), Uri);
 	}
-	
-	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: resources/read for URI: %s"), *Uri);
-	
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: resources/read uri=%s"), *Uri);
+
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> Contents;
-	
-	if (Uri == TEXT("mcp://instructions") || Uri.Contains(TEXT("instruction"), ESearchCase::IgnoreCase))
+
+	auto MakeError = [&](const TCHAR* Msg) -> FMCPResponse
 	{
-		// Return the instructions as text content
+		return FMCPResponse::Error(Request.Id, -32602,
+			FString::Printf(TEXT("resources/read: %s"), Msg));
+	};
+
+	auto AddTextContent = [&](const FString& MimeType, const FString& Body)
+	{
 		TSharedPtr<FJsonObject> Content = MakeShared<FJsonObject>();
 		Content->SetStringField(TEXT("uri"), Uri);
-		Content->SetStringField(TEXT("mimeType"), TEXT("text/plain"));
-		Content->SetStringField(TEXT("text"), BuildSpecialAgentInstructions());
+		Content->SetStringField(TEXT("mimeType"), MimeType);
+		Content->SetStringField(TEXT("text"), Body);
 		Contents.Add(MakeShared<FJsonValueObject>(Content));
+	};
+
+	// Legacy compat: clients calling mcp://instructions still get the cheat sheet.
+	if (Uri == TEXT("mcp://instructions") || Uri.Contains(TEXT("instruction"), ESearchCase::IgnoreCase))
+	{
+		AddTextContent(TEXT("text/plain"), BuildSpecialAgentInstructions());
+		Result->SetArrayField(TEXT("contents"), Contents);
+		return FMCPResponse::Success(Request.Id, Result);
 	}
-	
+
+	// Synthesize the services index live (not on disk).
+	if (Uri == TEXT("mcp://unreal/services"))
+	{
+		FString Body = TEXT("# SpecialAgent MCP — services + tools index\n\n");
+		for (const auto& Pair : Services)
+		{
+			const TArray<FMCPToolInfo> Tools = Pair.Value->GetAvailableTools();
+			Body += FString::Printf(TEXT("## %s\n\n%s\n\n"),
+				*Pair.Key, *Pair.Value->GetServiceDescription());
+			for (const FMCPToolInfo& T : Tools)
+			{
+				Body += FString::Printf(TEXT("### %s/%s\n\n%s\n\n"),
+					*Pair.Key, *T.Name, *T.Description);
+			}
+		}
+		AddTextContent(TEXT("text/markdown"), Body);
+		Result->SetArrayField(TEXT("contents"), Contents);
+		return FMCPResponse::Success(Request.Id, Result);
+	}
+
+	// File-backed URIs all live under Content/Docs/
+	const FString DocsDirRaw = GetSpecialAgentDocsDir();
+	if (DocsDirRaw.IsEmpty())
+	{
+		return MakeError(TEXT("plugin not loaded"));
+	}
+	const FString DocsRoot = FPaths::ConvertRelativePathToFull(DocsDirRaw);
+
+	FString RelKey;
+	if (Uri == TEXT("mcp://unreal/cheatsheet"))
+	{
+		RelKey = TEXT("ue5_python_cheatsheet.md");
+	}
+	else if (Uri == TEXT("mcp://unreal/deprecations"))
+	{
+		RelKey = TEXT("deprecations.md");
+	}
+	else if (Uri.StartsWith(TEXT("mcp://unreal/idioms/")))
+	{
+		const FString Stem = Uri.RightChop(FString(TEXT("mcp://unreal/idioms/")).Len());
+		// Reject path traversal in the stem itself
+		if (Stem.IsEmpty() || Stem.Contains(TEXT("/")) || Stem.Contains(TEXT("\\"))
+		    || Stem.Contains(TEXT("..")))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("SpecialAgent: resources/read rejected suspicious idiom stem: %s"), *Stem);
+			return MakeError(TEXT("invalid idiom name"));
+		}
+		RelKey = FString::Printf(TEXT("idioms/%s.md"), *Stem);
+	}
+	else
+	{
+		return MakeError(TEXT("unknown URI"));
+	}
+
+	FString FullPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(DocsRoot, RelKey));
+	FString NormalizedRoot = DocsRoot;
+	FPaths::NormalizeFilename(NormalizedRoot);
+	FPaths::NormalizeFilename(FullPath);
+
+	if (!FullPath.StartsWith(NormalizedRoot))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SpecialAgent: resources/read rejected path traversal: %s (root=%s)"),
+			*FullPath, *NormalizedRoot);
+		return MakeError(TEXT("path escapes docs root"));
+	}
+
+	FString Body;
+	if (!FFileHelper::LoadFileToString(Body, *FullPath))
+	{
+		return MakeError(TEXT("file not found"));
+	}
+
+	AddTextContent(TEXT("text/markdown"), Body);
 	Result->SetArrayField(TEXT("contents"), Contents);
-	
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
