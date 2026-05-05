@@ -107,9 +107,9 @@ All run on the game thread via the existing `FGameThreadDispatcher` pattern. All
 | `python/get_function_signature` | `inspect.signature(getattr(unreal.Cls, method))` | `{ signature, params[], return_type, doc }` |
 | `python/list_enum_values` | `list(unreal.SomeEnum)` with `.name` and `.value` | `{ enum, values[] }` |
 | `python/get_asset_class_for_path` | `EditorAssetSubsystem.find_asset_data(path).asset_class_path` | `{ class_path, exists }` |
-| `python/diff_against_deprecated` | regex scan input snippet against `deprecations.md` table | `{ findings: [{deprecated, modern, line}] }` |
+| `python/diff_against_deprecated` | C++ side: `FRegexMatcher` over input snippet using a deprecated→modern mapping table loaded once from `Content/Docs/deprecations.md` (parsed at first use, cached). Does **not** run Python — pure string scan, no game-thread dispatch needed. | `{ findings: [{deprecated, modern, line}] }` |
 
-All eight live in `PythonService.cpp` / `PythonService.h`; no new service registration.
+The first seven tools run on the game thread via `IPythonScriptPlugin::ExecPythonCommandEx`. `diff_against_deprecated` is a pure C++ scan with no Python execution — kept in `PythonService` for namespace cohesion. All eight live in `PythonService.cpp` / `PythonService.h`; no new service registration.
 
 ### D. Tool-description audit
 
@@ -129,18 +129,20 @@ Touched files: every `Source/SpecialAgent/Private/Services/*.cpp` (the `GetAvail
 New unit test (UE automation framework) that walks `MCPRequestRouter`'s registered services and asserts:
 
 1. Each tool description ≥ 80 chars.
-2. Each description contains literal `Params:` and at least one of `Workflow:` or `Warning:`.
+2. Each description contains literal `Params:` and at least one of `Workflow:` or `Warning:`. Tools with no parameters use the convention `Params: (none)` to satisfy the rule without a special-case.
 3. No description contains deprecated symbols: `EditorLevelLibrary`, `EditorAssetLibrary`, `EditorFilterLibrary`, `EditorLevelUtils` (those usages exist in user-written code today, but not in user-facing docs).
 
 Test fails the build on regression. Sits alongside the existing `Source/SpecialAgent/Private/Tests/` files.
 
 ### F. Prompt fixes
 
-`HandlePromptsGet` strings — point edits, no schema change:
+`HandlePromptsGet` strings — rewrites in three prompts whose Python guidance is either deprecated or vague. No schema change.
 
-- `place_objects`: replace `unreal.EditorLevelLibrary or unreal.EditorAssetLibrary` with `unreal.EditorActorSubsystem / unreal.EditorAssetSubsystem (use unreal.get_editor_subsystem(...))`.
-- `build_landscape`: same replacement in step 1.
-- `setup_navigation`: same replacement in step 1.
+- `place_objects` (currently mentions `unreal.EditorLevelLibrary or unreal.EditorAssetLibrary` literally): replace those names with `unreal.EditorActorSubsystem / unreal.EditorAssetSubsystem (acquire via unreal.get_editor_subsystem(...))`.
+- `build_landscape` (currently says only `"python/execute to create the landscape actor (UE editor API fallback)"`): expand step 1 to direct the LLM to `unreal.EditorActorSubsystem.spawn_actor_from_class(unreal.Landscape, ...)` instead of leaving the API choice open.
+- `setup_navigation` (currently says only `"python/execute to spawn a NavMeshBoundsVolume covering the playable area"`): expand step 1 to direct the LLM to `EditorActorSubsystem.spawn_actor_from_class(unreal.NavMeshBoundsVolume, ...)`.
+
+The intent is the same in all three: ensure the prompt explicitly names the modern subsystem entry point so the LLM doesn't fall back to a deprecated `Library` class.
 
 ## Data flow
 
