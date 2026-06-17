@@ -886,7 +886,10 @@ FMCPResponse FWorldService::HandleSetMaterialParameter(const FMCPRequest& Reques
 			{
 				const FScopedTransaction PersistTransaction(FText::FromString(TEXT("SpecialAgent: set material parameter (persistent)")));
 				MIC->Modify();
-				const FMaterialParameterInfo ParamInfo(FName(*ParamName));
+				// Note: brace-init (not parens) to avoid the most-vexing-parse — the
+				// FName(*ParamName) temporary would otherwise be read as a function decl.
+				const FName ParamFName(*ParamName);
+				const FMaterialParameterInfo ParamInfo{ ParamFName };
 				if (bScalar) MIC->SetScalarParameterValueEditorOnly(ParamInfo, static_cast<float>(ScalarValue));
 				else         MIC->SetVectorParameterValueEditorOnly(ParamInfo, VectorValue);
 				MIC->PostEditChange();
