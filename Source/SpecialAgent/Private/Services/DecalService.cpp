@@ -71,6 +71,18 @@ FMCPResponse FDecalService::HandleSpawn(const FMCPRequest& Request)
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
 
+		// Resolve the material first: a provided-but-unloadable material_path is a
+		// hard error, so we fail before spawning rather than leaving a materialless decal.
+		UMaterialInterface* Mat = nullptr;
+		if (!MaterialPath.IsEmpty())
+		{
+			Mat = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+			if (!Mat)
+			{
+				return FMCPJson::MakeError(FString::Printf(TEXT("Decal material not found: %s"), *MaterialPath));
+			}
+		}
+
 		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: spawn decal")));
 
 		FActorSpawnParameters SP;
@@ -85,14 +97,9 @@ FMCPResponse FDecalService::HandleSpawn(const FMCPRequest& Request)
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 
-		if (!MaterialPath.IsEmpty())
+		if (Mat)
 		{
-			UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
-			if (!Mat)
-			{
-				Result->SetStringField(TEXT("warning"), FString::Printf(TEXT("Could not load material: %s"), *MaterialPath));
-			}
-			else if (UDecalComponent* Comp = Decal->GetDecal())
+			if (UDecalComponent* Comp = Decal->GetDecal())
 			{
 				Comp->SetDecalMaterial(Mat);
 			}
@@ -196,7 +203,7 @@ TArray<FMCPToolInfo> FDecalService::GetAvailableTools() const
 			 "Returns {actor:{actor_label, ..., decal_size:[X,Y,Z], decal_material?}}; use actor.actor_label for set_material / set_size. "
 			 "Params: location (array [X,Y,Z] world-space cm, optional, default origin), rotation (array [Pitch,Yaw,Roll] degrees, optional, default zero), actor_label (string, optional), material_path (string, decal-domain UMaterialInterface object path, optional). "
 			 "Workflow: trace a surface to get a hit point + normal (e.g. viewport/trace_from_screen) -> place location at the hit and derive rotation so -X faces the surface -> set_material / set_size. "
-			 "Warning: rotation order is [Pitch,Yaw,Roll] (note the editor Details panel labels rotation X=Roll/Y=Pitch/Z=Yaw); default DecalSize is (128,256,256) cm half-extents - call set_size to resize; if material_path fails to load the actor still spawns and a warning field is returned; not saved to disk - save the level to persist."))
+			 "Warning: rotation order is [Pitch,Yaw,Roll] (note the editor Details panel labels rotation X=Roll/Y=Pitch/Z=Yaw); default DecalSize is (128,256,256) cm half-extents - call set_size to resize; if material_path is provided but fails to load, the call errors and nothing is spawned (omit material_path to spawn a materialless decal); not saved to disk - save the level to persist."))
 		.OptionalVec3(TEXT("location"), TEXT("World-space [X,Y,Z] in cm; default origin [0,0,0]"))
 		.OptionalVec3(TEXT("rotation"), TEXT("[Pitch,Yaw,Roll] in degrees; default [0,0,0]. Decal projects along the actor's -X axis"))
 		.OptionalString(TEXT("actor_label"), TEXT("Custom actor label used as the handle for set_material / set_size"))

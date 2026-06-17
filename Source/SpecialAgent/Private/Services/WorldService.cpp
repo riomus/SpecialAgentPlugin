@@ -544,6 +544,12 @@ FMCPResponse FWorldService::HandleDuplicateActor(const FMCPRequest& Request)
 		if (!SourceActor) return FMCPJson::MakeError(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
 
 		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: duplicate actor")));
+
+		// Capture the user's current selection so we can restore it after the duplicate op clobbers it.
+		TArray<AActor*> PriorSelection;
+		if (USelection* CurrentSelection = GEditor->GetSelectedActors())
+			CurrentSelection->GetSelectedObjects<AActor>(PriorSelection);
+
 		GEditor->SelectNone(true, true, false);
 		GEditor->SelectActor(SourceActor, true, true, true);
 		GEditor->edactDuplicateSelected(World->GetCurrentLevel(), false);
@@ -552,6 +558,15 @@ FMCPResponse FWorldService::HandleDuplicateActor(const FMCPRequest& Request)
 		USelection* Selection = GEditor->GetSelectedActors();
 		if (Selection && Selection->Num() > 0)
 			NewActor = Cast<AActor>(Selection->GetSelectedObject(0));
+
+		// Restore the exact prior selection regardless of duplicate success/failure.
+		GEditor->SelectNone(true, true, false);
+		for (AActor* Saved : PriorSelection)
+		{
+			if (Saved)
+				GEditor->SelectActor(Saved, true, false, true);
+		}
+		GEditor->NoteSelectionChange();
 
 		if (!NewActor || NewActor == SourceActor)
 			return FMCPJson::MakeError(TEXT("Failed to duplicate actor"));
@@ -859,12 +874,29 @@ FMCPResponse FWorldService::HandleSetMaterialParameter(const FMCPRequest& Reques
 		if (MeshComps.Num() == 0) return FMCPJson::MakeError(TEXT("Actor has no MeshComponent"));
 
 		int32 Updated = 0;
+		bool bPersisted = false;
 		for (UMeshComponent* MC : MeshComps)
 		{
 			UMaterialInterface* CurrentMat = MC->GetMaterial(SlotIndex);
 			if (!CurrentMat) continue;
 
-			// Create a dynamic MID so editor-time writes are cheap and non-destructive.
+			// If the slot's material is a MaterialInstanceConstant asset, edit it persistently
+			// via the EditorOnly setters so the change survives a save (and shows in the MIC asset).
+			if (UMaterialInstanceConstant* MIC = Cast<UMaterialInstanceConstant>(CurrentMat))
+			{
+				const FScopedTransaction PersistTransaction(FText::FromString(TEXT("SpecialAgent: set material parameter (persistent)")));
+				MIC->Modify();
+				const FMaterialParameterInfo ParamInfo(FName(*ParamName));
+				if (bScalar) MIC->SetScalarParameterValueEditorOnly(ParamInfo, static_cast<float>(ScalarValue));
+				else         MIC->SetVectorParameterValueEditorOnly(ParamInfo, VectorValue);
+				MIC->PostEditChange();
+				MIC->MarkPackageDirty();
+				bPersisted = true;
+				++Updated;
+				continue;
+			}
+
+			// Otherwise create (or reuse) a transient dynamic MID so editor-time writes are cheap and non-destructive.
 			UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(CurrentMat);
 			if (!MID)
 			{
@@ -879,7 +911,11 @@ FMCPResponse FWorldService::HandleSetMaterialParameter(const FMCPRequest& Reques
 		}
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetNumberField(TEXT("components_updated"), Updated);
-		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Set material parameter %s on %s (%d comps)"), *ParamName, *ActorName, Updated);
+		Result->SetBoolField(TEXT("persisted"), bPersisted);
+		if (!bPersisted)
+			Result->SetStringField(TEXT("note"), TEXT("Slot material is not a MaterialInstanceConstant; wrote to a transient dynamic instance (not saved). Use material/* tools to edit a MaterialInstanceConstant for persistent changes."));
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Set material parameter %s on %s (%d comps, persisted=%s)"),
+			*ParamName, *ActorName, Updated, bPersisted ? TEXT("true") : TEXT("false"));
 		return Result;
 	};
 	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
@@ -1738,7 +1774,7 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 			 "Params: actor_name (string, required, source actor's outliner label), "
 			 "new_location (array [X,Y,Z] world-space cm, optional; an ABSOLUTE location for the copy, not an offset -- omit to leave it at the source position). "
 			 "Workflow: follow with set_actor_label to rename the copy, and set_actor_location/transform if you skipped new_location. "
-			 "Warning: mutates the editor selection (selects the new actor); change is in-memory only. Complex components may not deep-copy reliably -- verify the result."))
+			 "Warning: the editor selection is captured before and restored after the duplicate, so your prior selection is preserved; change is in-memory only. Complex components may not deep-copy reliably -- verify the result."))
 		.RequiredString(TEXT("actor_name"), TEXT("Outliner label of the actor to duplicate"))
 		.OptionalVec3(TEXT("new_location"), TEXT("Absolute world-space location [X,Y,Z] cm for the duplicate (default: same as source)"))
 		.Build());
@@ -1824,13 +1860,13 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_material_parameter"),
-		TEXT("Set a scalar or vector parameter on an actor's current slot material by creating (or reusing) a runtime MaterialInstanceDynamic on each MeshComponent. "
-			 "Returns {components_updated}; a missing parameter name does NOT error -- the value is silently ignored by the MID, so verify visually. "
+		TEXT("Set a scalar or vector parameter on an actor's current slot material, persisting to the asset when the slot holds a MaterialInstanceConstant. "
+			 "Returns {components_updated, persisted (bool), note?}: if the slot material is a MaterialInstanceConstant the value is written persistently via its EditorOnly setter (PostEditChange + MarkPackageDirty) and persisted=true; otherwise it falls back to a transient MaterialInstanceDynamic and persisted=false with a note pointing to material/* tools. A missing parameter name does NOT error, so verify visually. "
 			 "Params: actor_name (string, required, outliner label), parameter_name (string, required, exact parameter name on the base material), "
 			 "parameter_type (enum, required: \"scalar\" or \"vector\"), value (required: a number when parameter_type=\"scalar\"; "
 			 "a linear-color array [R,G,B,A] in linear 0..1 (may exceed 1 for HDR) when parameter_type=\"vector\"), slot_index (integer, optional, default 0). "
-			 "Workflow: use set_actor_material to assign the base material first; this swaps in a dynamic instance on demand. "
-			 "Warning: creates a transient MaterialInstanceDynamic -- changes live only in this editor session and are never saved to disk. For a persistent asset edit, edit a MaterialInstanceConstant via the material tools instead."))
+			 "Workflow: assign a MaterialInstanceConstant via set_actor_material or material/* tools first to get persisted=true; with a plain base material this only swaps in a session-only dynamic instance. "
+			 "Warning: when persisted=false the change lives only in this editor session and is never saved to disk -- edit a MaterialInstanceConstant via the material/* tools for a durable asset edit. When persisted=true the owning MIC package is marked dirty and must be saved to write it to disk."))
 		.RequiredString(TEXT("actor_name"), TEXT("Outliner label of the actor"))
 		.RequiredString(TEXT("parameter_name"), TEXT("Exact parameter name declared on the base material"))
 		.RequiredEnum(TEXT("parameter_type"), {TEXT("scalar"), TEXT("vector")}, TEXT("\"scalar\" for a float value, \"vector\" for a [R,G,B,A] linear color"))

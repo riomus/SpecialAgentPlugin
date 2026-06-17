@@ -84,7 +84,11 @@ FMCPResponse FNavigationService::HandleRebuildNavMesh(const FMCPRequest& Request
 		return R;
 	};
 
-	const FKickResult Kick = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<FKickResult>(KickTask);
+	// The navmesh rebuild kick runs FEditorBuildUtils::EditorBuild / NavSys->Build
+	// synchronously on the game thread and can block well past the default 120s
+	// bound on large levels; allow up to 30 minutes so a real build is not turned
+	// into a false timeout error. (The per-poll tasks below stay on the default.)
+	const FKickResult Kick = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<FKickResult>(KickTask, 1800.0);
 
 	if (Kick.bFailed)
 	{
@@ -336,7 +340,7 @@ TArray<FMCPToolInfo> FNavigationService::GetAvailableTools() const
 		     "Returns {success, editor_build_invoked:bool, remaining_build_tasks:int, timed_out:bool (only when it times out)}. "
 		     "Params: (none). "
 		     "Workflow: a NavMeshBoundsVolume + generated RecastNavMesh must exist or every navigation/* query returns empty; call this after adding/moving an ANavMeshBoundsVolume, editing world geometry, or changing agent settings, before navigation/test_path or find_nearest_reachable_point. "
-		     "Warning: slow, runs on the game thread and stalls the editor while tiles compile; remaining_build_tasks may still be non-zero on return for async tiles and timed_out=true means tasks were still pending at the 300s cap."))
+		     "Warning: blocking game-thread rebuild that FREEZES the editor and can take many minutes on large levels (the build kick waits up to 30 minutes before reporting a timeout); remaining_build_tasks may still be non-zero on return for async tiles and timed_out=true means tasks were still pending at the 300s poll cap."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(

@@ -489,7 +489,10 @@ FMCPResponse FLightingService::HandleBuildLighting(const FMCPRequest& Request)
 		return Result;
 	};
 
-	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	// Lightmass bakes block the game thread and can run well past the default
+	// 120s bound on large levels; allow up to 30 minutes before treating the
+	// wait as a wedge so a real build is not turned into a false timeout error.
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task, 1800.0);
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
@@ -576,7 +579,7 @@ TArray<FMCPToolInfo> FLightingService::GetAvailableTools() const
 			     "the bake itself continues asynchronously, so a true result means started, not finished. "
 			     "Params: (none). "
 			     "Workflow: only useful for Static/Stationary lights with baked lightmaps; spawn/configure lights via lighting/spawn_light and the lighting/set_* tools first. "
-			     "Warning: heavy, game-thread operation that can stall the editor for minutes. With Lumen (the UE5.7 default GI) enabled this is a NO-OP for diffuse global illumination. GPU Lightmass needs DX12/DXR and is unavailable on macOS/Metal. Do not run while PIE is active."))
+			     "Warning: heavy, blocking game-thread Lightmass bake that FREEZES the editor and can take many minutes on large levels (this call waits up to 30 minutes before reporting a timeout). With Lumen (the UE5.7 default GI) enabled this is a NO-OP for diffuse global illumination. GPU Lightmass needs DX12/DXR and is unavailable on macOS/Metal. Do not run while PIE is active."))
 		.Build());
 
 	return Tools;

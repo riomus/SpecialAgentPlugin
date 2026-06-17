@@ -140,10 +140,17 @@ FMCPResponse FMaterialService::HandleSetScalarParameter(const FMCPRequest& Reque
 		UMaterialInstanceConstant* MIC = LoadObject<UMaterialInstanceConstant>(nullptr, *InstancePath);
 		if (!MIC) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load UMaterialInstanceConstant: %s"), *InstancePath));
 
+		FMaterialParameterInfo Info(*ParamName);
+		float ExistingValue = 0.0f;
+		if (!MIC->GetScalarParameterValue(Info, ExistingValue))
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Parameter '%s' not found on material instance %s"), *ParamName, *InstancePath));
+		}
+
 		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Scalar Parameter")));
 		MIC->Modify();
 
-		FMaterialParameterInfo Info(*ParamName);
 		MIC->SetScalarParameterValueEditorOnly(Info, static_cast<float>(Value));
 		MIC->PostEditChange();
 		MIC->MarkPackageDirty();
@@ -179,10 +186,17 @@ FMCPResponse FMaterialService::HandleSetVectorParameter(const FMCPRequest& Reque
 		UMaterialInstanceConstant* MIC = LoadObject<UMaterialInstanceConstant>(nullptr, *InstancePath);
 		if (!MIC) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load UMaterialInstanceConstant: %s"), *InstancePath));
 
+		FMaterialParameterInfo Info(*ParamName);
+		FLinearColor ExistingValue;
+		if (!MIC->GetVectorParameterValue(Info, ExistingValue))
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Parameter '%s' not found on material instance %s"), *ParamName, *InstancePath));
+		}
+
 		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Vector Parameter")));
 		MIC->Modify();
 
-		FMaterialParameterInfo Info(*ParamName);
 		MIC->SetVectorParameterValueEditorOnly(Info, Color);
 		MIC->PostEditChange();
 		MIC->MarkPackageDirty();
@@ -220,10 +234,17 @@ FMCPResponse FMaterialService::HandleSetTextureParameter(const FMCPRequest& Requ
 		UTexture* Texture = LoadObject<UTexture>(nullptr, *TexturePath);
 		if (!Texture) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load texture: %s"), *TexturePath));
 
+		FMaterialParameterInfo Info(*ParamName);
+		UTexture* ExistingValue = nullptr;
+		if (!MIC->GetTextureParameterValue(Info, ExistingValue))
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Parameter '%s' not found on material instance %s"), *ParamName, *InstancePath));
+		}
+
 		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Texture Parameter")));
 		MIC->Modify();
 
-		FMaterialParameterInfo Info(*ParamName);
 		MIC->SetTextureParameterValueEditorOnly(Info, Texture);
 		MIC->PostEditChange();
 		MIC->MarkPackageDirty();
@@ -259,12 +280,20 @@ FMCPResponse FMaterialService::HandleSetStaticSwitch(const FMCPRequest& Request)
 		UMaterialInstanceConstant* MIC = LoadObject<UMaterialInstanceConstant>(nullptr, *InstancePath);
 		if (!MIC) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load UMaterialInstanceConstant: %s"), *InstancePath));
 
+		FMaterialParameterInfo Info(*ParamName);
+		bool ExistingValue = false;
+		FGuid ExistingGuid;
+		if (!MIC->GetStaticSwitchParameterValue(Info, ExistingValue, ExistingGuid))
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Parameter '%s' not found on material instance %s"), *ParamName, *InstancePath));
+		}
+
 		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Static Switch")));
 		MIC->Modify();
 
 		FStaticParameterSet StaticParams = MIC->GetStaticParameters();
 
-		FMaterialParameterInfo Info(*ParamName);
 		bool bFound = false;
 		for (FStaticSwitchParameter& P : StaticParams.StaticSwitchParameters)
 		{
@@ -447,7 +476,7 @@ TArray<FMCPToolInfo> FMaterialService::GetAvailableTools() const
 			 "Returns {instance_path, parameter_name, value}. "
 			 "Params: instance_path (string, MIC object path, required), parameter_name (string, must match a scalar param on the parent, required), value (number, required). "
 			 "Workflow: list_parameters first to discover valid scalar names -> set_scalar_parameter -> save the asset to persist. "
-			 "Warning: an unknown parameter_name is silently accepted (no error) but has no visual effect; this only marks the package dirty (MarkPackageDirty), it does NOT save to disk."))
+			 "Warning: an unknown parameter_name now returns an error (the handler verifies the param exists on the instance/parent before setting); this only marks the package dirty (MarkPackageDirty), it does NOT save to disk."))
 		.RequiredString(TEXT("instance_path"), TEXT("UMaterialInstanceConstant object path, e.g. /Game/MI_Foo.MI_Foo"))
 		.RequiredString(TEXT("parameter_name"), TEXT("Scalar parameter name as defined in the parent material"))
 		.RequiredNumber(TEXT("value"), TEXT("New scalar value (unitless float)"))
@@ -458,7 +487,7 @@ TArray<FMCPToolInfo> FMaterialService::GetAvailableTools() const
 			 "Returns {instance_path, parameter_name, value}. Value is a FLinearColor in linear space (channels 0..1, may exceed 1 for HDR) - NOT a position in cm and NOT degrees. "
 			 "Params: instance_path (string, MIC object path, required), parameter_name (string, required), value (array [R,G,B] or [R,G,B,A], required). "
 			 "Workflow: list_parameters to discover vector names; pair with set_scalar/set_texture for a consistent look. "
-			 "Warning: alpha defaults to 1.0 when omitted; unknown parameter_name is silently ignored; only marks the package dirty - save the asset to persist."))
+			 "Warning: alpha defaults to 1.0 when omitted; an unknown parameter_name now returns an error (existence verified before setting); only marks the package dirty - save the asset to persist."))
 		.RequiredString(TEXT("instance_path"), TEXT("UMaterialInstanceConstant object path"))
 		.RequiredString(TEXT("parameter_name"), TEXT("Vector parameter name as defined in the parent material"))
 		.RequiredColor(TEXT("value"), TEXT("Linear color [R,G,B] or [R,G,B,A], channels 0..1 (HDR may exceed 1)"))
@@ -469,7 +498,7 @@ TArray<FMCPToolInfo> FMaterialService::GetAvailableTools() const
 			 "Returns {instance_path, parameter_name, texture_path}. The handler loads the texture object internally, so you pass a content path string, not a loaded object. "
 			 "Params: instance_path (string, MIC object path, required), parameter_name (string, required), texture_path (string, UTexture object path Pkg.Asset, required). "
 			 "Workflow: use assets/find to locate textures -> set_texture_parameter -> save the asset to persist. "
-			 "Warning: texture_path must load (fails otherwise); unknown parameter_name is silently ignored; only marks the package dirty, does not save; texture compression / shader work can make the swap non-instant."))
+			 "Warning: texture_path must load (fails otherwise); an unknown parameter_name now returns an error (existence verified before setting); only marks the package dirty, does not save; texture compression / shader work can make the swap non-instant."))
 		.RequiredString(TEXT("instance_path"), TEXT("UMaterialInstanceConstant object path"))
 		.RequiredString(TEXT("parameter_name"), TEXT("Texture parameter name as defined in the parent material"))
 		.RequiredString(TEXT("texture_path"), TEXT("UTexture object path, e.g. /Game/Tex/T_Grass.T_Grass"))
@@ -480,7 +509,7 @@ TArray<FMCPToolInfo> FMaterialService::GetAvailableTools() const
 			 "Returns {instance_path, parameter_name, value}. If the switch isn't already overridden the handler adds the override entry. "
 			 "Params: instance_path (string, MIC object path, required), parameter_name (string, required), value (boolean, required). "
 			 "Workflow: introspect static switch names in the parent Material Editor first; batch multiple switch sets, then save once. "
-			 "Warning: changing a static switch forces a FULL shader-permutation recompile (UpdateStaticPermutation) - expensive, can take several seconds, so avoid looping; re-applying the same value still rebuilds; only marks the package dirty, does not save to disk."))
+			 "Warning: an unknown parameter_name now returns an error (existence verified via GetStaticSwitchParameterValue before setting); changing a static switch forces a FULL shader-permutation recompile (UpdateStaticPermutation) - expensive, can take several seconds, so avoid looping; re-applying the same value still rebuilds; only marks the package dirty, does not save to disk."))
 		.RequiredString(TEXT("instance_path"), TEXT("UMaterialInstanceConstant object path"))
 		.RequiredString(TEXT("parameter_name"), TEXT("Static switch parameter name as defined in the parent material"))
 		.RequiredBool(TEXT("value"), TEXT("New static switch value (true/false)"))

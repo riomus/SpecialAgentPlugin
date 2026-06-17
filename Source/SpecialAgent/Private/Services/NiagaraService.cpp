@@ -11,6 +11,8 @@
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
+#include "NiagaraTypes.h"
+#include "NiagaraUserRedirectionParameterStore.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -59,7 +61,8 @@ TArray<FMCPToolInfo> FNiagaraService::GetAvailableTools() const
              "parameter (string, required, the float parameter name), value (number, required). "
              "Workflow: spawn_emitter -> set_parameter. "
              "Warning: STRONGLY TYPED to float - the parameter must be a declared float on the system. "
-             "If the name does not match an exposed parameter the set is a silent no-op (no error is returned)."))
+             "The name is verified against the component override parameters first; an unexposed or "
+             "wrong-typed name now returns an error instead of silently succeeding."))
         .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
         .RequiredString(TEXT("parameter"), TEXT("Name of the float parameter to set"))
         .RequiredNumber(TEXT("value"), TEXT("Float value to assign"))
@@ -92,8 +95,9 @@ TArray<FMCPToolInfo> FNiagaraService::GetAvailableTools() const
              "Params: actor_name (string, required, actor label from spawn_emitter), "
              "name (string, required, variable name WITHOUT the 'User.' prefix), value (number, required). "
              "Workflow: spawn_emitter -> set_user_float; set before activate(reset=true) so it applies on this run. "
-             "Warning: only affects User. exposure variables that are declared as float and exposed by the system - "
-             "an unexposed or wrong-typed name is a silent no-op. For non-User parameters use set_parameter."))
+             "Warning: only affects User. exposure variables that are declared as float and exposed by the system. "
+             "The name is verified against the component override parameters first, so an unexposed or "
+             "wrong-typed name now returns an error instead of a silent no-op. For non-User parameters use set_parameter."))
         .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
         .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
         .RequiredNumber(TEXT("value"), TEXT("Float value to assign"))
@@ -106,8 +110,9 @@ TArray<FMCPToolInfo> FNiagaraService::GetAvailableTools() const
              "name (string, required, variable name WITHOUT the 'User.' prefix), "
              "value (array [X,Y,Z], required; interpret as cm only if the variable is a position). "
              "Workflow: spawn_emitter -> set_user_vec3; set before activate(reset=true) so it applies on this run. "
-             "Warning: only affects User. exposure variables declared as Vector and exposed by the system - "
-             "an unexposed or wrong-typed name is a silent no-op."))
+             "Warning: only affects User. exposure variables declared as Vector (or Position) and exposed by the system. "
+             "The name is verified against the component override parameters first, so an unexposed or "
+             "wrong-typed name now returns an error instead of a silent no-op."))
         .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
         .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
         .RequiredVec3(TEXT("value"), TEXT("Vector value [X, Y, Z]"))
@@ -150,6 +155,24 @@ namespace
             return nullptr;
         }
         return Comp;
+    }
+
+    // Verify that a parameter of the given type is actually declared on the component's
+    // override parameter store before we try to set it. The override store is a
+    // FNiagaraUserRedirectionParameterStore, so a bare (User.-less) name is redirected to its
+    // fully-qualified User.* variable, and FindParameterOffset(.., IgnoreType=false) matches on
+    // both name AND type. A null offset means the parameter is unexposed/undeclared OR the type
+    // does not match - in either case the engine's SetVariable* would silently add a stray entry
+    // instead of reporting failure, so we treat it as an error here.
+    bool NiagaraParamExists(UNiagaraComponent* Comp, const FName& VarName, const FNiagaraTypeDefinition& Type)
+    {
+        if (!Comp)
+        {
+            return false;
+        }
+        const FNiagaraParameterStore& Store = Comp->GetOverrideParameters();
+        const FNiagaraVariableBase Var(Type, VarName);
+        return Store.FindParameterOffset(Var, /*IgnoreType*/false) != nullptr;
     }
 }
 
@@ -244,7 +267,17 @@ FMCPResponse FNiagaraService::HandleSetParameter(const FMCPRequest& Request)
             return FMCPJson::MakeError(Err);
         }
 
-        Comp->SetFloatParameter(FName(*ParameterName), static_cast<float>(Value));
+        const FName VarFName(*ParameterName);
+        if (!NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetFloatDef()))
+        {
+            return FMCPJson::MakeError(FString::Printf(
+                TEXT("Niagara float parameter '%s' is not exposed/declared as a float on actor '%s'. "
+                     "SetFloatParameter would silently no-op. Check the parameter name and type "
+                     "(User. namespace params should usually be set via set_user_float)."),
+                *ParameterName, *ActorName));
+        }
+
+        Comp->SetFloatParameter(VarFName, static_cast<float>(Value));
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("actor_name"), ActorName);
@@ -362,7 +395,17 @@ FMCPResponse FNiagaraService::HandleSetUserFloat(const FMCPRequest& Request)
             return FMCPJson::MakeError(Err);
         }
 
-        Comp->SetVariableFloat(FName(*VarName), static_cast<float>(Value));
+        const FName VarFName(*VarName);
+        if (!NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetFloatDef()))
+        {
+            return FMCPJson::MakeError(FString::Printf(
+                TEXT("User float parameter 'User.%s' is not exposed as a float on actor '%s'. "
+                     "SetVariableFloat would silently no-op. Give the bare name (no 'User.' prefix) "
+                     "and confirm the system exposes it as a float user parameter."),
+                *VarName, *ActorName));
+        }
+
+        Comp->SetVariableFloat(VarFName, static_cast<float>(Value));
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("actor_name"), ActorName);
@@ -407,7 +450,20 @@ FMCPResponse FNiagaraService::HandleSetUserVec3(const FMCPRequest& Request)
             return FMCPJson::MakeError(Err);
         }
 
-        Comp->SetVariableVec3(FName(*VarName), Value);
+        // SetVariableVec3 also accepts a Position-typed parameter (it forwards to
+        // SetVariablePosition), so accept either Vector or Position to avoid false negatives.
+        const FName VarFName(*VarName);
+        if (!NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetVec3Def())
+            && !NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetPositionDef()))
+        {
+            return FMCPJson::MakeError(FString::Printf(
+                TEXT("User vector parameter 'User.%s' is not exposed as a Vector/Position on actor '%s'. "
+                     "SetVariableVec3 would silently no-op. Give the bare name (no 'User.' prefix) "
+                     "and confirm the system exposes it as a Vector (or Position) user parameter."),
+                *VarName, *ActorName));
+        }
+
+        Comp->SetVariableVec3(VarFName, Value);
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("actor_name"), ActorName);

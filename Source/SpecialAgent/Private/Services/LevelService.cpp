@@ -11,6 +11,7 @@
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "FileHelpers.h"
+#include "Misc/PackageName.h"
 
 FString FLevelService::GetServiceDescription() const
 {
@@ -40,11 +41,13 @@ TArray<FMCPToolInfo> FLevelService::GetAvailableTools() const
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("save_as"),
-        TEXT("Save the current editor level to disk under a new name; the editor shows an interactive Save-As path dialog. "
-             "Returns {success, saved_filename} where saved_filename is the on-disk OS path written. "
-             "Params: (none). "
-             "Workflow: use after level/new to persist an untitled map, or to fork an existing level. "
-             "Warning: requires a human at the dialog; returns success=false if there is no active world or the user cancels."))
+        TEXT("Save the current editor level to disk at a caller-supplied path, non-modal (no Save-As dialog) so it is safe for unattended editor automation. "
+             "Returns {success, saved_path} where saved_path is the on-disk OS path written. "
+             "Params: package_path (string, virtual content path like '/Game/Maps/MyLevel', no extension) OR file_path (string, absolute OS path to the .umap to write); exactly one is required. "
+             "Workflow: use after level/new to persist an untitled map, or to fork an existing level; pass package_path for normal /Game/... maps. "
+             "Warning: overwrites any existing file at the resolved path without prompting; returns an error result when no path is given, the path cannot be resolved, or there is no active world."))
+        .OptionalString(TEXT("package_path"), TEXT("Virtual level package path to save to (e.g. /Game/Maps/MyLevel, no extension). Provide this OR file_path."))
+        .OptionalString(TEXT("file_path"), TEXT("Absolute OS path of the .umap file to write. Provide this OR package_path."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_current_path"),
@@ -127,24 +130,51 @@ FMCPResponse FLevelService::HandleRequest(const FMCPRequest& Request, const FStr
 
     if (MethodName == TEXT("save_as"))
     {
+        if (!Request.Params.IsValid())
+        {
+            return InvalidParams(Request.Id, TEXT("Missing params object; require 'package_path' or 'file_path'"));
+        }
+
+        // Resolve the destination on-disk filename up front (off the game thread).
+        // Accept either a raw OS file_path (passed straight to SaveMap) or a
+        // virtual package_path (/Game/...) which we convert to a .umap filename.
+        FString SaveFilename;
+        FString PackagePath;
+        if (FMCPJson::ReadString(Request.Params, TEXT("file_path"), SaveFilename) && !SaveFilename.IsEmpty())
+        {
+            // Use the explicit OS path as-is.
+        }
+        else if (FMCPJson::ReadString(Request.Params, TEXT("package_path"), PackagePath) && !PackagePath.IsEmpty())
+        {
+            if (!FPackageName::TryConvertLongPackageNameToFilename(PackagePath, SaveFilename, FPackageName::GetMapPackageExtension()))
+            {
+                return InvalidParams(Request.Id, FString::Printf(TEXT("Could not resolve 'package_path' '%s' to a map filename"), *PackagePath));
+            }
+        }
+        else
+        {
+            return InvalidParams(Request.Id, TEXT("Missing required parameter: provide 'package_path' or 'file_path'"));
+        }
+
         TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(
-            []() -> TSharedPtr<FJsonObject>
+            [SaveFilename]() -> TSharedPtr<FJsonObject>
             {
                 UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
                 if (!World || !World->PersistentLevel)
                 {
                     return FMCPJson::MakeError(TEXT("No active editor world / level"));
                 }
-                FString SavedFilename;
-                const bool bSaved = FEditorFileUtils::SaveLevelAs(World->PersistentLevel, &SavedFilename);
+
+                // Non-modal save to the caller-supplied filename (no Save-As dialog).
+                const bool bSaved = FEditorFileUtils::SaveMap(World, SaveFilename);
                 if (!bSaved)
                 {
-                    return FMCPJson::MakeError(TEXT("SaveLevelAs failed or was cancelled"));
+                    return FMCPJson::MakeError(FString::Printf(TEXT("SaveMap failed for '%s'"), *SaveFilename));
                 }
 
                 TSharedPtr<FJsonObject> Out = FMCPJson::MakeSuccess();
-                Out->SetStringField(TEXT("saved_filename"), SavedFilename);
-                UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Saved level as '%s'"), *SavedFilename);
+                Out->SetStringField(TEXT("saved_path"), SaveFilename);
+                UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Saved level to '%s'"), *SaveFilename);
                 return Out;
             });
 

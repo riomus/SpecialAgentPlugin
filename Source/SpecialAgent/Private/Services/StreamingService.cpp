@@ -187,7 +187,10 @@ FMCPResponse FStreamingService::HandleLoadLevel(const FMCPRequest& Request)
 		return Result;
 	};
 
-	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	// A Full FlushLevelStreaming blocks the game thread while the sublevel loads
+	// and can run well past the default 120s bound for large sublevels; allow up
+	// to 30 minutes so a real load is not turned into a false timeout error.
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task, 1800.0);
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
@@ -232,7 +235,10 @@ FMCPResponse FStreamingService::HandleUnloadLevel(const FMCPRequest& Request)
 		return Result;
 	};
 
-	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	// A Full FlushLevelStreaming blocks the game thread while the sublevel unloads
+	// and can run well past the default 120s bound for large sublevels; allow up
+	// to 30 minutes so a real unload is not turned into a false timeout error.
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task, 1800.0);
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
@@ -388,7 +394,7 @@ TArray<FMCPToolInfo> FStreamingService::GetAvailableTools() const
 		     "Returns {package_name, is_loaded, is_visible, path:'existing_streaming_level'|'dynamic_instance'}. "
 		     "Params: level_name (string, /Game/Maps/MyLevel path or short package name, required), location ([X,Y,Z] world-space cm, optional, default [0,0,0], applied only to new dynamic instances), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0], new instances only), make_visible (bool, optional, default true). "
 		     "Workflow: Call list_levels first to discover sublevels and their package_name. "
-		     "Warning: Mutates in-memory streaming state and runs a blocking FlushLevelStreaming (Full) on the game thread; not persisted to disk. Fails if the level asset is missing or already loaded as a dynamic instance."))
+		     "Warning: Mutates in-memory streaming state and runs a blocking FlushLevelStreaming (Full) on the game thread that FREEZES the editor and can take minutes for large sublevels (this call waits up to 30 minutes before reporting a timeout); not persisted to disk. Fails if the level asset is missing or already loaded as a dynamic instance."))
 		.RequiredString(TEXT("level_name"), TEXT("Level package path (/Game/Maps/MyLevel) or short name"))
 		.OptionalVec3(TEXT("location"), TEXT("Spawn location for new dynamic instances [X,Y,Z] world cm; default [0,0,0]"))
 		.OptionalVec3(TEXT("rotation"), TEXT("Spawn rotation for new dynamic instances [Pitch,Yaw,Roll] degrees; default [0,0,0]"))
@@ -401,7 +407,7 @@ TArray<FMCPToolInfo> FStreamingService::GetAvailableTools() const
 		     "Returns {package_name, is_loaded, is_visible}. "
 		     "Params: level_name (string, package path or short name, required; must match a ULevelStreaming from list_levels). "
 		     "Workflow: Call list_levels first to confirm the level is loaded and get the exact package_name. "
-		     "Warning: Mutates in-memory state via a blocking FlushLevelStreaming (Full); not persisted. The persistent base level cannot be unloaded, and unknown names return an error."))
+		     "Warning: Mutates in-memory state via a blocking FlushLevelStreaming (Full) that FREEZES the editor and can take minutes for large sublevels (this call waits up to 30 minutes before reporting a timeout); not persisted. The persistent base level cannot be unloaded, and unknown names return an error."))
 		.RequiredString(TEXT("level_name"), TEXT("Level package path or short name"))
 		.Build());
 

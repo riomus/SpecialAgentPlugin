@@ -51,8 +51,11 @@ FMCPResponse FHLODService::HandleBuild(const FMCPRequest& Request)
         return Out;
     };
 
+    // HLOD generation blocks the game thread (proxy-mesh builds + shader compiles)
+    // and can run well past the default 120s bound on large levels; allow up to
+    // 30 minutes so a real build is not turned into a false timeout error.
     TSharedPtr<FJsonObject> Result =
-        FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+        FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task, 1800.0);
     return FMCPResponse::Success(Request.Id, Result);
 }
 
@@ -173,7 +176,7 @@ TArray<FMCPToolInfo> FHLODService::GetAvailableTools() const
                  "Returns {success (bool), error (string, only when success is false)}. "
                  "Params: (none). "
                  "Workflow: tune clustering with hlod/set_setting first, then build; run hlod/clear before a rebuild if you want a clean slate. "
-                 "Warning: long, blocking game-thread operation that may generate many proxy-mesh asset packages and triggers shader compiles; the world stays dirty until you save the level."))
+                 "Warning: blocking game-thread operation that FREEZES the editor and can take many minutes on large levels (this call waits up to 30 minutes before reporting a timeout); it may generate many proxy-mesh asset packages and triggers shader compiles, and the world stays dirty until you save the level."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
