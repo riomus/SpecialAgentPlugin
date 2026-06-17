@@ -302,52 +302,57 @@ TArray<FMCPToolInfo> FSourceControlService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("get_status"),
-            TEXT("Query revision control state for one or more files. Forces a refresh via the active provider. "
-                 "Params: files (string[] absolute or project-relative paths) OR file (single string). "
-                 "Workflow: call before check_out to verify files are source-controlled and available. "
-                 "Warning: requires a configured source control provider (Perforce, Git, etc.)."))
-        .OptionalArrayOfString(TEXT("files"), TEXT("Array of file paths (absolute or project-relative)"))
-        .OptionalString       (TEXT("file"),  TEXT("Single file path; accepted as an alternative to 'files'"))
+            TEXT("Query revision-control state for one or more files, forcing a fresh status update from the active provider. "
+                 "Returns {success, count, states:[{file, is_source_controlled, is_checked_out, is_checked_out_other, is_added, is_deleted, is_modified, is_ignored, can_checkout}]}. "
+                 "Params: files (string[] of OS file paths, absolute or project-relative) OR file (single string); at least one is required. "
+                 "Workflow: call before source_control/check_out to verify files are controlled and can_checkout is true. "
+                 "Warning: read-only; takes OS file paths (e.g. Content/Maps/M.umap), NOT /Game/ virtual paths, and errors if no provider (Perforce, Git, etc.) is configured."))
+        .OptionalArrayOfString(TEXT("files"), TEXT("Array of OS file paths (absolute or project-relative)."))
+        .OptionalString       (TEXT("file"),  TEXT("Single OS file path; accepted as an alternative to 'files'."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("check_out"),
-            TEXT("Check out files for editing via the source control provider (FCheckOut). "
-                 "Params: files (string[]) or file (string). "
-                 "Workflow: call source_control/get_status first to confirm CanCheckout. "
-                 "Warning: may silently fail on providers like Git that do not require checkout; inspect the returned 'success'."))
-        .OptionalArrayOfString(TEXT("files"), TEXT("Array of file paths to check out"))
-        .OptionalString       (TEXT("file"),  TEXT("Single file path to check out"))
+            TEXT("Check out files for editing through the active provider (runs an FCheckOut operation). "
+                 "Returns {success, count, error?} where success reflects whether the provider command succeeded. "
+                 "Params: files (string[] of OS file paths) OR file (single string); at least one is required. "
+                 "Workflow: call source_control/get_status first to confirm can_checkout is true. "
+                 "Warning: side-effecting; takes OS file paths not /Game/ paths, and may report success even on providers like Git that have no checkout concept, so always inspect 'success'."))
+        .OptionalArrayOfString(TEXT("files"), TEXT("Array of OS file paths to check out."))
+        .OptionalString       (TEXT("file"),  TEXT("Single OS file path to check out."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("revert"),
-            TEXT("Revert local changes to files via the source control provider (FRevert). "
-                 "Params: files (string[]) or file (string). "
-                 "Workflow: call after unintended edits to discard local modifications. "
-                 "Warning: destructive - local edits are lost and reload may be needed for open packages."))
-        .OptionalArrayOfString(TEXT("files"), TEXT("Array of file paths to revert"))
-        .OptionalString       (TEXT("file"),  TEXT("Single file path to revert"))
+            TEXT("Discard local changes to files, restoring them to the depot/HEAD revision (runs an FRevert operation). "
+                 "Returns {success, count, error?}. "
+                 "Params: files (string[] of OS file paths) OR file (single string); at least one is required. "
+                 "Workflow: call source_control/get_status first to see what is modified; use to undo unintended edits. "
+                 "Warning: DESTRUCTIVE and not undoable - local edits are permanently lost, and open packages may need reloading afterwards."))
+        .OptionalArrayOfString(TEXT("files"), TEXT("Array of OS file paths to revert."))
+        .OptionalString       (TEXT("file"),  TEXT("Single OS file path to revert."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("submit"),
-            TEXT("Submit (check-in) files with a description via the source control provider (FCheckIn). "
-                 "Params: files (string[]) or file (string); description (string, required commit message). "
-                 "Workflow: run source_control/list_modified beforehand to confirm what will be submitted. "
-                 "Warning: irreversible on centralized providers like Perforce."))
-        .OptionalArrayOfString(TEXT("files"),       TEXT("Array of file paths to submit"))
-        .OptionalString       (TEXT("file"),        TEXT("Single file path to submit"))
-        .RequiredString       (TEXT("description"), TEXT("Commit / change description"))
+            TEXT("Submit (check in) files with a change description through the active provider (runs an FCheckIn operation). "
+                 "Returns {success, count, description, error?}. "
+                 "Params: files (string[] of OS file paths) OR file (single string), at least one required; description (string, required commit/change message). "
+                 "Workflow: run source_control/list_modified beforehand to confirm exactly what will be submitted. "
+                 "Warning: side-effecting and effectively irreversible on centralized providers like Perforce; takes OS file paths, not /Game/ paths."))
+        .OptionalArrayOfString(TEXT("files"),       TEXT("Array of OS file paths to submit."))
+        .OptionalString       (TEXT("file"),        TEXT("Single OS file path to submit."))
+        .RequiredString       (TEXT("description"), TEXT("Commit / change description (required)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("list_modified"),
-            TEXT("Enumerate modified, added, deleted, or checked-out files within a directory. Runs FUpdateStatus, then queries state. "
-                 "Params: path (string, optional absolute or project-relative root; defaults to Content dir). "
-                 "Workflow: call before submit to review the pending changes. "
-                 "Warning: may scan many files; for large projects, narrow the 'path'."))
-        .OptionalString(TEXT("path"), TEXT("Root directory to scan; defaults to the project's Content folder"))
+            TEXT("Recursively scan a directory and list files that are modified, added, deleted, or checked out (runs FUpdateStatus, then reads cached state). "
+                 "Returns {success, count, search_path, files:[{file, is_source_controlled, is_checked_out, is_added, is_deleted, is_modified, ...}]}. "
+                 "Params: path (string, optional OS directory root, absolute or project-relative; defaults to the project Content/ folder). "
+                 "Workflow: call before source_control/submit to review exactly what is pending. "
+                 "Warning: read-only but can be slow - it walks every file under the root; for large projects narrow 'path' to a subfolder."))
+        .OptionalString(TEXT("path"), TEXT("OS directory root to scan; defaults to the project's Content folder."))
         .Build());
 
     return Tools;

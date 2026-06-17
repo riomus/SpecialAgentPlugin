@@ -381,7 +381,7 @@ FMCPResponse FInputService::HandleListEnhancedActions(const FMCPRequest& Request
 
         TArray<FAssetData> Assets;
         AR.GetAssets(Filter, Assets);
-        if (Assets.Num() > MaxResults) Assets.SetNum(MaxResults);
+        if (MaxResults >= 0 && Assets.Num() > MaxResults) Assets.SetNum(MaxResults);
 
         TArray<TSharedPtr<FJsonValue>> Out;
         Out.Reserve(Assets.Num());
@@ -450,7 +450,7 @@ FMCPResponse FInputService::HandleListMappingContexts(const FMCPRequest& Request
 
         TArray<FAssetData> Assets;
         AR.GetAssets(Filter, Assets);
-        if (Assets.Num() > MaxResults) Assets.SetNum(MaxResults);
+        if (MaxResults >= 0 && Assets.Num() > MaxResults) Assets.SetNum(MaxResults);
 
         TArray<TSharedPtr<FJsonValue>> Out;
         Out.Reserve(Assets.Num());
@@ -663,51 +663,51 @@ TArray<FMCPToolInfo> FInputService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("list_mappings"),
-            TEXT("List all legacy action and axis mappings from UInputSettings::GetInputSettings(). "
-                 "Params: filter (string, optional substring match on action/axis name). "
-                 "Workflow: call before input/add_action_mapping to see existing bindings. "
-                 "Warning: only covers legacy input; Enhanced Input (UInputMappingContext) is not queried here."))
-        .OptionalString(TEXT("filter"), TEXT("Optional substring match on action_name / axis_name"))
+            TEXT("List legacy UInputSettings action and axis mappings. Returns {success, actions:[{action_name, key, shift, ctrl, alt, cmd}], axes:[{axis_name, key, scale}], action_count, axis_count}. "
+                 "Params: filter (string, optional — case-insensitive substring match on action_name / axis_name; empty returns all). "
+                 "Workflow: call before input/add_action_mapping or input/remove_mapping to see existing bindings by name+key. "
+                 "Warning: read-only. Covers ONLY the legacy input system, which is deprecated since 5.1 (read/migrate only) — Enhanced Input is the default; use input/list_enhanced_actions and input/list_mapping_contexts for that."))
+        .OptionalString(TEXT("filter"), TEXT("Case-sensitive substring match on action_name / axis_name (optional; empty returns all)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("add_action_mapping"),
-            TEXT("Add a legacy action mapping (name+key+modifiers). Runs ForceRebuildKeymaps and optionally SaveKeyMappings. "
-                 "Params: action_name (string), key (string, EKeys name e.g. SpaceBar), shift/ctrl/alt/cmd (bool, default false), save (bool, default true). "
-                 "Workflow: pairs with input/list_mappings to verify. "
-                 "Warning: duplicates with identical key+modifiers are rejected by UInputSettings."))
+            TEXT("Add a legacy UInputSettings action mapping (name + key + modifiers). Returns {success, mapping:{action_name, key, shift, ctrl, alt, cmd}, saved}. "
+                 "Params: action_name (string, required), key (string, required — an EKeys name e.g. SpaceBar / W / LeftMouseButton / Gamepad_FaceButton_Bottom), shift/ctrl/alt/cmd (bool, optional, default false), save (bool, optional, default true — persist via SaveKeyMappings). "
+                 "Workflow: call input/list_mappings afterward to verify; rebuilds keymaps immediately. "
+                 "Warning: legacy input is deprecated since 5.1 — prefer Enhanced Input (input/add_enhanced_mapping). AddActionMapping does NOT dedupe: repeating the call appends a duplicate binding. Invalid key names return error 'Invalid key name: <key>'."))
         .RequiredString(TEXT("action_name"), TEXT("Action name (e.g. Jump, Fire)"))
-        .RequiredString(TEXT("key"),         TEXT("Key name (EKeys::, e.g. SpaceBar, W, LeftMouseButton, Gamepad_FaceButton_Bottom)"))
-        .OptionalBool  (TEXT("shift"),       TEXT("Require Shift modifier"))
-        .OptionalBool  (TEXT("ctrl"),        TEXT("Require Ctrl modifier"))
-        .OptionalBool  (TEXT("alt"),         TEXT("Require Alt modifier"))
-        .OptionalBool  (TEXT("cmd"),         TEXT("Require Cmd modifier"))
-        .OptionalBool  (TEXT("save"),        TEXT("Persist via SaveKeyMappings() (default true)"))
+        .RequiredString(TEXT("key"),         TEXT("EKeys name (e.g. SpaceBar, W, LeftMouseButton, Gamepad_FaceButton_Bottom)"))
+        .OptionalBool  (TEXT("shift"),       TEXT("Require Shift modifier (default false)"))
+        .OptionalBool  (TEXT("ctrl"),        TEXT("Require Ctrl modifier (default false)"))
+        .OptionalBool  (TEXT("alt"),         TEXT("Require Alt modifier (default false)"))
+        .OptionalBool  (TEXT("cmd"),         TEXT("Require Cmd modifier (default false)"))
+        .OptionalBool  (TEXT("save"),        TEXT("Persist via SaveKeyMappings (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("add_axis_mapping"),
-            TEXT("Add a legacy axis mapping (name+key+scale). Runs ForceRebuildKeymaps and optionally SaveKeyMappings. "
-                 "Params: axis_name (string), key (string, EKeys name), scale (number, default 1.0), save (bool, default true). "
-                 "Workflow: pairs with input/list_mappings to verify. "
-                 "Warning: scale typically -1/0/1 for digital keys; analog sticks should use their own axis Key (e.g. Gamepad_LeftX)."))
+            TEXT("Add a legacy UInputSettings axis mapping (name + key + scale). Returns {success, mapping:{axis_name, key, scale}, saved}. "
+                 "Params: axis_name (string, required), key (string, required — an EKeys name e.g. W / Gamepad_LeftX), scale (number, optional, default 1.0 — multiplier applied to the input), save (bool, optional, default true — persist via SaveKeyMappings). "
+                 "Workflow: call input/list_mappings afterward to verify; rebuilds keymaps immediately. "
+                 "Warning: legacy input is deprecated since 5.1 — prefer Enhanced Input. scale is typically -1/0/1 for digital keys; analog sticks should bind their own axis Key (e.g. Gamepad_LeftX) with scale 1.0. Invalid key names return error 'Invalid key name: <key>'."))
         .RequiredString(TEXT("axis_name"), TEXT("Axis name (e.g. MoveForward, LookRight)"))
-        .RequiredString(TEXT("key"),       TEXT("Key name (EKeys::, e.g. W, Gamepad_LeftX)"))
+        .RequiredString(TEXT("key"),       TEXT("EKeys name (e.g. W, Gamepad_LeftX)"))
         .OptionalNumber(TEXT("scale"),     TEXT("Scale multiplier applied to the axis input (default 1.0)"))
-        .OptionalBool  (TEXT("save"),      TEXT("Persist via SaveKeyMappings() (default true)"))
+        .OptionalBool  (TEXT("save"),      TEXT("Persist via SaveKeyMappings (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("remove_mapping"),
-            TEXT("Remove action or axis mapping(s) by name, optionally scoped by key. "
-                 "Params: mapping_type (enum action|axis), name (string), key (string, optional — empty removes all with that name), save (bool, default true). "
-                 "Workflow: call input/list_mappings to confirm the removal. "
-                 "Warning: removing by name without 'key' removes every binding for that action/axis."))
+            TEXT("Remove legacy UInputSettings action or axis mapping(s) by name, optionally scoped to a single key. Returns {success, mapping_type, name, key_filter, removed (count), saved}. "
+                 "Params: mapping_type (enum 'action'|'axis', required, case-insensitive), name (string, required — action/axis name), key (string, optional — EKeys name; empty removes ALL bindings for that name), save (bool, optional, default true). "
+                 "Workflow: call input/list_mappings first to see what exists, then again to confirm removal. "
+                 "Warning: legacy input is deprecated since 5.1 — prefer Enhanced Input. Omitting 'key' removes every binding for that action/axis. Invalid key returns error 'Invalid key name: <key>'."))
         .RequiredEnum  (TEXT("mapping_type"), { TEXT("action"), TEXT("axis") },
-                                               TEXT("Which mapping table to edit"))
+                                               TEXT("Which mapping table to edit: 'action' or 'axis'"))
         .RequiredString(TEXT("name"),         TEXT("Action or axis name to remove"))
-        .OptionalString(TEXT("key"),          TEXT("Restrict removal to this key; empty = remove all bindings for 'name'"))
-        .OptionalBool  (TEXT("save"),         TEXT("Persist via SaveKeyMappings() (default true)"))
+        .OptionalString(TEXT("key"),          TEXT("EKeys name to scope removal to; empty removes all bindings for 'name'"))
+        .OptionalBool  (TEXT("save"),         TEXT("Persist via SaveKeyMappings (default true)"))
         .Build());
 
     // -----------------------------------------------------------------------
@@ -716,55 +716,55 @@ TArray<FMCPToolInfo> FInputService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("list_enhanced_actions"),
-            TEXT("List UInputAction assets. Queries the asset registry for Enhanced Input action data assets. "
-                 "Params: path (string, package path root, default /Game), max_results (integer, default 1000). "
-                 "Workflow: call before input/add_enhanced_mapping to pick a valid action_path. "
-                 "Warning: legacy UInputSettings mappings are not returned here — use input/list_mappings for those."))
-        .OptionalString (TEXT("path"),        TEXT("Package path root (default /Game)"))
-        .OptionalInteger(TEXT("max_results"), TEXT("Max assets to return (default 1000)"))
+            TEXT("List Enhanced Input UInputAction assets via the asset registry (recursive, cached metadata — no asset load unless value_type is missing). Returns {success, actions:[{path (object path), value_type (Bool|Axis1D|Axis2D|Axis3D|Unknown)}], count}. "
+                 "Params: path (string, optional — package-path root to search recursively, default /Game; must be a virtual path like /Game/Input, not an OS path), max_results (integer, optional, default 1000; negative = unlimited). "
+                 "Workflow: call before input/add_enhanced_mapping to pick a valid action_path from the returned 'path' field. "
+                 "Warning: read-only. Returns Enhanced Input actions only; legacy UInputSettings mappings come from input/list_mappings instead."))
+        .OptionalString (TEXT("path"),        TEXT("Package-path root to search recursively (virtual path, default /Game)"))
+        .OptionalInteger(TEXT("max_results"), TEXT("Max assets to return; negative = unlimited (default 1000)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("list_mapping_contexts"),
-            TEXT("List UInputMappingContext assets with their mapping count. Queries the asset registry. "
-                 "Params: path (string, package path root, default /Game), max_results (integer, default 1000). "
-                 "Workflow: pairs with input/get_mapping_context to inspect individual mappings. "
-                 "Warning: mapping_count requires loading each asset — heavy on very large content sets."))
-        .OptionalString (TEXT("path"),        TEXT("Package path root (default /Game)"))
-        .OptionalInteger(TEXT("max_results"), TEXT("Max assets to return (default 1000)"))
+            TEXT("List Enhanced Input UInputMappingContext (IMC) assets via the asset registry, with each one's mapping count. Returns {success, contexts:[{path (object path), mapping_count}], count}. "
+                 "Params: path (string, optional — package-path root to search recursively, default /Game; virtual path, not an OS path), max_results (integer, optional, default 1000; negative = unlimited). "
+                 "Workflow: pairs with input/get_mapping_context to inspect a single IMC's mappings, and input/add_enhanced_mapping to edit one. "
+                 "Warning: read-only, but computing mapping_count LOADS each IMC asset — slow on very large content sets; narrow 'path' or lower max_results."))
+        .OptionalString (TEXT("path"),        TEXT("Package-path root to search recursively (virtual path, default /Game)"))
+        .OptionalInteger(TEXT("max_results"), TEXT("Max assets to return; negative = unlimited (default 1000)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("get_mapping_context"),
-            TEXT("Get all FEnhancedActionKeyMapping entries from a UInputMappingContext. Reads Context->GetMappings(). "
-                 "Params: context_path (string, object path e.g. /Game/Input/IMC_Default.IMC_Default). "
-                 "Workflow: call after input/list_mapping_contexts; pairs with input/add_enhanced_mapping. "
-                 "Warning: modifiers/triggers are reported by class name only; per-instance settings are not serialized."))
-        .RequiredString(TEXT("context_path"), TEXT("Object path of the UInputMappingContext asset"))
+            TEXT("Read all key mappings from one UInputMappingContext asset. Returns {success, context_path, mappings:[{action_path, key, modifiers:[class names], triggers:[class names]}], count}. "
+                 "Params: context_path (string, required — IMC object path, e.g. /Game/Input/IMC_Default.IMC_Default; package name plus .Asset). "
+                 "Workflow: call after input/list_mapping_contexts; pairs with input/add_enhanced_mapping / input/remove_enhanced_mapping to confirm bindings. "
+                 "Warning: read-only (loads the asset). Modifiers and triggers are reported by class name only — their per-instance property values are not serialized; returns error if no IMC exists at context_path."))
+        .RequiredString(TEXT("context_path"), TEXT("Object path of the UInputMappingContext asset (e.g. /Game/Input/IMC_Default.IMC_Default)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("add_enhanced_mapping"),
-            TEXT("Add a key mapping to a UInputMappingContext for a given UInputAction. Calls Context->MapKey, MarkPackageDirty, and optionally persists the asset. "
-                 "Params: context_path (string, required, IMC asset object path), action_path (string, required, IA asset object path), key (string, required, EKeys name e.g. SpaceBar), save (bool, optional, default true). "
-                 "Workflow: pairs with input/get_mapping_context to verify. "
-                 "Warning: MapKey does NOT dedupe — repeating the call adds another mapping for the same action+key."))
-        .RequiredString(TEXT("context_path"), TEXT("Object path of the UInputMappingContext asset"))
+            TEXT("Bind a key to a UInputAction inside a UInputMappingContext (Context->MapKey + MarkPackageDirty, then optional save). Returns {success, context_path, mapping:{action_path, key, modifiers, triggers}, saved}. "
+                 "Params: context_path (string, required — IMC object path, e.g. /Game/Input/IMC.IMC), action_path (string, required — UInputAction object path), key (string, required — EKeys name e.g. SpaceBar / W / Gamepad_FaceButton_Bottom), save (bool, optional, default true — writes the IMC package to disk). "
+                 "Workflow: pick action_path via input/list_enhanced_actions, then input/get_mapping_context to verify. "
+                 "Warning: MUTATES and (by default) saves the IMC asset. MapKey does NOT dedupe — repeating adds another mapping for the same action+key. Context priority is NOT stored here; it is supplied at runtime when AddMappingContext is called (higher priority wins/consumes). Returns error if the IMC, the action, or the key is invalid."))
+        .RequiredString(TEXT("context_path"), TEXT("Object path of the UInputMappingContext asset (e.g. /Game/Input/IMC.IMC)"))
         .RequiredString(TEXT("action_path"),  TEXT("Object path of the UInputAction asset"))
-        .RequiredString(TEXT("key"),          TEXT("Key name (EKeys::, e.g. SpaceBar, W, Gamepad_FaceButton_Bottom)"))
+        .RequiredString(TEXT("key"),          TEXT("EKeys name (e.g. SpaceBar, W, Gamepad_FaceButton_Bottom)"))
         .OptionalBool  (TEXT("save"),         TEXT("Persist the IMC asset to disk (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("remove_enhanced_mapping"),
-            TEXT("Remove a key mapping from a UInputMappingContext for a given UInputAction+key. Calls Context->UnmapKey, MarkPackageDirty, and optionally saves. "
-                 "Params: context_path (string), action_path (string), key (string), save (bool, default true). "
-                 "Workflow: call input/get_mapping_context to confirm which bindings exist first. "
-                 "Warning: UnmapKey removes every mapping matching action+key (usually one, but duplicates are possible)."))
+            TEXT("Unbind a key from a UInputAction inside a UInputMappingContext (Context->UnmapKey + MarkPackageDirty, then optional save). Returns {success, context_path, action_path, key, removed (count), saved}. "
+                 "Params: context_path (string, required — IMC object path), action_path (string, required — UInputAction object path), key (string, required — EKeys name e.g. SpaceBar / W), save (bool, optional, default true — writes the IMC package to disk). "
+                 "Workflow: call input/get_mapping_context first to confirm which bindings exist. "
+                 "Warning: MUTATES and (by default) saves the IMC asset. UnmapKey removes EVERY mapping matching action+key (usually one, but duplicates are possible) — check the returned 'removed' count. Returns error if the IMC, the action, or the key is invalid."))
         .RequiredString(TEXT("context_path"), TEXT("Object path of the UInputMappingContext asset"))
         .RequiredString(TEXT("action_path"),  TEXT("Object path of the UInputAction asset"))
-        .RequiredString(TEXT("key"),          TEXT("Key name (EKeys::, e.g. SpaceBar, W)"))
-        .OptionalBool  (TEXT("save"),         TEXT("Persist via UEditorAssetLibrary::SaveAsset (default true)"))
+        .RequiredString(TEXT("key"),          TEXT("EKeys name (e.g. SpaceBar, W)"))
+        .OptionalBool  (TEXT("save"),         TEXT("Persist the IMC asset to disk (default true)"))
         .Build());
 
     return Tools;

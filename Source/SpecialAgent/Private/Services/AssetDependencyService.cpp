@@ -264,34 +264,37 @@ TArray<FMCPToolInfo> FAssetDependencyService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("get_references"),
-        TEXT("List package names this asset references (forward dependencies). On-disk data only.\n"
-             "Params: asset_path (string, /Game/... asset or package path).\n"
-             "Workflow: Use get_referencers for the reverse direction."))
-        .RequiredString(TEXT("asset_path"), TEXT("Asset or package path"))
+        TEXT("List the packages this asset references (forward, package-category dependencies). Returns {success, asset_path, package_name, references:[package names], count}. "
+             "Params: asset_path (string, required, /Game/... object path /Game/Foo.Foo or package path /Game/Foo - both normalize to the package). "
+             "Workflow: use asset_deps/get_referencers for the reverse (who depends on me) direction. "
+             "Warning: read-only, uses cached on-disk Asset Registry data only - unsaved in-memory edits are not reflected."))
+        .RequiredString(TEXT("asset_path"), TEXT("Asset object path or package path"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_referencers"),
-        TEXT("List package names that reference this asset. On-disk data only.\n"
-             "Params: asset_path (string, /Game/... asset or package path).\n"
-             "Workflow: Zero referencers → candidate for find_unused. Pair with content_browser/delete to clean up."))
-        .RequiredString(TEXT("asset_path"), TEXT("Asset or package path"))
+        TEXT("List the packages that reference this asset (reverse, package-category dependencies). Returns {success, asset_path, package_name, referencers:[package names], count}. "
+             "Params: asset_path (string, required, /Game/... object path or package path). "
+             "Workflow: run before assets/delete or content_browser/delete to audit inbound uses; zero referencers makes it a find_unused candidate. "
+             "Warning: read-only, uses cached on-disk Asset Registry data only; level/map references and recently-added in-memory assets may be missing."))
+        .RequiredString(TEXT("asset_path"), TEXT("Asset object path or package path"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("find_unused"),
-        TEXT("Enumerate assets under a root path with zero referencers. Potential deletion candidates.\n"
-             "Params: root_path (string, default /Game), max_results (integer, default 500).\n"
-             "Workflow: Verify candidates manually, then content_browser/delete.\n"
-             "Warning: Level assets and recently-added assets may show as unused; cross-check before deleting."))
-        .OptionalString(TEXT("root_path"), TEXT("Root content path to scan (default: /Game)"))
-        .OptionalInteger(TEXT("max_results"), TEXT("Maximum unused assets to return (default: 500)"))
+        TEXT("Enumerate assets under a content root that have zero referencers (deletion candidates). Returns {success, root_path, scanned, unused_count, unused:[{package_name, asset_name, class}]}. "
+             "Params: root_path (string, optional, default /Game, scanned recursively), max_results (integer, optional, default 500 - stops scanning once reached). "
+             "Workflow: verify each candidate (re-check asset_deps/get_referencers), then assets/delete or content_browser/delete. "
+             "Warning: read-only here but the candidates are not safe to bulk-delete blindly - level/map assets, assets referenced only at runtime, and recently-added assets can show as unused. Scans every asset under root, so it is slow on large roots."))
+        .OptionalString(TEXT("root_path"), TEXT("Root content path to scan recursively (default /Game)"))
+        .OptionalInteger(TEXT("max_results"), TEXT("Maximum unused assets to return (default 500)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_dependency_graph"),
-        TEXT("Return a recursive tree of package dependencies rooted at an asset. Capped at depth 5.\n"
-             "Params: asset_path (string), max_depth (integer, 1-5, default 3).\n"
-             "Workflow: Large for materials/maps — start with depth 2. Engine/script deps are pruned."))
-        .RequiredString(TEXT("asset_path"), TEXT("Root asset or package path"))
-        .OptionalInteger(TEXT("max_depth"), TEXT("Recursion depth, clamped to [1,5] (default: 3)"))
+        TEXT("Build a recursive package-dependency tree rooted at an asset. Returns {success, asset_path, max_depth, unique_packages, graph:{package, dependencies:[...], truncated?, cycle?}}. "
+             "Params: asset_path (string, required, /Game/... object or package path), max_depth (integer, optional, default 3, clamped to 1-5). "
+             "Workflow: start at depth 2 for materials/maps which fan out widely; /Script/ and /Engine/ dependencies are pruned and cycles are flagged with cycle:true. "
+             "Warning: read-only, on-disk registry data only; deep graphs can be large - nodes at max_depth are marked truncated:true rather than expanded."))
+        .RequiredString(TEXT("asset_path"), TEXT("Root asset object path or package path"))
+        .OptionalInteger(TEXT("max_depth"), TEXT("Recursion depth, clamped to [1,5] (default 3)"))
         .Build());
 
     return Tools;

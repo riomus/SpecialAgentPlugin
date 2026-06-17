@@ -32,6 +32,18 @@ bool FMCPJson::ReadBool(const TSharedPtr<FJsonObject>& Params, const FString& Fi
 	return Params->TryGetBoolField(Field, Out);
 }
 
+namespace
+{
+	// Read Arr[Index] as a number. Uses TryGetNumber (not AsNumber): numbers and
+	// numeric strings succeed, but a non-numeric value (object/null/"abc") fails
+	// instead of silently coercing to 0 — which would otherwise accept a bad
+	// coordinate like ["100", 50, 0] and place an actor at the origin.
+	bool ReadNumericElement(const TArray<TSharedPtr<FJsonValue>>& Arr, int32 Index, double& Out)
+	{
+		return Arr.IsValidIndex(Index) && Arr[Index].IsValid() && Arr[Index]->TryGetNumber(Out);
+	}
+}
+
 bool FMCPJson::ReadVec3(const TSharedPtr<FJsonObject>& Params, const FString& Field, FVector& Out)
 {
 	const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
@@ -39,7 +51,12 @@ bool FMCPJson::ReadVec3(const TSharedPtr<FJsonObject>& Params, const FString& Fi
 	{
 		return false;
 	}
-	Out = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+	double X = 0.0, Y = 0.0, Z = 0.0;
+	if (!ReadNumericElement(*Arr, 0, X) || !ReadNumericElement(*Arr, 1, Y) || !ReadNumericElement(*Arr, 2, Z))
+	{
+		return false;
+	}
+	Out = FVector(X, Y, Z);
 	return true;
 }
 
@@ -50,7 +67,12 @@ bool FMCPJson::ReadRotator(const TSharedPtr<FJsonObject>& Params, const FString&
 	{
 		return false;
 	}
-	Out = FRotator((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+	double Pitch = 0.0, Yaw = 0.0, Roll = 0.0;
+	if (!ReadNumericElement(*Arr, 0, Pitch) || !ReadNumericElement(*Arr, 1, Yaw) || !ReadNumericElement(*Arr, 2, Roll))
+	{
+		return false;
+	}
+	Out = FRotator(Pitch, Yaw, Roll);
 	return true;
 }
 
@@ -61,12 +83,16 @@ bool FMCPJson::ReadColor(const TSharedPtr<FJsonObject>& Params, const FString& F
 	{
 		return false;
 	}
-	const float A = Arr->Num() >= 4 ? static_cast<float>((*Arr)[3]->AsNumber()) : 1.0f;
-	Out = FLinearColor(
-		static_cast<float>((*Arr)[0]->AsNumber()),
-		static_cast<float>((*Arr)[1]->AsNumber()),
-		static_cast<float>((*Arr)[2]->AsNumber()),
-		A);
+	double R = 0.0, G = 0.0, B = 0.0, A = 1.0;
+	if (!ReadNumericElement(*Arr, 0, R) || !ReadNumericElement(*Arr, 1, G) || !ReadNumericElement(*Arr, 2, B))
+	{
+		return false;
+	}
+	if (Arr->Num() >= 4 && !ReadNumericElement(*Arr, 3, A))
+	{
+		return false;
+	}
+	Out = FLinearColor(static_cast<float>(R), static_cast<float>(G), static_cast<float>(B), static_cast<float>(A));
 	return true;
 }
 
@@ -102,7 +128,13 @@ void FMCPJson::WriteActor(const TSharedPtr<FJsonObject>& Out, AActor* Actor)
 {
 	if (!Actor) return;
 
-	Out->SetStringField(TEXT("name"), Actor->GetActorLabel());
+	// `name` is kept for backward compatibility; `actor_label` is the preferred,
+	// self-describing handle to pass to follow-up tools (both hold the editor
+	// label). `path` is the full object path for unambiguous resolution.
+	const FString Label = Actor->GetActorLabel();
+	Out->SetStringField(TEXT("name"), Label);
+	Out->SetStringField(TEXT("actor_label"), Label);
+	Out->SetStringField(TEXT("path"), Actor->GetPathName());
 	Out->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
 
 	WriteVec3(Out, TEXT("location"), Actor->GetActorLocation());

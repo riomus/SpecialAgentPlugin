@@ -379,10 +379,12 @@ TArray<FMCPToolInfo> FPhysicsService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_simulate_physics"),
-            TEXT("Enable or disable rigid-body simulation on an actor's primary UPrimitiveComponent. "
-                 "Params: actor_name (string), simulate (bool), component_name (string, optional; defaults to root primitive). "
-                 "Workflow: enable before apply_impulse/apply_force so forces have effect. "
-                 "Warning: only works on components whose BodySetup allows simulation."))
+            TEXT("Enable or disable rigid-body (Chaos) simulation on a primitive component (SetSimulatePhysics). "
+                 "Returns {actor_name:actor_label, component, simulate:bool}. "
+                 "Params: actor_name (string, required, actor label), simulate (bool, required), "
+                 "component_name (string, optional; defaults to the root primitive, else the first UPrimitiveComponent found). "
+                 "Workflow: REQUIRED first step before physics/apply_impulse, apply_force, set_linear_velocity, or set_angular_velocity -- forces are ignored on a non-simulating body. "
+                 "Warning: the component must have Movable mobility and a BodySetup that allows simulation, or it stays static; simulation only advances while PIE/Simulate ticks (editor-world bodies do not move)."))
         .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
         .RequiredBool  (TEXT("simulate"),       TEXT("true to enable, false to disable"))
         .OptionalString(TEXT("component_name"), TEXT("Specific component name; defaults to root primitive"))
@@ -390,56 +392,72 @@ TArray<FMCPToolInfo> FPhysicsService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("apply_impulse"),
-            TEXT("Apply an instantaneous impulse to a primitive component (kg*cm/s unless velocity_change=true). "
-                 "Params: actor_name (string), impulse ([X,Y,Z] vector, world-space), velocity_change (bool, default false -- when true, impulse is in cm/s regardless of mass), component_name (string, optional). "
-                 "Workflow: set_simulate_physics true first. "
-                 "Warning: impulse is applied at center of mass; use AddImpulseAtLocation for off-center hits (not exposed here)."))
+            TEXT("Apply an instantaneous impulse (one-shot velocity kick) to a primitive component at its center of mass (AddImpulse). "
+                 "Returns {actor_name:actor_label, component, impulse, velocity_change:bool}. "
+                 "Params: actor_name (string, required, actor label), impulse (number[3], required, world-space [X,Y,Z], mass-scaled kg*cm/s by default), "
+                 "velocity_change (bool, optional, default false -- when true the impulse is a direct cm/s velocity delta, mass-independent), "
+                 "component_name (string, optional; defaults to root primitive). "
+                 "Workflow: physics/set_simulate_physics true first; for a continuous push use physics/apply_force instead. "
+                 "Warning: only moves the body while PIE/Simulate ticks; impulse acts at the center of mass (no off-center torque -- AddImpulseAtLocation is not exposed); values are cm-based, NOT real-world Newton-seconds."))
         .RequiredString(TEXT("actor_name"),      TEXT("Actor label"))
-        .RequiredVec3  (TEXT("impulse"),         TEXT("Impulse as [X,Y,Z]"))
-        .OptionalBool  (TEXT("velocity_change"), TEXT("Treat impulse as a velocity change (ignore mass)"))
+        .RequiredVec3  (TEXT("impulse"),         TEXT("Impulse as world-space [X,Y,Z] (kg*cm/s, or cm/s when velocity_change=true)"))
+        .OptionalBool  (TEXT("velocity_change"), TEXT("Treat impulse as a velocity change in cm/s, ignoring mass (default false)"))
         .OptionalString(TEXT("component_name"),  TEXT("Specific component; defaults to root primitive"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("apply_force"),
-            TEXT("Apply a continuous force to a primitive component this tick (kg*cm/s^2 unless accel_change=true). "
-                 "Params: actor_name (string), force ([X,Y,Z] vector, world-space), accel_change (bool, default false -- when true, force is an acceleration in cm/s^2), component_name (string, optional). "
-                 "Workflow: set_simulate_physics true first. "
-                 "Warning: a single call applies force for one tick; call every frame for sustained forces."))
+            TEXT("Queue a continuous force on a primitive component for the next physics tick (AddForce). "
+                 "Returns {actor_name:actor_label, component, force, accel_change:bool}. "
+                 "Params: actor_name (string, required, actor label), force (number[3], required, world-space [X,Y,Z], mass-scaled kg*cm/s^2 by default), "
+                 "accel_change (bool, optional, default false -- when true the force is an acceleration in cm/s^2, mass-independent), "
+                 "component_name (string, optional; defaults to root primitive). "
+                 "Workflow: physics/set_simulate_physics true first; for a one-shot kick use physics/apply_impulse instead. "
+                 "Warning: only takes effect while PIE/Simulate ticks, and one call lasts a single tick -- call every frame for a sustained push; values are cm-based, NOT real-world Newtons."))
         .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .RequiredVec3  (TEXT("force"),          TEXT("Force as [X,Y,Z]"))
-        .OptionalBool  (TEXT("accel_change"),   TEXT("Treat force as an acceleration (ignore mass)"))
+        .RequiredVec3  (TEXT("force"),          TEXT("Force as world-space [X,Y,Z] (kg*cm/s^2, or cm/s^2 when accel_change=true)"))
+        .OptionalBool  (TEXT("accel_change"),   TEXT("Treat force as an acceleration in cm/s^2, ignoring mass (default false)"))
         .OptionalString(TEXT("component_name"), TEXT("Specific component; defaults to root primitive"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_linear_velocity"),
-            TEXT("Set (or add to) the linear physics velocity of a primitive component in cm/s. "
-                 "Params: actor_name (string), velocity ([X,Y,Z] cm/s world-space), add_to_current (bool, default false), component_name (string, optional). "
-                 "Workflow: set_simulate_physics true first."))
+            TEXT("Set (or add to) the linear physics velocity of a primitive component (SetPhysicsLinearVelocity), mass-independent. "
+                 "Returns {actor_name:actor_label, component, velocity, add_to_current:bool}. "
+                 "Params: actor_name (string, required, actor label), velocity (number[3], required, world-space cm/s [X,Y,Z]), "
+                 "add_to_current (bool, optional, default false -- add to the existing velocity instead of overwriting it), "
+                 "component_name (string, optional; defaults to root primitive). "
+                 "Workflow: physics/set_simulate_physics true first. "
+                 "Warning: overwrites velocity directly (ignores mass) and only persists while PIE/Simulate ticks -- a static editor-world body will not move."))
         .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .RequiredVec3  (TEXT("velocity"),       TEXT("Velocity as [X,Y,Z] cm/s"))
-        .OptionalBool  (TEXT("add_to_current"), TEXT("Add to existing velocity instead of replacing"))
+        .RequiredVec3  (TEXT("velocity"),       TEXT("Velocity as world-space [X,Y,Z] in cm/s"))
+        .OptionalBool  (TEXT("add_to_current"), TEXT("Add to existing velocity instead of replacing (default false)"))
         .OptionalString(TEXT("component_name"), TEXT("Specific component; defaults to root primitive"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_angular_velocity"),
-            TEXT("Set (or add to) the angular physics velocity of a primitive component in deg/s. "
-                 "Params: actor_name (string), angular_velocity ([X,Y,Z] deg/s world-space), add_to_current (bool, default false), component_name (string, optional). "
-                 "Workflow: set_simulate_physics true first."))
+            TEXT("Set (or add to) the angular physics velocity of a primitive component in degrees/sec (SetPhysicsAngularVelocityInDegrees), mass-independent. "
+                 "Returns {actor_name:actor_label, component, angular_velocity, add_to_current:bool}. "
+                 "Params: actor_name (string, required, actor label), angular_velocity (number[3], required, world-space deg/s about [X,Y,Z] axes), "
+                 "add_to_current (bool, optional, default false -- add to the existing angular velocity instead of overwriting it), "
+                 "component_name (string, optional; defaults to root primitive). "
+                 "Workflow: physics/set_simulate_physics true first. "
+                 "Warning: spin is in deg/s (not the [Pitch,Yaw,Roll] rotator convention), ignores mass, and only persists while PIE/Simulate ticks."))
         .RequiredString(TEXT("actor_name"),       TEXT("Actor label"))
-        .RequiredVec3  (TEXT("angular_velocity"), TEXT("Angular velocity as [X,Y,Z] deg/s"))
-        .OptionalBool  (TEXT("add_to_current"),   TEXT("Add to existing velocity instead of replacing"))
+        .RequiredVec3  (TEXT("angular_velocity"), TEXT("Angular velocity in deg/s about world [X,Y,Z] axes"))
+        .OptionalBool  (TEXT("add_to_current"),   TEXT("Add to existing velocity instead of replacing (default false)"))
         .OptionalString(TEXT("component_name"),   TEXT("Specific component; defaults to root primitive"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_mass"),
-            TEXT("Override the mass of a primitive component in kilograms. "
-                 "Params: actor_name (string), mass_kg (number > 0, kilograms), component_name (string, optional). "
-                 "Workflow: mass override is applied via SetMassOverrideInKg(NAME_None, kg, true). "
-                 "Warning: asset-level mass settings are replaced for the instance; Blueprint defaults are unaffected."))
+            TEXT("Override the mass of a primitive component in kilograms (SetMassOverrideInKg(NAME_None, kg, bOverrideMass=true)). "
+                 "Returns {actor_name:actor_label, component, mass_kg}. "
+                 "Params: actor_name (string, required, actor label), mass_kg (number, required, kilograms, must be > 0), "
+                 "component_name (string, optional; defaults to root primitive). "
+                 "Workflow: scales how physics/apply_force and apply_impulse affect the body (unless their accel_change/velocity_change flag is set, which bypasses mass). "
+                 "Warning: changes only this component instance, not the Blueprint/asset defaults; mass is in kg but distances are cm, so force values are not real-world Newtons."))
         .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
         .RequiredNumber(TEXT("mass_kg"),        TEXT("Mass in kilograms (must be > 0)"))
         .OptionalString(TEXT("component_name"), TEXT("Specific component; defaults to root primitive"))
@@ -447,9 +465,13 @@ TArray<FMCPToolInfo> FPhysicsService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_collision_enabled"),
-            TEXT("Set ECollisionEnabled on a primitive component. "
-                 "Params: actor_name (string), mode (enum: NoCollision|QueryOnly|PhysicsOnly|QueryAndPhysics), component_name (string, optional). "
-                 "Workflow: NoCollision disables all collision/queries; QueryOnly allows overlaps without physics; PhysicsOnly allows physics without overlaps; QueryAndPhysics enables both."))
+            TEXT("Set the ECollisionEnabled mode on a primitive component (SetCollisionEnabled). "
+                 "Returns {actor_name:actor_label, component, mode}. "
+                 "Params: actor_name (string, required, actor label), "
+                 "mode (enum, required: NoCollision = no collision or queries; QueryOnly = overlaps/traces but no physics blocking; PhysicsOnly = physics blocking but no traces; QueryAndPhysics = both), "
+                 "component_name (string, optional; defaults to root primitive). "
+                 "Workflow: PhysicsOnly/QueryAndPhysics is needed for a simulating body (physics/set_simulate_physics) to collide with the world. "
+                 "Warning: changes only this component instance and only affects the editor world until saved; NoCollision lets a simulating body fall through everything."))
         .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
         .RequiredEnum  (TEXT("mode"),
             {TEXT("NoCollision"), TEXT("QueryOnly"), TEXT("PhysicsOnly"), TEXT("QueryAndPhysics")},

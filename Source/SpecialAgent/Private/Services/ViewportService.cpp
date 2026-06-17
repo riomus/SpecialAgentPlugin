@@ -6,6 +6,7 @@
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
 #include "MCPCommon/MCPActorResolver.h"
+#include "MCPCommon/MCPViewport.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "EditorViewportClient.h"
@@ -76,15 +77,16 @@ FMCPResponse FViewportService::HandleSetLocation(const FMCPRequest& Request)
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-		FLevelEditorViewportClient* ViewportClient = static_cast<FLevelEditorViewportClient*>(GEditor->GetActiveViewport()->GetClient());
+		FLevelEditorViewportClient* ViewportClient = FMCPViewport::GetLevelClient();
 		if (!ViewportClient)
 		{
 			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport client found"));
+			Result->SetStringField(TEXT("error"), TEXT("No Level Editor viewport available"));
 			return Result;
 		}
 
 		ViewportClient->SetViewLocation(Location);
+		ViewportClient->Invalidate();
 		
 		Result->SetBoolField(TEXT("success"), true);
 		TArray<TSharedPtr<FJsonValue>> LocationJson;
@@ -127,15 +129,16 @@ FMCPResponse FViewportService::HandleSetRotation(const FMCPRequest& Request)
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-		FLevelEditorViewportClient* ViewportClient = static_cast<FLevelEditorViewportClient*>(GEditor->GetActiveViewport()->GetClient());
+		FLevelEditorViewportClient* ViewportClient = FMCPViewport::GetLevelClient();
 		if (!ViewportClient)
 		{
 			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport client found"));
+			Result->SetStringField(TEXT("error"), TEXT("No Level Editor viewport available"));
 			return Result;
 		}
 
 		ViewportClient->SetViewRotation(Rotation);
+		ViewportClient->Invalidate();
 		
 		Result->SetBoolField(TEXT("success"), true);
 		TArray<TSharedPtr<FJsonValue>> RotationJson;
@@ -160,11 +163,11 @@ FMCPResponse FViewportService::HandleGetTransform(const FMCPRequest& Request)
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-		FLevelEditorViewportClient* ViewportClient = static_cast<FLevelEditorViewportClient*>(GEditor->GetActiveViewport()->GetClient());
+		FLevelEditorViewportClient* ViewportClient = FMCPViewport::GetLevelClient();
 		if (!ViewportClient)
 		{
 			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport client found"));
+			Result->SetStringField(TEXT("error"), TEXT("No Level Editor viewport available"));
 			return Result;
 		}
 
@@ -268,10 +271,11 @@ FMCPResponse FViewportService::HandleFocusActor(const FMCPRequest& Request)
 		}
 
 		// Focus on the actor (like pressing F in editor)
-		FLevelEditorViewportClient* ViewportClient = static_cast<FLevelEditorViewportClient*>(GEditor->GetActiveViewport()->GetClient());
+		FLevelEditorViewportClient* ViewportClient = FMCPViewport::GetLevelClient();
 		if (ViewportClient)
 		{
 			ViewportClient->FocusViewportOnBox(FoundActor->GetComponentsBoundingBox());
+			ViewportClient->Invalidate();
 		}
 
 		Result->SetBoolField(TEXT("success"), true);
@@ -311,19 +315,19 @@ FMCPResponse FViewportService::HandleTraceFromScreen(const FMCPRequest& Request)
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-		FViewport* Viewport = GEditor->GetActiveViewport();
-		if (!Viewport)
-		{
-			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport found"));
-			return Result;
-		}
-
-		FLevelEditorViewportClient* ViewportClient = static_cast<FLevelEditorViewportClient*>(Viewport->GetClient());
+		FLevelEditorViewportClient* ViewportClient = FMCPViewport::GetLevelClient();
 		if (!ViewportClient)
 		{
 			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport client found"));
+			Result->SetStringField(TEXT("error"), TEXT("No Level Editor viewport available"));
+			return Result;
+		}
+
+		FViewport* Viewport = ViewportClient->Viewport;
+		if (!Viewport)
+		{
+			Result->SetBoolField(TEXT("success"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Level Editor viewport has no render target"));
 			return Result;
 		}
 
@@ -457,13 +461,11 @@ FMCPResponse FViewportService::HandleTraceFromScreen(const FMCPRequest& Request)
 // ============================================================================
 // Phase 1.A additions
 // ============================================================================
-// Helper: resolve a FLevelEditorViewportClient, or null.
+// Helper: resolve a FLevelEditorViewportClient, or null. Delegates to the
+// shared resolver, which never blind-casts a focused non-level viewport client.
 static FLevelEditorViewportClient* ResolveLevelViewportClient()
 {
-	if (!GEditor) return nullptr;
-	FViewport* VP = GEditor->GetActiveViewport();
-	if (!VP) return nullptr;
-	return static_cast<FLevelEditorViewportClient*>(VP->GetClient());
+	return FMCPViewport::GetLevelClient();
 }
 
 FMCPResponse FViewportService::HandleOrbitAroundActor(const FMCPRequest& Request)
@@ -706,14 +708,14 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("set_location");
-		Tool.Description = TEXT("Set the active editor viewport camera location in world space. Returns {success, location}. "
-			"Params: location ([X,Y,Z] cm world, required). "
-			"Workflow: pair with viewport/set_rotation to aim; call viewport/force_redraw before screenshot/capture so the captured frame reflects the new camera. "
-			"Warning: only the active Level Editor viewport is affected; updates the view data immediately but the pixel repaint happens on the next editor tick unless you call viewport/force_redraw.");
-		
+		Tool.Description = TEXT("Move the active Level Editor viewport camera to a world-space location. Returns {success, location:[X,Y,Z]}. "
+			"Params: location (array [X,Y,Z] in world-space cm, +X forward/+Y right/+Z up, required). "
+			"Workflow: pair with viewport/set_rotation to aim, or use viewport/focus_actor to frame an actor automatically; then call screenshot/capture (it auto-redraws, so no manual viewport/force_redraw is needed). "
+			"Warning: only the active Level Editor viewport is repositioned (mutates the user's view). The view data updates immediately but the on-screen pixel repaint waits for the next editor tick; if another consumer reads pixels directly (not screenshot/capture, which redraws itself) call viewport/force_redraw first.");
+
 		TSharedPtr<FJsonObject> LocParam = MakeShared<FJsonObject>();
 		LocParam->SetStringField(TEXT("type"), TEXT("array"));
-		LocParam->SetStringField(TEXT("description"), TEXT("Camera location as [X, Y, Z]"));
+		LocParam->SetStringField(TEXT("description"), TEXT("Camera location as [X, Y, Z] in world-space cm"));
 		Tool.Parameters->SetObjectField(TEXT("location"), LocParam);
 		Tool.RequiredParams.Add(TEXT("location"));
 		
@@ -724,14 +726,14 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("set_rotation");
-		Tool.Description = TEXT("Set the active editor viewport camera rotation. Returns {success, rotation}. "
-			"Params: rotation ([Pitch,Yaw,Roll] degrees, required). "
-			"Workflow: pair with viewport/set_location; use viewport/focus_actor for 'frame this actor' behaviour instead of manual angles. "
-			"Warning: updates view data immediately but the pixel repaint happens next editor tick — call viewport/force_redraw before screenshot/capture.");
-		
+		Tool.Description = TEXT("Aim the active Level Editor viewport camera by setting its rotation. Returns {success, rotation:[Pitch,Yaw,Roll]}. "
+			"Params: rotation (array [Pitch,Yaw,Roll] in degrees, required; note the Details panel labels these X=Roll/Y=Pitch/Z=Yaw, so the order differs). "
+			"Workflow: pair with viewport/set_location, or use viewport/focus_actor to frame an actor automatically instead of computing angles; then screenshot/capture (it auto-redraws). "
+			"Warning: only the active Level Editor viewport is affected. The view data updates immediately but the on-screen repaint waits for the next editor tick; screenshot/capture redraws itself, so a manual viewport/force_redraw is only needed for other direct pixel readers.");
+
 		TSharedPtr<FJsonObject> RotParam = MakeShared<FJsonObject>();
 		RotParam->SetStringField(TEXT("type"), TEXT("array"));
-		RotParam->SetStringField(TEXT("description"), TEXT("Camera rotation as [Pitch, Yaw, Roll]"));
+		RotParam->SetStringField(TEXT("description"), TEXT("Camera rotation as [Pitch, Yaw, Roll] in degrees"));
 		Tool.Parameters->SetObjectField(TEXT("rotation"), RotParam);
 		Tool.RequiredParams.Add(TEXT("rotation"));
 		
@@ -742,9 +744,10 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_transform");
-		Tool.Description = TEXT("Get the active editor viewport camera transform. Returns {success, location:[X,Y,Z], rotation:[Pitch,Yaw,Roll]}. "
+		Tool.Description = TEXT("Read the active Level Editor viewport camera transform. Returns {success, location:[X,Y,Z] world-space cm, rotation:[Pitch,Yaw,Roll] degrees}. "
 			"Params: (none). "
-			"Workflow: call before bookmark_save, or use the result to compute offsets for subsequent set_location calls.");
+			"Workflow: call before viewport/bookmark_save, or use the result to compute a delta for a follow-up viewport/set_location. "
+			"Warning: read-only (does not move the camera); returns success=false with an error when no Level Editor viewport is available.");
 		Tools.Add(Tool);
 	}
 	
@@ -752,13 +755,14 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("focus_actor");
-		Tool.Description = TEXT("Frame an actor in the viewport (like pressing F in the editor). Matches by exact label, internal name, or case-insensitive substring; returns {actor_name, actor_id, matched_by}. "
-			"Params: actor_name (string, label/ID or partial, required). "
-			"Workflow: world/list_actors -> focus_actor -> viewport/force_redraw -> screenshot/capture to confirm the view.");
-		
+		Tool.Description = TEXT("Frame an actor in the active Level Editor viewport (like pressing F on a selection). Matches by exact label first, then exact internal name, then case-insensitive substring; returns {success, actor_name (matched label), actor_id (internal name), matched_by:'label'|'name'|'partial'}. "
+			"Params: actor_name (string: an actor label, internal name/ID, or partial substring of either, required). "
+			"Workflow: list actors first, then focus_actor, then screenshot/capture (it auto-redraws) to confirm the framing; prefer this over computing viewport/set_location + set_rotation by hand. "
+			"Warning: moves the active Level Editor viewport camera; a partial/substring match picks the FIRST matching actor, so pass a unique label when several actors share a substring. Returns success=false if no actor matches.");
+
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
-		NameParam->SetStringField(TEXT("description"), TEXT("The actor label or internal name/ID to focus on"));
+		NameParam->SetStringField(TEXT("description"), TEXT("The actor label, internal name/ID, or a partial substring of either to focus on"));
 		Tool.Parameters->SetObjectField(TEXT("actor_name"), NameParam);
 		Tool.RequiredParams.Add(TEXT("actor_name"));
 		
@@ -769,9 +773,11 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("trace_from_screen");
-		Tool.Description = TEXT("Deproject a screen-space point and line-trace against visibility channel. Returns {hit, location, normal, distance, actor_name, actor_class, component_name, physical_material} on hit; {hit:false, ray_direction} on miss. "
-			"Params: screen_x (number 0-1, fraction from left, default 0.5); screen_y (number 0-1, fraction from top, default 0.5). "
-			"Workflow: screenshot/capture -> estimate (x,y) -> trace_from_screen -> use location to world/spawn_actor and normal to align rotation.");
+		Tool.Description = TEXT("Deproject a screen-space point in the Level Editor viewport and line-trace it along the camera ray against the Visibility channel (trace length 100000 cm). "
+			"Always returns {success, hit, screen_x, screen_y, pixel_x, pixel_y, viewport_width, viewport_height}; on hit adds {location:[X,Y,Z] world cm, normal:[X,Y,Z] surface normal, distance (cm from camera), actor_name, actor_id, actor_class, component_name, physical_material?}; on miss adds {ray_direction:[X,Y,Z]}. "
+			"Params: screen_x (number 0-1, fraction from left edge, default 0.5=center); screen_y (number 0-1, fraction from top edge, default 0.5=center). Out-of-range values are clamped to 0-1. "
+			"Workflow: screenshot/capture, estimate (x,y) from the image, trace_from_screen, then feed location to a spawn/placement tool and normal to align rotation; for selecting the actor under a point use utility/select_at_screen instead. "
+			"Warning: read-only (does not modify the scene); hit:false simply means the ray missed all collidable geometry, not an error -- always check the hit field.");
 		
 		TSharedPtr<FJsonObject> XParam = MakeShared<FJsonObject>();
 		XParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -788,27 +794,30 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 
 	// ---------- Phase 1.A additions ----------
 	Tools.Add(FMCPToolBuilder(TEXT("orbit_around_actor"),
-		TEXT("Position the camera on a ring around an actor's bounds center, looking inward. Effect: sets viewport location + rotation. "
-			 "Params: actor_name (string), angle (number deg, 0=+X), distance (number cm, default 500), height (number cm, default 200). "
-			 "Workflow: call viewport/force_redraw before screenshot/capture so the new framing is visible."))
-		.RequiredString(TEXT("actor_name"), TEXT("Actor label to orbit around"))
-		.OptionalNumber(TEXT("angle"), TEXT("Horizontal angle in degrees (0 = +X axis)"))
-		.OptionalNumber(TEXT("distance"), TEXT("Horizontal distance from target cm (default 500)"))
-		.OptionalNumber(TEXT("height"), TEXT("Vertical offset above target cm (default 200)"))
+		TEXT("Place the Level Editor viewport camera on a horizontal ring around an actor's bounds center, looking inward. Returns {success, camera_location:[X,Y,Z], target:[X,Y,Z]}. "
+			 "Params: actor_name (string, exact actor label, required); angle (number degrees, 0=+X axis, default 0); distance (number, horizontal radius from target in cm, default 500); height (number, vertical offset above the bounds center in cm, default 200). "
+			 "Workflow: call repeatedly with stepped angle values for turntable-style coverage, taking a screenshot/capture (auto-redraws) after each. "
+			 "Warning: moves the active Level Editor viewport camera; resolves the actor by exact label only (unlike viewport/focus_actor, which also matches name/substring) and returns an error if not found."))
+		.RequiredString(TEXT("actor_name"), TEXT("Exact actor label to orbit around"))
+		.OptionalNumber(TEXT("angle"), TEXT("Horizontal angle in degrees (0 = +X axis), default 0"))
+		.OptionalNumber(TEXT("distance"), TEXT("Horizontal radius from target in cm (default 500)"))
+		.OptionalNumber(TEXT("height"), TEXT("Vertical offset above the bounds center in cm (default 200)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_fov"),
-		TEXT("Set the perspective camera field of view. Effect: updates FLevelEditorViewportClient::ViewFOV. "
-			 "Params: fov (number, degrees, typical 60-120). "
-			 "Workflow: call viewport/force_redraw before screenshot/capture so the new FOV is visible."))
-		.RequiredNumber(TEXT("fov"), TEXT("FOV in degrees"))
+		TEXT("Set the active Level Editor perspective viewport's horizontal field of view. Returns {success, fov}. "
+			 "Params: fov (number, horizontal FOV in degrees, required; typical 60-120, editor default 90). "
+			 "Workflow: set before screenshot/capture (auto-redraws); lower fov for a tighter/zoomed framing, higher for a wider angle. "
+			 "Warning: affects only the perspective viewport (no effect on orthographic views) and persists until changed again or the viewport is reset."))
+		.RequiredNumber(TEXT("fov"), TEXT("Horizontal field of view in degrees (typical 60-120, editor default 90)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_view_mode"),
-		TEXT("Switch the viewport's render mode. Effect: one of lit/unlit/wireframe/brush_wireframe/detail_lighting/"
-			 "lighting_only/light_complexity/shader_complexity/stationary_light_overlap/lightmap_density. "
-			 "Params: mode (enum). "
-			 "Workflow: call viewport/force_redraw before screenshot/capture so the new view mode is visible."))
+		TEXT("Switch the active Level Editor viewport's render/visualization mode. Returns {success, mode}. "
+			 "Params: mode (enum, required) -- one of lit, unlit, wireframe, brush_wireframe, detail_lighting, "
+			 "lighting_only, light_complexity, shader_complexity, stationary_light_overlap, lightmap_density. "
+			 "Workflow: set a diagnostic mode (e.g. shader_complexity, lightmap_density), then screenshot/capture (auto-redraws); switch back to lit when done. "
+			 "Warning: mutates the user's active viewport rendering; note rendering/set_view_mode is a sibling tool with a different mode set (adds reflections, buffer_visualization, lod_coloration, path_tracing)."))
 		.RequiredEnum(TEXT("mode"), {
 			TEXT("lit"), TEXT("unlit"), TEXT("wireframe"), TEXT("brush_wireframe"),
 			TEXT("detail_lighting"), TEXT("lighting_only"), TEXT("light_complexity"),
@@ -819,52 +828,54 @@ TArray<FMCPToolInfo> FViewportService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("toggle_game_view");
-		Tool.Description = TEXT("Toggle editor viewport Game View mode. Effect: hides editor-only icons/gizmos if on. "
+		Tool.Description = TEXT("Toggle Game View on the active Level Editor viewport, flipping its current state. Returns {success, game_view (the new state)}. "
 			"Params: (none). "
-			"Workflow: call before screenshot to capture an in-game framing; follow with viewport/force_redraw so the toggle is reflected in the next capture.");
+			"Workflow: enable before screenshot/capture (auto-redraws) for a clean in-game framing that hides editor-only billboards, gizmos, and grid; toggle again to restore the editor overlays. "
+			"Warning: this is a toggle, not a set -- it flips whatever the current state is, so read game_view in the result rather than assuming a value.");
 		Tools.Add(Tool);
 	}
 
 	Tools.Add(FMCPToolBuilder(TEXT("bookmark_save"),
-		TEXT("Save the current viewport camera to a bookmark slot. Effect: records location, rotation, and view settings. "
-			 "Params: index (integer 0..MaxBookmarks-1). "
-			 "Workflow: pair with bookmark_restore to revisit a viewpoint later."))
-		.RequiredInteger(TEXT("index"), TEXT("Bookmark slot index (0..max)"))
+		TEXT("Save the active Level Editor viewport camera (location, rotation, and view settings) into a numbered bookmark slot. Returns {success, index}. "
+			 "Params: index (integer >= 0, required; the bookmark slot to create or overwrite). "
+			 "Workflow: capture a good framing, save it here, then restore it later with viewport/bookmark_restore to return to the exact viewpoint. "
+			 "Warning: overwrites any existing bookmark at that index without prompting."))
+		.RequiredInteger(TEXT("index"), TEXT("Bookmark slot index (integer >= 0)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("bookmark_restore"),
-		TEXT("Restore a saved viewport bookmark. Effect: teleports camera to the saved view. "
-			 "Params: index (integer). "
-			 "Workflow: call viewport/force_redraw before screenshot/capture so the restored view is visible. "
-			 "Warning: returns error if the slot was never saved."))
-		.RequiredInteger(TEXT("index"), TEXT("Bookmark slot index"))
+		TEXT("Jump the active Level Editor viewport camera to a previously saved bookmark. Returns {success, index}. "
+			 "Params: index (integer >= 0, required; the slot saved earlier with viewport/bookmark_save). "
+			 "Workflow: restore, then screenshot/capture (auto-redraws) to view the recalled framing. "
+			 "Warning: moves the active viewport camera; returns an error if no bookmark was ever saved at that index."))
+		.RequiredInteger(TEXT("index"), TEXT("Bookmark slot index (integer >= 0)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_grid_snap"),
-		TEXT("Enable/disable position grid snap and optionally pick the grid size index. "
-			 "Effect: mutates ULevelEditorViewportSettings. "
-			 "Params: enabled (bool, required), grid_size_index (integer >=0, optional; indexes into Pow2GridSizes/DecimalGridSizes). "
-			 "Workflow: pair with viewport/get_transform to confirm; world/spawn_actor will then snap to the configured grid."))
-		.RequiredBool(TEXT("enabled"), TEXT("true=snap to grid, false=disable"))
-		.OptionalInteger(TEXT("grid_size_index"), TEXT("Index into the grid size array"))
+		TEXT("Enable or disable editor position grid snapping, optionally selecting the grid size. Returns {success, enabled, grid_size_index (the resulting index)}. "
+			 "Params: enabled (bool, required; true snaps to grid, false disables); grid_size_index (integer >= 0, optional; index into the editor's grid-size list -- only applied when provided, negative values are ignored). "
+			 "Workflow: set before drag-placing or nudging actors so transforms snap cleanly; read grid_size_index from the result to confirm. "
+			 "Warning: mutates the global editor viewport settings (ULevelEditorViewportSettings), affecting all viewports and interactive editing, not just this session."))
+		.RequiredBool(TEXT("enabled"), TEXT("true = snap to grid, false = disable snapping"))
+		.OptionalInteger(TEXT("grid_size_index"), TEXT("Index into the editor's grid-size list (>= 0; ignored when omitted or negative)"))
 		.Build());
 
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("toggle_realtime");
-		Tool.Description = TEXT("Toggle viewport realtime mode. Effect: when on, viewport animates; off saves CPU. "
+		Tool.Description = TEXT("Toggle realtime mode on the active Level Editor viewport, flipping its current state. Returns {success, realtime (the new state)}. "
 			"Params: (none). "
-			"Workflow: disable when positioning camera precisely, enable for playback preview.");
+			"Workflow: enable so animations, particles, and shader/world updates keep redrawing for a live preview; disable to save CPU when positioning the camera precisely. "
+			"Warning: this is a toggle, not a set -- it flips the current state, so read realtime in the result. With realtime off the viewport only repaints on demand; screenshot/capture still auto-redraws regardless.");
 		Tools.Add(Tool);
 	}
 
 	Tools.Add(FMCPToolBuilder(TEXT("force_redraw"),
-		TEXT("Synchronously repaint all level editor viewports via GEditor->RedrawLevelEditingViewports(true). "
-			 "Effect: commits any queued camera/view changes to pixels before this call returns. "
-			 "Workflow: chain after python/execute, viewport/set_location, viewport/set_rotation, viewport/focus_actor etc. "
-			 "and before screenshot/capture so the captured frame reflects the new state. "
-			 "Params: invalidate_hit_proxies (bool, optional, default true — rebuild hit proxies for picking)."))
-		.OptionalBool(TEXT("invalidate_hit_proxies"), TEXT("Rebuild hit proxies (default true). Set false for a cheaper repaint when picking isn't needed."))
+		TEXT("Synchronously repaint all Level Editor viewports now, committing any queued camera/view changes to pixels before returning. Returns {success, invalidate_hit_proxies}. "
+			 "Params: invalidate_hit_proxies (bool, optional, default true; also rebuilds hit proxies so screen-picking stays accurate -- set false for a cheaper repaint when picking is not needed). "
+			 "Workflow: chain after a python/execute camera edit (or any tool that warns its repaint is deferred) before a consumer that reads pixels without redrawing itself. "
+			 "Warning: screenshot/capture and screenshot/save already auto-redraw, so you do NOT need this before them; use it for other direct pixel readers or to force an immediate on-screen refresh."))
+		.OptionalBool(TEXT("invalidate_hit_proxies"), TEXT("Rebuild hit proxies for picking (default true). Set false for a cheaper repaint when picking isn't needed."))
 		.Build());
 
 	return Tools;

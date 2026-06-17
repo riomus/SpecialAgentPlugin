@@ -398,49 +398,54 @@ TArray<FMCPToolInfo> FPerformanceService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_statistics"),
-			TEXT("Summarize level performance. Counts actors, sums LOD0 triangle count across all static-mesh components, estimates draw calls as distinct (StaticMesh, Material) pairs, and reports process memory. "
-			     "Params: none. "
-			     "Workflow: run before and after large edits to measure impact. "
-			     "Warning: draw-call estimate ignores instancing and is an upper bound."))
+			TEXT("Summarize editor-world performance in one call: counts actors, sums LOD0 triangles across every static-mesh component, estimates draw calls as distinct (StaticMesh, Material) pairs, and reports process memory. "
+			     "Returns {actor_count, triangle_count_lod0, draw_call_estimate, process_memory_used_bytes, process_memory_peak_bytes}. "
+			     "Params: (none). "
+			     "Workflow: Read-only; run before and after large edits to measure impact. For just triangles use get_triangle_count, for just draw calls use get_draw_call_estimate. "
+			     "Warning: Iterates all editor-world actors (cost scales with actor count); the draw-call estimate ignores ISM/HISM instancing and Nanite, so it is an upper bound; memory figures are whole-process, not per-level."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_actor_bounds"),
-			TEXT("Get axis-aligned bounds of one actor. Returns min/max/center/size/extent computed via GetComponentsBoundingBox. "
-			     "Params: actor_name (string, label), include_non_colliding (bool, optional, default true — include components that don't collide). "
-			     "Workflow: use to size volumes or find placement clearance. "
-			     "Warning: not oriented — rotating the actor invalidates previous values."))
+			TEXT("Get the world-space axis-aligned bounding box of one actor, resolved by its World Outliner label via GetComponentsBoundingBox. "
+			     "Returns {actor_name, bounds:{min, max, center, size, extent}} all in world-space cm. "
+			     "Params: actor_name (string, required; the actor's display label from the World Outliner), include_non_colliding (bool, optional, default true; include components that have no collision). "
+			     "Workflow: Read-only; use to size streaming volumes, feed a box into check_overlaps / get_triangle_count, or find placement clearance. "
+			     "Warning: The box is axis-aligned (not oriented), so a rotated actor yields a looser box; returns success=false if the label is not found or the actor has no valid bounds."))
 		.RequiredString(TEXT("actor_name"),            TEXT("Actor label as shown in the World Outliner"))
 		.OptionalBool  (TEXT("include_non_colliding"), TEXT("Include components without collision in the box; default true"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("check_overlaps"),
-			TEXT("Find actors overlapping a box. Runs World->OverlapMultiByChannel on the WorldStatic channel at the specified transform. Returns actor name, class, and location for each unique actor hit. "
-			     "Params: center ([X,Y,Z] cm world), half_extent ([X,Y,Z] cm, optional, default 50,50,50), rotation ([Pitch,Yaw,Roll] deg, optional, default zero). "
-			     "Workflow: use before spawning to detect collisions; pair with assets/get_bounds to size the query box. "
-			     "Warning: only reports against the WorldStatic channel — dynamic actors may be missed if their collision profile excludes it."))
-		.RequiredVec3(TEXT("center"),      TEXT("Box center as [X, Y, Z] in cm"))
-		.OptionalVec3(TEXT("half_extent"), TEXT("Box half-extent as [X, Y, Z] in cm; default 50,50,50"))
-		.OptionalVec3(TEXT("rotation"),    TEXT("Optional box rotation as [Pitch, Yaw, Roll] in degrees"))
+			TEXT("Find actors whose collision overlaps an oriented box, via World OverlapMultiByChannel on the WorldStatic channel. "
+			     "Returns {any_blocking, count, actors:[{name (label), class, location (world cm)}]} (each overlapped actor reported once). "
+			     "Params: center ([X,Y,Z] world-space cm, required, box center), half_extent ([X,Y,Z] cm half-size, optional, default [50,50,50]), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0]). "
+			     "Workflow: Use before spawning to detect collisions; size the box from get_actor_bounds (extent field). "
+			     "Warning: Read-only query; only tests the WorldStatic channel, so actors whose collision profile excludes WorldStatic (e.g. some movable/dynamic actors) are missed."))
+		.RequiredVec3(TEXT("center"),      TEXT("Box center [X,Y,Z] world cm"))
+		.OptionalVec3(TEXT("half_extent"), TEXT("Box half-extent [X,Y,Z] cm; default [50,50,50]"))
+		.OptionalVec3(TEXT("rotation"),    TEXT("Box rotation [Pitch,Yaw,Roll] degrees; default [0,0,0]"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_triangle_count"),
-			TEXT("Count LOD0 triangles across static meshes. Iterates all actors (optionally filtered to those whose component bounds intersect a box) and sums UStaticMesh::GetNumTriangles(0) across each actor's static-mesh components. "
-			     "Params: bounds_min ([X,Y,Z] cm, optional), bounds_max ([X,Y,Z] cm, optional — both must be provided to enable the filter). "
-			     "Workflow: pair with viewport/get_transform to target a camera frustum, or use get_actor_bounds to derive box limits. "
-			     "Warning: LOD0 is the heaviest LOD; a runtime cost will be lower."))
-		.OptionalVec3(TEXT("bounds_min"), TEXT("Optional AABB min [X,Y,Z] cm; must be paired with bounds_max"))
-		.OptionalVec3(TEXT("bounds_max"), TEXT("Optional AABB max [X,Y,Z] cm; must be paired with bounds_min"))
+			TEXT("Sum LOD0 render triangles across static-mesh components in the editor world, optionally limited to actors whose bounds intersect a box. "
+			     "Returns {triangle_count_lod0, actors_considered, static_mesh_components, bounded}. "
+			     "Params: bounds_min ([X,Y,Z] world-space cm, optional), bounds_max ([X,Y,Z] world-space cm, optional). Supply BOTH to enable the AABB filter; if either is missing the whole level is counted. "
+			     "Workflow: Read-only; derive a box from get_actor_bounds (min/max) to measure a sub-region. "
+			     "Warning: Counts LOD0 (heaviest LOD) only, so this overstates rendered cost at distance and ignores ISM/HISM instance multiplicity; the box test uses each actor's full bounds, so meshes straddling the edge are included."))
+		.OptionalVec3(TEXT("bounds_min"), TEXT("AABB min [X,Y,Z] world cm; must be paired with bounds_max"))
+		.OptionalVec3(TEXT("bounds_max"), TEXT("AABB max [X,Y,Z] world cm; must be paired with bounds_min"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_draw_call_estimate"),
-			TEXT("Estimate draw calls from distinct (StaticMesh, Material) pairs across all static-mesh components. "
-			     "Params: none. "
-			     "Workflow: run post-layout to spot high draw-call scenes — mergeable meshes and shared materials bring the number down. "
-			     "Warning: ignores ISM/HISM instancing, Nanite batching, and particle systems; treat as an upper-bound heuristic."))
+			TEXT("Estimate draw calls as the number of distinct (StaticMesh, Material) pairs across every static-mesh component in the editor world. "
+			     "Returns {draw_call_estimate, static_mesh_components, method}. "
+			     "Params: (none). "
+			     "Workflow: Read-only; run post-layout to spot high draw-call scenes (merging meshes and sharing materials lowers the number). For the same value plus triangles/memory use get_statistics instead. "
+			     "Warning: Ignores ISM/HISM instancing, Nanite batching, skeletal meshes, and particle systems, so it is an upper-bound heuristic, not the real RHI draw-call count."))
 		.Build());
 
 	return Tools;

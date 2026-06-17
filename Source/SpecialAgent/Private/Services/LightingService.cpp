@@ -29,6 +29,7 @@
 #include "Components/LocalLightComponent.h"
 
 #include "EditorBuildUtils.h"
+#include "ScopedTransaction.h"
 
 FLightingService::FLightingService()
 {
@@ -104,6 +105,8 @@ FMCPResponse FLightingService::HandleSpawnLight(const FMCPRequest& Request)
 			return FMCPJson::MakeError(FString::Printf(TEXT("Unknown light_type: %s"), *LightType));
 		}
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: spawn light")));
+
 		FActorSpawnParameters SpawnParams;
 		AActor* NewActor = World->SpawnActor<AActor>(SpawnClass, Location, bHasRotation ? Rotation : FRotator::ZeroRotator, SpawnParams);
 		if (!NewActor)
@@ -141,6 +144,8 @@ FMCPResponse FLightingService::HandleSpawnLight(const FMCPRequest& Request)
 				}
 			}
 		}
+
+		NewActor->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("light_type"), LightType);
@@ -234,8 +239,11 @@ FMCPResponse FLightingService::HandleSetLightIntensity(const FMCPRequest& Reques
 			UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: set_light_intensity failed: %s"), *Err);
 			return FMCPJson::MakeError(Err);
 		}
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set light intensity")));
+		R.BaseComp->Modify();
 		if (R.LightComp)         R.LightComp->SetIntensity(IntensityF);
 		else if (R.SkyLightComp) R.SkyLightComp->SetIntensity(IntensityF);
+		R.BaseComp->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("actor_name"), ActorName);
@@ -280,8 +288,11 @@ FMCPResponse FLightingService::HandleSetLightColor(const FMCPRequest& Request)
 			UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: set_light_color failed: %s"), *Err);
 			return FMCPJson::MakeError(Err);
 		}
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set light color")));
+		R.BaseComp->Modify();
 		if (R.LightComp)         R.LightComp->SetLightColor(Color);
 		else if (R.SkyLightComp) R.SkyLightComp->SetLightColor(Color);
+		R.BaseComp->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("actor_name"), ActorName);
@@ -340,6 +351,8 @@ FMCPResponse FLightingService::HandleSetLightAttenuation(const FMCPRequest& Requ
 			return FMCPJson::MakeError(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
 		}
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set light attenuation")));
+
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("actor_name"), ActorName);
 
@@ -352,12 +365,14 @@ FMCPResponse FLightingService::HandleSetLightAttenuation(const FMCPRequest& Requ
 			{
 				if (bHasInner)
 				{
+					Spot->Modify();
 					Spot->SetInnerConeAngle(static_cast<float>(InnerCone));
 					Result->SetNumberField(TEXT("inner_cone_angle"), InnerCone);
 					bApplied = true;
 				}
 				if (bHasOuter)
 				{
+					Spot->Modify();
 					Spot->SetOuterConeAngle(static_cast<float>(OuterCone));
 					Result->SetNumberField(TEXT("outer_cone_angle"), OuterCone);
 					bApplied = true;
@@ -372,6 +387,7 @@ FMCPResponse FLightingService::HandleSetLightAttenuation(const FMCPRequest& Requ
 			{
 				if (ULocalLightComponent* Local = Cast<ULocalLightComponent>(LightActor->GetLightComponent()))
 				{
+					Local->Modify();
 					Local->SetAttenuationRadius(static_cast<float>(Radius));
 					Result->SetNumberField(TEXT("radius"), Radius);
 					bApplied = true;
@@ -394,6 +410,7 @@ FMCPResponse FLightingService::HandleSetLightAttenuation(const FMCPRequest& Requ
 			return FMCPJson::MakeError(TEXT("No attenuation property applied (wrong light type for given fields)"));
 		}
 
+		Actor->MarkPackageDirty();
 		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: set_light_attenuation '%s' applied"), *ActorName);
 		return Result;
 	};
@@ -434,7 +451,10 @@ FMCPResponse FLightingService::HandleSetLightCastShadows(const FMCPRequest& Requ
 			UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: set_light_cast_shadows failed: %s"), *Err);
 			return FMCPJson::MakeError(Err);
 		}
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set light cast shadows")));
+		R.BaseComp->Modify();
 		R.BaseComp->SetCastShadows(bCast);
+		R.BaseComp->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("actor_name"), ActorName);
@@ -483,61 +503,80 @@ TArray<FMCPToolInfo> FLightingService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("spawn_light"),
-			TEXT("Spawn a point/spot/directional/rect/sky light actor. Returns the new actor label.\n"
-			     "Params: light_type (enum point|spot|directional|rect|sky), location ([X,Y,Z] cm world), rotation ([Pitch,Yaw,Roll] deg), intensity (number, cd for point/spot, lux for directional), color ([R,G,B] 0-1).\n"
-			     "Workflow: After spawning, call lighting/build_lighting to bake statics.\n"
-			     "Warning: Directional lights should be unique per level."))
-		.RequiredEnum  (TEXT("light_type"), {TEXT("point"), TEXT("spot"), TEXT("directional"), TEXT("rect"), TEXT("sky")}, TEXT("Light actor class"))
-		.RequiredVec3  (TEXT("location"),   TEXT("World location [X, Y, Z] in cm"))
-		.OptionalVec3  (TEXT("rotation"),   TEXT("Rotation [Pitch, Yaw, Roll] in degrees"))
-		.OptionalNumber(TEXT("intensity"),  TEXT("Intensity. Units depend on light type."))
-		.OptionalColor (TEXT("color"),      TEXT("RGB color 0-1, default white"))
+			TEXT("Spawn a point/spot/directional/rect/sky light actor into the editor world and apply optional intensity/color. "
+			     "Returns {success, light_type, actor:{actor_label, ...}}; pass the returned actor_label to the lighting/set_* tools. "
+			     "Params: light_type (enum point|spot|directional|rect|sky, required), location (world-space cm [X,Y,Z], required), "
+			     "rotation (degrees [pitch,yaw,roll], optional, default 0; matters for directional/spot, ignored for point/sky), "
+			     "intensity (number, optional: lux for directional, candela for point/spot/rect, unitless scale for sky, default uses the actor's class default), "
+			     "color (linear RGB 0-1 [R,G,B], optional, default white). "
+			     "Workflow: spawn the SkyAtmosphere/SkyLight via the sky/* tools first; rotate a directional light with sky/set_sun_angle; only call lighting/build_lighting if the light is Static/Stationary (Lumen needs no bake). "
+			     "Warning: spawns into the in-memory level only (not saved to disk); keep directional lights to one per level since each extra one re-lights the scene."))
+		.RequiredEnum  (TEXT("light_type"), {TEXT("point"), TEXT("spot"), TEXT("directional"), TEXT("rect"), TEXT("sky")}, TEXT("Light actor class to spawn"))
+		.RequiredVec3  (TEXT("location"),   TEXT("World-space spawn location [X, Y, Z] in cm"))
+		.OptionalVec3  (TEXT("rotation"),   TEXT("Rotation [pitch, yaw, roll] in degrees, default 0 (drives direction for directional/spot)"))
+		.OptionalNumber(TEXT("intensity"),  TEXT("Brightness: lux (directional), candela (point/spot/rect), unitless scale (sky); default = class default"))
+		.OptionalColor (TEXT("color"),      TEXT("Linear RGB color 0-1, default white [1,1,1]"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("set_light_intensity"),
-			TEXT("Set the intensity of an existing light actor by label.\n"
-			     "Params: actor_name (string, actor label), intensity (number, cd for point/spot/rect, lux for directional).\n"
-			     "Workflow: Call lighting/build_lighting afterwards for static lights."))
-		.RequiredString(TEXT("actor_name"), TEXT("Light actor label"))
-		.RequiredNumber(TEXT("intensity"),  TEXT("Intensity value"))
+			TEXT("Set the intensity of an existing light actor (resolved by its editor label). "
+			     "Works on point/spot/directional/rect lights and on SkyLight. Returns {success, actor_name, intensity}. "
+			     "Params: actor_name (string, the actor's editor label, required), "
+			     "intensity (number, required: lux for directional, candela for point/spot/rect, unitless scale for sky). "
+			     "Workflow: spawn via lighting/spawn_light first; only call lighting/build_lighting afterwards if the light is Static/Stationary. "
+			     "Warning: edits the in-memory light component immediately (Lumen/dynamic lights update live) but does not save the level; errors if actor_name is not a light."))
+		.RequiredString(TEXT("actor_name"), TEXT("Editor label of the light actor"))
+		.RequiredNumber(TEXT("intensity"),  TEXT("Intensity: lux (directional), candela (point/spot/rect), unitless scale (sky)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("set_light_color"),
-			TEXT("Set the color of an existing light actor by label.\n"
-			     "Params: actor_name (string), color ([R,G,B] 0-1).\n"
-			     "Workflow: Call lighting/build_lighting afterwards for static lights."))
-		.RequiredString(TEXT("actor_name"), TEXT("Light actor label"))
-		.RequiredColor (TEXT("color"),      TEXT("RGB color 0-1"))
+			TEXT("Set the light color (filter tint) of an existing light actor, resolved by its editor label. "
+			     "Works on point/spot/directional/rect lights and on SkyLight. Returns {success, actor_name, color:[R,G,B]}. "
+			     "Params: actor_name (string, the actor's editor label, required), "
+			     "color (linear RGB 0-1 [R,G,B], required; values may exceed 1 for HDR tints). "
+			     "Workflow: spawn via lighting/spawn_light first; only call lighting/build_lighting afterwards if the light is Static/Stationary. "
+			     "Warning: edits the in-memory light component immediately but does not save the level; errors if actor_name is not a light. This is a color tint, not intensity (use lighting/set_light_intensity for brightness)."))
+		.RequiredString(TEXT("actor_name"), TEXT("Editor label of the light actor"))
+		.RequiredColor (TEXT("color"),      TEXT("Linear RGB color tint 0-1 [R,G,B] (may exceed 1 for HDR)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("set_light_attenuation"),
-			TEXT("Set attenuation radius (point/spot/rect) and/or cone angles (spot) on a light.\n"
-			     "Params: actor_name (string), radius (number, cm, optional), inner_cone_angle (number, deg, spot only), outer_cone_angle (number, deg, spot only). At least one of radius/inner_cone_angle/outer_cone_angle required.\n"
-			     "Warning: Radius is not valid for directional/sky lights."))
-		.RequiredString (TEXT("actor_name"),        TEXT("Light actor label"))
+			TEXT("Set the attenuation radius (point/spot/rect lights) and/or spot-light cone half-angles, on a light resolved by editor label. "
+			     "Returns {success, actor_name} plus whichever of {radius, inner_cone_angle, outer_cone_angle} were actually applied. "
+			     "Params: actor_name (string, the actor's editor label, required), "
+			     "radius (number, cm, optional; attenuation radius for point/spot/rect), "
+			     "inner_cone_angle (number, degrees, optional, SPOT ONLY; cone half-angle where falloff begins), "
+			     "outer_cone_angle (number, degrees, optional, SPOT ONLY; cone half-angle where the beam ends). "
+			     "At least one of radius/inner_cone_angle/outer_cone_angle must be supplied. "
+			     "Workflow: spawn the light via lighting/spawn_light, then narrow/widen its reach here. "
+			     "Warning: radius applies only to local lights (point/spot/rect) and errors on directional/sky; cone angles are silently ignored on non-spot lights; if no field matches the light type the call returns an error. Edits in-memory only (not saved)."))
+		.RequiredString (TEXT("actor_name"),        TEXT("Editor label of the light actor"))
 		.OptionalNumber (TEXT("radius"),            TEXT("Attenuation radius in cm (point/spot/rect only)"))
-		.OptionalNumber (TEXT("inner_cone_angle"),  TEXT("Spot light inner cone half-angle in degrees"))
-		.OptionalNumber (TEXT("outer_cone_angle"),  TEXT("Spot light outer cone half-angle in degrees"))
+		.OptionalNumber (TEXT("inner_cone_angle"),  TEXT("Spot light inner cone half-angle in degrees (spot only)"))
+		.OptionalNumber (TEXT("outer_cone_angle"),  TEXT("Spot light outer cone half-angle in degrees (spot only)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("set_light_cast_shadows"),
-			TEXT("Toggle shadow casting on a light actor.\n"
-			     "Params: actor_name (string, required, light actor label), cast_shadows (bool, required).\n"
-			     "Workflow: pair with lighting/build_lighting to bake the change into static lights.\n"
-			     "Warning: dynamic lights re-evaluate shadows immediately; static lights need a rebuild."))
-		.RequiredString(TEXT("actor_name"),   TEXT("Light actor label"))
-		.RequiredBool  (TEXT("cast_shadows"), TEXT("Enable or disable shadow casting"))
+			TEXT("Toggle shadow casting on a light actor, resolved by its editor label (works on point/spot/directional/rect and SkyLight). "
+			     "Returns {success, actor_name, cast_shadows}. "
+			     "Params: actor_name (string, the actor's editor label, required), cast_shadows (bool, required: true enables, false disables shadows). "
+			     "Workflow: spawn via lighting/spawn_light first; only call lighting/build_lighting afterwards if the light is Static/Stationary. "
+			     "Warning: dynamic/Movable lights re-evaluate shadows live; Static/Stationary lights need a lighting rebuild. Edits in-memory only (not saved); errors if actor_name is not a light."))
+		.RequiredString(TEXT("actor_name"),   TEXT("Editor label of the light actor"))
+		.RequiredBool  (TEXT("cast_shadows"), TEXT("true enables shadow casting, false disables it"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("build_lighting"),
-			TEXT("Trigger an editor lighting build on the current world. Returns when the build is dispatched (bake may continue asynchronously).\n"
-			     "Params: none.\n"
-			     "Warning: Heavy operation. Ensure no PIE is running."))
+			TEXT("Trigger an editor Build Lighting (Lightmass bake) on the current editor world. Returns {success, build_started} when the build is dispatched; "
+			     "the bake itself continues asynchronously, so a true result means started, not finished. "
+			     "Params: (none). "
+			     "Workflow: only useful for Static/Stationary lights with baked lightmaps; spawn/configure lights via lighting/spawn_light and the lighting/set_* tools first. "
+			     "Warning: heavy, game-thread operation that can stall the editor for minutes. With Lumen (the UE5.7 default GI) enabled this is a NO-OP for diffuse global illumination. GPU Lightmass needs DX12/DXR and is unavailable on macOS/Metal. Do not run while PIE is active."))
 		.Build());
 
 	return Tools;

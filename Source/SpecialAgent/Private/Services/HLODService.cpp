@@ -100,6 +100,13 @@ FMCPResponse FHLODService::HandleSetSetting(const FMCPRequest& Request)
 
     int32 Level = 0;
     FMCPJson::ReadInteger(Request.Params, TEXT("level"), Level);
+    // Bound the HLOD level: a negative index reads Setup[-1] out of bounds and
+    // a huge value would grow the setup array unboundedly. UE supports a small
+    // number of HLOD levels in practice.
+    if (Level < 0 || Level > 7)
+    {
+        return InvalidParams(Request.Id, TEXT("'level' must be between 0 and 7"));
+    }
 
     double TransitionScreenSize = -1.0;
     const bool bHasTransition = FMCPJson::ReadNumber(Request.Params, TEXT("transition_screen_size"), TransitionScreenSize);
@@ -162,29 +169,35 @@ TArray<FMCPToolInfo> FHLODService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("build"),
-            TEXT("Build Hierarchical LOD for the current editor world. Invokes FEditorBuildUtils::EditorBuild with BuildHierarchicalLOD. "
-                 "Params: none. "
-                 "Workflow: configure hlod/set_setting first, then build. "
-                 "Warning: long-running operation; blocks the editor until complete and may create many LOD asset packages."))
+            TEXT("Build Hierarchical LOD (clusters source actors into ALODActor proxy meshes) for the current editor world. "
+                 "Returns {success (bool), error (string, only when success is false)}. "
+                 "Params: (none). "
+                 "Workflow: tune clustering with hlod/set_setting first, then build; run hlod/clear before a rebuild if you want a clean slate. "
+                 "Warning: long, blocking game-thread operation that may generate many proxy-mesh asset packages and triggers shader compiles; the world stays dirty until you save the level."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("clear"),
-            TEXT("Destroy all ALODActor instances in the current editor world. "
-                 "Params: none. "
-                 "Workflow: use before re-running hlod/build to force a clean rebuild. "
-                 "Warning: does not remove the generated HLOD proxy assets from the content browser; call hlod/build again or delete by hand."))
+            TEXT("Destroy every ALODActor (built HLOD proxy cluster) in the current editor world. "
+                 "Returns {success (bool), destroyed (integer count of ALODActors removed)}. "
+                 "Params: (none). "
+                 "Workflow: run before hlod/build to force a clean rebuild; safe no-op (destroyed=0) when no HLODs exist. "
+                 "Warning: removes the proxy actors from the level but leaves the generated proxy-mesh assets in the Content Browser; the level stays dirty until you save it."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_setting"),
-            TEXT("Set a HierarchicalLODSetup entry on WorldSettings for a given LOD level. Creates missing entries up to the requested level. "
-                 "Params: level (integer, >=0 HLOD level index), transition_screen_size (number, 0..1 screen ratio), min_actors (integer, minimum cluster size), desired_bound_radius (number, cm). "
-                 "Workflow: call before hlod/build to configure clustering. "
-                 "Warning: modifies AWorldSettings without saving; save the level to persist."))
-        .RequiredInteger(TEXT("level"),                   TEXT("HLOD level index (>=0). New slots are appended if missing."))
-        .OptionalNumber (TEXT("transition_screen_size"),  TEXT("Screen radius at which the LOD actor takes over (0..1)"))
-        .OptionalInteger(TEXT("min_actors"),              TEXT("Minimum number of actors required to build an LODActor cluster"))
+            TEXT("Configure one HierarchicalLODSetup level on the world's AWorldSettings; missing levels up to the requested index are appended. "
+                 "Returns {success, level, transition_screen_size, min_actors, desired_bound_radius} reflecting the entry's current values (unspecified fields keep their existing values). "
+                 "Params: level (integer, REQUIRED, 0..7 inclusive; out-of-range is rejected), "
+                 "transition_screen_size (number, optional, 0..1 fraction of screen at which the cluster LOD takes over), "
+                 "min_actors (integer, optional, minimum actors needed to form a cluster), "
+                 "desired_bound_radius (number, optional, target cluster bounding radius in cm). "
+                 "Workflow: set per level (0 = first proxy tier) before hlod/build; omit a field to leave it untouched. "
+                 "Warning: only marks WorldSettings dirty (Modify), does not save and does not rebuild existing HLODs; save the level to persist and re-run hlod/build to apply."))
+        .RequiredInteger(TEXT("level"),                   TEXT("HLOD level index, 0..7 inclusive (0 = first proxy tier). Out-of-range values are rejected. Missing intermediate levels are created."))
+        .OptionalNumber (TEXT("transition_screen_size"),  TEXT("Screen-size fraction (0..1) at which the cluster's proxy LOD takes over"))
+        .OptionalInteger(TEXT("min_actors"),              TEXT("Minimum number of source actors required to form an LODActor cluster"))
         .OptionalNumber (TEXT("desired_bound_radius"),    TEXT("Desired cluster bounding radius in cm"))
         .Build());
 

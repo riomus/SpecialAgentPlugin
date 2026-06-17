@@ -232,7 +232,7 @@ FMCPResponse FAnimationService::HandleListAnimations(const FMCPRequest& Request)
 
         TArray<FAssetData> Assets;
         AR.GetAssets(Filter, Assets);
-        if (Assets.Num() > MaxResults) Assets.SetNum(MaxResults);
+        if (MaxResults >= 0 && Assets.Num() > MaxResults) Assets.SetNum(MaxResults);
 
         TArray<TSharedPtr<FJsonValue>> Out;
         Out.Reserve(Assets.Num());
@@ -313,55 +313,77 @@ TArray<FMCPToolInfo> FAnimationService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("play"),
-            TEXT("Play an animation asset on a skeletal mesh component via PlayAnimation. "
-                 "Params: actor_name (string), animation_path (string, asset path e.g. /Game/Anims/Run.Run), looping (bool, default true), component_name (string, optional; defaults to first SkeletalMeshComponent). "
-                 "Workflow: use animation/list_animations to discover asset paths. "
-                 "Warning: PlayAnimation overrides the component's AnimBlueprint until SetAnimInstanceClass is called again."))
-        .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .RequiredString(TEXT("animation_path"), TEXT("Asset path to a UAnimSequence"))
+            TEXT("Play an animation asset on a skeletal mesh component via PlayAnimation (puts the component in single-node mode). "
+                 "Returns {actor_name, component, animation_path, looping}. "
+                 "Params: actor_name (string, required, actor editor label), "
+                 "animation_path (string, required, /Game/... object path to a UAnimationAsset - usually a UAnimSequence, "
+                 "e.g. /Game/Anims/Run.Run), looping (bool, optional, default true), "
+                 "component_name (string, optional; targets a specific USkeletalMeshComponent, else the first one found). "
+                 "Workflow: use list_animations to discover asset paths. "
+                 "Warning: single-node mode and set_anim_blueprint are mutually exclusive - this clears any assigned AnimBlueprint "
+                 "until you call set_anim_blueprint again. Plays in PIE, but editor preview does NOT tick by default (the mesh "
+                 "freezes on one frame) - enable update-animation-in-editor on the component to see motion in the editor. "
+                 "State is transient (not serialized)."))
+        .RequiredString(TEXT("actor_name"),     TEXT("Actor editor label"))
+        .RequiredString(TEXT("animation_path"), TEXT("/Game/... object path to a UAnimationAsset (usually a UAnimSequence)"))
         .OptionalBool  (TEXT("looping"),        TEXT("Loop the animation (default true)"))
-        .OptionalString(TEXT("component_name"), TEXT("Specific SkeletalMeshComponent; defaults to first found"))
+        .OptionalString(TEXT("component_name"), TEXT("Specific USkeletalMeshComponent; defaults to first found"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("stop"),
-            TEXT("Stop the current animation on a skeletal mesh component. "
-                 "Params: actor_name (string), component_name (string, optional). "
-                 "Workflow: inverse of animation/play."))
-        .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .OptionalString(TEXT("component_name"), TEXT("Specific SkeletalMeshComponent; defaults to first found"))
+            TEXT("Stop the single-node animation currently playing on a skeletal mesh component. Returns {actor_name, component}. "
+                 "Params: actor_name (string, required, actor editor label), "
+                 "component_name (string, optional; targets a specific USkeletalMeshComponent, else the first one found). "
+                 "Workflow: inverse of the play tool; the component stays in single-node mode (it does not restore an AnimBlueprint). "
+                 "Warning: no-op if nothing is playing; to drive the mesh again use play or set_anim_blueprint."))
+        .RequiredString(TEXT("actor_name"),     TEXT("Actor editor label"))
+        .OptionalString(TEXT("component_name"), TEXT("Specific USkeletalMeshComponent; defaults to first found"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_anim_blueprint"),
-            TEXT("Assign an AnimBlueprint (via its generated class) to a skeletal mesh component using SetAnimInstanceClass. "
-                 "Params: actor_name (string), anim_blueprint_path (string, asset path to UAnimBlueprint; may omit trailing _C), component_name (string, optional). "
-                 "Workflow: precedes gameplay-driven animation via blackboard or variables. "
-                 "Warning: replaces any currently-playing single-asset animation."))
-        .RequiredString(TEXT("actor_name"),          TEXT("Actor label"))
-        .RequiredString(TEXT("anim_blueprint_path"), TEXT("Asset path to the AnimBlueprint"))
-        .OptionalString(TEXT("component_name"),      TEXT("Specific SkeletalMeshComponent; defaults to first found"))
+            TEXT("Assign an AnimBlueprint (via its generated UAnimInstance class) to a skeletal mesh component using "
+                 "SetAnimInstanceClass. Returns {actor_name, component, anim_blueprint_path, anim_instance_class}. "
+                 "Params: actor_name (string, required, actor editor label), "
+                 "anim_blueprint_path (string, required, /Game/... object path to a UAnimBlueprint; a trailing _C generated-class "
+                 "suffix is optional and resolved automatically), "
+                 "component_name (string, optional; targets a specific USkeletalMeshComponent, else the first one found). "
+                 "Workflow: sets up gameplay-driven animation; the AnimBlueprint then runs from its variables/state machine. "
+                 "Warning: mutually exclusive with the play tool's single-node mode - assigning a blueprint clears any single "
+                 "animation being played. Errors if the resolved class is not a UAnimInstance subclass."))
+        .RequiredString(TEXT("actor_name"),          TEXT("Actor editor label"))
+        .RequiredString(TEXT("anim_blueprint_path"), TEXT("/Game/... object path to a UAnimBlueprint (trailing _C optional)"))
+        .OptionalString(TEXT("component_name"),      TEXT("Specific USkeletalMeshComponent; defaults to first found"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("list_animations"),
-            TEXT("Enumerate UAnimSequence assets via the asset registry. "
-                 "Params: path (string, optional package path prefix e.g. /Game/Anims), max_results (integer, default 1000). "
-                 "Workflow: feed results into animation/play or animation/set_pose."))
-        .OptionalString (TEXT("path"),        TEXT("Package path prefix to restrict the search"))
-        .OptionalInteger(TEXT("max_results"), TEXT("Cap on returned entries (default 1000)"))
+            TEXT("Enumerate UAnimSequence assets (including subclasses) from the asset registry without loading them. "
+                 "Returns {animations: [{name, path (object path), class}], count}. "
+                 "Params: path (string, optional, package-path folder to search, e.g. /Game/Anims; searched recursively; "
+                 "omit to scan all paths), max_results (integer, optional, default 1000; a negative value returns all matches uncapped). "
+                 "Workflow: feed an entry's path into the play or set_pose tool's animation_path. "
+                 "Warning: read-only registry query (no assets are loaded or modified); results reflect cached metadata."))
+        .OptionalString (TEXT("path"),        TEXT("Package-path folder to restrict the search (recursive); omit for all paths"))
+        .OptionalInteger(TEXT("max_results"), TEXT("Cap on returned entries (default 1000; negative = uncapped)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_pose"),
-            TEXT("Freeze a skeletal mesh at a single frame of an animation. Plays the asset paused at the requested time. "
-                 "Params: actor_name (string), animation_path (string), time (number, seconds into the animation), component_name (string, optional). "
-                 "Workflow: useful for staging screenshots. "
-                 "Warning: clamps via SetPosition; times past the sequence length produce the last frame."))
-        .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .RequiredString(TEXT("animation_path"), TEXT("Asset path to the animation"))
-        .RequiredNumber(TEXT("time"),           TEXT("Time in seconds into the animation"))
-        .OptionalString(TEXT("component_name"), TEXT("Specific SkeletalMeshComponent; defaults to first found"))
+            TEXT("Freeze a skeletal mesh on a single pose of an animation: plays the asset paused (play rate 0) at the requested time. "
+                 "Returns {actor_name, component, animation_path, time}. "
+                 "Params: actor_name (string, required, actor editor label), "
+                 "animation_path (string, required, /Game/... object path to a UAnimationAsset), "
+                 "time (number, required, seconds into the animation; clamped to [0, sequence length]), "
+                 "component_name (string, optional; targets a specific USkeletalMeshComponent, else the first one found). "
+                 "Workflow: useful for staging a deterministic pose before capturing a screenshot. "
+                 "Warning: enters single-node mode (clears any AnimBlueprint, like play); times past the sequence length resolve to the "
+                 "last frame. Editor preview does not tick by default, so enable update-animation-in-editor on the component to see the pose."))
+        .RequiredString(TEXT("actor_name"),     TEXT("Actor editor label"))
+        .RequiredString(TEXT("animation_path"), TEXT("/Game/... object path to a UAnimationAsset"))
+        .RequiredNumber(TEXT("time"),           TEXT("Time in seconds into the animation (clamped to [0, length])"))
+        .OptionalString(TEXT("component_name"), TEXT("Specific USkeletalMeshComponent; defaults to first found"))
         .Build());
 
     return Tools;

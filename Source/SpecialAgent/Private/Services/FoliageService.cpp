@@ -10,6 +10,7 @@
 
 #include "Editor.h"
 #include "Engine/World.h"
+#include "ScopedTransaction.h"
 
 #include "InstancedFoliageActor.h"
 #include "InstancedFoliage.h"
@@ -124,6 +125,9 @@ FMCPResponse FFoliageService::HandlePaintInArea(const FMCPRequest& Request, cons
 			return FMCPJson::MakeError(TEXT("Could not obtain AInstancedFoliageActor"));
 		}
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: paint foliage in area")));
+		IFA->Modify();
+
 		// Ensure the IFA knows about this foliage type.
 		FFoliageInfo* Info = IFA->FindOrAddMesh(FoliageType);
 		if (!Info)
@@ -158,6 +162,7 @@ FMCPResponse FFoliageService::HandlePaintInArea(const FMCPRequest& Request, cons
 			Ptrs.Add(&Inst);
 		}
 		Info->AddInstances(FoliageType, Ptrs);
+		IFA->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("foliage_type"), FoliageAssetPath);
@@ -226,6 +231,9 @@ FMCPResponse FFoliageService::HandleRemoveFromArea(const FMCPRequest& Request)
 
 		int32 TotalRemoved = 0;
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: remove foliage from area")));
+		IFA->Modify();
+
 		IFA->ForEachFoliageInfo([&](UFoliageType* Type, FFoliageInfo& Info) -> bool
 		{
 			if (Filter && Type != Filter)
@@ -242,6 +250,8 @@ FMCPResponse FFoliageService::HandleRemoveFromArea(const FMCPRequest& Request)
 			}
 			return true;
 		});
+
+		IFA->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetNumberField(TEXT("removed"), TotalRemoved);
@@ -424,11 +434,15 @@ FMCPResponse FFoliageService::HandleAddFoliageType(const FMCPRequest& Request)
 			return FMCPJson::MakeError(TEXT("Could not obtain AInstancedFoliageActor"));
 		}
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add foliage type")));
+		IFA->Modify();
+
 		FFoliageInfo* Info = IFA->FindOrAddMesh(FoliageType);
 		if (!Info)
 		{
 			return FMCPJson::MakeError(TEXT("FindOrAddMesh returned null"));
 		}
+		IFA->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("foliage_type"), FoliageAssetPath);
@@ -450,53 +464,70 @@ TArray<FMCPToolInfo> FFoliageService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("paint_in_area"),
-			TEXT("Paint instanced foliage inside a world-space bounding box. Uniform random placement; Yaw is randomized, Z is taken from box (no ground trace).\n"
-			     "Params: foliage_type (string, asset path to UFoliageType), min ([X,Y,Z] cm), max ([X,Y,Z] cm), count (int, instances to place), seed (int, RNG seed, optional).\n"
-			     "Workflow: Call foliage/add_foliage_type first (optional), then this tool.\n"
-			     "Warning: No terrain snap. For ground-snapped paint, raycast per instance separately."))
-		.RequiredString (TEXT("foliage_type"), TEXT("Asset path to UFoliageType"))
-		.RequiredVec3   (TEXT("min"),          TEXT("Bounding box min corner [X,Y,Z] in cm"))
-		.RequiredVec3   (TEXT("max"),          TEXT("Bounding box max corner [X,Y,Z] in cm"))
-		.RequiredInteger(TEXT("count"),        TEXT("Number of instances to place"))
-		.OptionalInteger(TEXT("seed"),         TEXT("RNG seed (default 0)"))
+			TEXT("Scatter instanced foliage uniformly at random inside a world-space axis-aligned box. "
+			     "Each instance gets a random position inside the box (including a random Z within [min.Z, max.Z]), a random yaw, and unit scale. "
+			     "Returns {success, foliage_type, placed (int actually added), min, max}.\n"
+			     "Params: foliage_type (string, virtual asset path to a UFoliageType e.g. /Game/Foliage/FT_Grass, required), "
+			     "min ([X,Y,Z] world-space cm, required), max ([X,Y,Z] world-space cm, required), "
+			     "count (int, number of instances, must be > 0, required), seed (int, RNG seed, optional, default 0).\n"
+			     "Workflow: pass a UFoliageType asset, not a raw StaticMesh (the type wraps mesh + density/scale/cull). "
+			     "This tool auto-registers the type via InstancedFoliageActor.FindOrAddMesh, so foliage/add_foliage_type is optional. "
+			     "Verify results with foliage/get_density or foliage/list_foliage_types.\n"
+			     "Warning: placement does NOT trace to the ground -- Z is random within the box, so for terrain-snapped paint trace each point first and pass a flat box. "
+			     "Mutates the level's InstancedFoliageActor in memory only; save the level to persist. The same seed reproduces the same layout."))
+		.RequiredString (TEXT("foliage_type"), TEXT("Virtual asset path to a UFoliageType (e.g. /Game/Foliage/FT_Grass)"))
+		.RequiredVec3   (TEXT("min"),          TEXT("Box min corner [X,Y,Z] in world-space cm"))
+		.RequiredVec3   (TEXT("max"),          TEXT("Box max corner [X,Y,Z] in world-space cm"))
+		.RequiredInteger(TEXT("count"),        TEXT("Number of instances to place (must be > 0)"))
+		.OptionalInteger(TEXT("seed"),         TEXT("RNG seed for deterministic placement (default 0)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("remove_from_area"),
-			TEXT("Remove foliage instances inside a bounding box. If foliage_type omitted, removes all types.\n"
-			     "Params: min ([X,Y,Z] cm, required), max ([X,Y,Z] cm, required), foliage_type (string, asset path, optional).\n"
-			     "Workflow: pair with foliage/list_foliage_types to discover registered types before targeted removal.\n"
-			     "Warning: irreversible without an open undo transaction; wrap in utility/begin_transaction first."))
-		.RequiredVec3  (TEXT("min"),          TEXT("Bounding box min corner"))
-		.RequiredVec3  (TEXT("max"),          TEXT("Bounding box max corner"))
-		.OptionalString(TEXT("foliage_type"), TEXT("Asset path; when omitted, removes all types"))
+			TEXT("Delete foliage instances whose origin falls inside a world-space axis-aligned box. "
+			     "When foliage_type is omitted, every registered type in the box is removed; when supplied, only that type. "
+			     "Returns {success, removed (int instance count), foliage_type (only if supplied), min, max}.\n"
+			     "Params: min ([X,Y,Z] world-space cm, required), max ([X,Y,Z] world-space cm, required), "
+			     "foliage_type (string, virtual asset path to a UFoliageType, optional -- omit to remove all types).\n"
+			     "Workflow: call foliage/list_foliage_types first to discover registered type paths before a targeted removal.\n"
+			     "Warning: deletes instances immediately and rebuilds the foliage tree; wrapped in an undo transaction so it is reversible (Ctrl+Z). "
+			     "If nothing has been painted yet (no InstancedFoliageActor) it is a safe no-op returning removed=0. Save the level to persist."))
+		.RequiredVec3  (TEXT("min"),          TEXT("Box min corner [X,Y,Z] in world-space cm"))
+		.RequiredVec3  (TEXT("max"),          TEXT("Box max corner [X,Y,Z] in world-space cm"))
+		.OptionalString(TEXT("foliage_type"), TEXT("Virtual asset path to a UFoliageType; omit to remove all types"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_density"),
-			TEXT("Count foliage instances inside a bounding box and report density per XY cm^2.\n"
-			     "Params: min, max ([X,Y,Z] cm), foliage_type (string, optional).\n"
-			     "Workflow: Use to verify paint_in_area output."))
-		.RequiredVec3  (TEXT("min"),          TEXT("Bounding box min corner"))
-		.RequiredVec3  (TEXT("max"),          TEXT("Bounding box max corner"))
-		.OptionalString(TEXT("foliage_type"), TEXT("Asset path to restrict count"))
+			TEXT("Count foliage instances inside a world-space box and report density over the box's XY footprint. "
+			     "When foliage_type is omitted, all types are counted; when supplied, only that type. "
+			     "Returns {success, count (int), area_xy_cm2 (number, |sizeX*sizeY|), density_per_cm2 (count/area), foliage_type (only if supplied)}.\n"
+			     "Params: min ([X,Y,Z] world-space cm, required), max ([X,Y,Z] world-space cm, required), "
+			     "foliage_type (string, virtual asset path to a UFoliageType, optional -- omit to count all types).\n"
+			     "Workflow: read-only; use to verify paint_in_area / remove_from_area output. Density uses only the XY area, so box Z thickness does not affect it.\n"
+			     "Warning: returns count=0 (not an error) when no InstancedFoliageActor exists yet. density_per_cm2 is per square centimetre, so values are tiny -- multiply by 10000 for per-square-metre."))
+		.RequiredVec3  (TEXT("min"),          TEXT("Box min corner [X,Y,Z] in world-space cm"))
+		.RequiredVec3  (TEXT("max"),          TEXT("Box max corner [X,Y,Z] in world-space cm"))
+		.OptionalString(TEXT("foliage_type"), TEXT("Virtual asset path to a UFoliageType; omit to count all types"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("list_foliage_types"),
-			TEXT("Enumerate UFoliageType entries currently registered on the level's InstancedFoliageActor.\n"
+			TEXT("List every UFoliageType currently registered on the level's InstancedFoliageActor, with live instance counts. "
+			     "Returns {success, count (int, number of types), foliage_types: [{asset_path (virtual path, feed to other foliage tools), name, class, instance_count}]}.\n"
 			     "Params: (none).\n"
-			     "Returns: array of {asset_path, name, class, instance_count}.\n"
-			     "Workflow: call before paint_in_area / remove_from_area to confirm types are registered."))
+			     "Workflow: read-only; call before paint_in_area / remove_from_area / get_density to confirm which type paths exist.\n"
+			     "Warning: returns an empty list (count=0) when nothing has been painted yet -- the InstancedFoliageActor is created lazily on first paint."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("add_foliage_type"),
-			TEXT("Load a UFoliageType asset by path and register it on the level's InstancedFoliageActor. Idempotent.\n"
-			     "Params: foliage_type (string, required, asset path).\n"
-			     "Workflow: must precede paint_in_area for that type; pair with list_foliage_types to verify.\n"
-			     "Warning: re-registering an already-registered type is a no-op (safe)."))
-		.RequiredString(TEXT("foliage_type"), TEXT("Asset path to UFoliageType"))
+			TEXT("Load a UFoliageType asset by path and register it on the level's InstancedFoliageActor (creating that actor if needed) without placing any instances. "
+			     "Returns {success, foliage_type (the registered path)}.\n"
+			     "Params: foliage_type (string, virtual asset path to a UFoliageType e.g. /Game/Foliage/FT_Grass, required).\n"
+			     "Workflow: optional -- paint_in_area already auto-registers the type. Use this to pre-register a type so it shows in list_foliage_types before any paint.\n"
+			     "Warning: idempotent -- re-registering an already-registered type is a safe no-op. Errors if the path cannot be loaded as a UFoliageType. Save the level to persist the registration."))
+		.RequiredString(TEXT("foliage_type"), TEXT("Virtual asset path to a UFoliageType (e.g. /Game/Foliage/FT_Grass)"))
 		.Build());
 
 	return Tools;

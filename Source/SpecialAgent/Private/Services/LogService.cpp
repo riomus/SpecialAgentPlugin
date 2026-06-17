@@ -141,30 +141,33 @@ TArray<FMCPToolInfo> FLogService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("tail"),
-        TEXT("Return the last N log messages from the in-memory ring buffer. "
-             "Params: count (integer, 1..500, default 100). "
-             "Workflow: call after operations to capture diagnostics; pair with log/clear to reset. "
-             "Warning: buffer holds up to 500 entries and starts when the plugin loads."))
-        .OptionalInteger(TEXT("count"), TEXT("Max entries to return (1..500, default 100)."))
+        TEXT("Return the most recent log lines captured by this plugin's in-memory ring buffer, oldest-first. Returns {entries:[{timestamp (ISO-8601 UTC), category, verbosity, message}], count}. "
+             "Params: count (integer, max entries to return, 1..500, clamped, default 100). "
+             "Workflow: call after running an operation (e.g. python/execute) to read what it logged; clear first with log/clear to isolate one run's output. "
+             "Warning: the buffer only holds the last 500 entries and only captures lines emitted after the plugin loaded — older or pre-load output is gone; this reads the plugin's ring, not the on-disk log file."))
+        .OptionalInteger(TEXT("count"), TEXT("Max entries to return (1..500, clamped, default 100)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("clear"),
-        TEXT("Clear the in-memory log ring buffer. "
+        TEXT("Empty this plugin's in-memory log ring buffer so the next log/tail returns only output from after this call. Returns {success}. "
              "Params: (none). "
-             "Workflow: call before a sequence you want to isolate, then log/tail to read it."))
+             "Workflow: clear -> run the operation you want to diagnose -> log/tail to read just that run's lines. "
+             "Warning: only clears the plugin's ring buffer; the editor's Output Log panel and the on-disk log file are untouched."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_categories"),
-        TEXT("List a curated set of common log categories. "
+        TEXT("List a curated set of common UE log category names (LogTemp, LogEngine, LogPython, LogBlueprint, etc.). Returns {categories:[name]}. "
              "Params: (none). "
-             "Workflow: use before log/set_category_verbosity."))
+             "Workflow: pick a name here to pass to log/set_category_verbosity, then read results with log/tail. "
+             "Warning: this is a fixed hand-picked list, not the full registry — many more categories exist and any valid registered name still works with set_category_verbosity."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_category_verbosity"),
-        TEXT("Set the verbosity level of a log category. "
-             "Params: category (string, required); verbosity (enum: NoLogging, Fatal, Error, Warning, Display, Log, Verbose, VeryVerbose). "
-             "Warning: unknown categories return an error."))
-        .RequiredString(TEXT("category"), TEXT("Log category name (e.g. 'LogTemp')."))
+        TEXT("Set the runtime verbosity threshold of a log category (via the editor 'log <Category> <Verbosity>' console command). Returns {category, verbosity, executed, any_category_affected, and either 'affected' (the changed rows) or 'advisory'}. "
+             "Params: category (string, required, case-insensitive category name e.g. 'LogTemp'); verbosity (enum NoLogging|Fatal|Error|Warning|Display|Log|Verbose|VeryVerbose, required, the threshold to apply). "
+             "Workflow: list_categories to find a name -> set_category_verbosity (e.g. raise to VeryVerbose) -> trigger the operation -> log/tail to read the now-visible lines. "
+             "Warning: an unknown verbosity string is rejected as invalid params, but an unknown/unchanged CATEGORY does NOT error — it returns success with any_category_affected=false and an 'advisory' explaining the name did not match or was already at that level; changes apply for the editor session, not persisted."))
+        .RequiredString(TEXT("category"), TEXT("Log category name, case-insensitive (e.g. 'LogTemp')."))
         .RequiredEnum(TEXT("verbosity"),
             {TEXT("NoLogging"), TEXT("Fatal"), TEXT("Error"), TEXT("Warning"),
              TEXT("Display"), TEXT("Log"), TEXT("Verbose"), TEXT("VeryVerbose")},

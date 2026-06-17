@@ -3,6 +3,7 @@
 #include "Services/ScreenshotService.h"
 #include "GameThreadDispatcher.h"
 #include "MCPCommon/MCPRequestContext.h"
+#include "MCPCommon/MCPViewport.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "EditorViewportClient.h"
@@ -31,27 +32,37 @@ TArray<FMCPToolInfo> FScreenshotService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("capture");
-		Tool.Description = TEXT("Capture the active editor viewport as a base64 image. Returns {base64_data, mimeType, width, height} for inline vision. "
-			"Params: width (integer px, default 1280), height (integer px, default 720), quality (integer 1-99 JPEG or 100 PNG, default 85). "
-			"Workflow: ALWAYS call first for visual feedback, then estimate (x,y) in 0-1 space for viewport/trace_from_screen or viewport/select_at_screen; call again after edits to verify. "
-			"IMPORTANT: if you just changed the viewport camera (python/execute that writes camera data, viewport/set_location, viewport/set_rotation, viewport/focus_actor, viewport/orbit_around_actor, viewport/set_fov, viewport/bookmark_restore, viewport/set_view_mode, viewport/toggle_game_view) the pixels have not yet been repainted — call viewport/force_redraw first, otherwise the capture still shows the previous frame. "
-			"Warning: large sizes produce huge base64 payloads; prefer defaults.");
-		
+		Tool.Description = TEXT("Capture the Level Editor viewport as an in-memory image for inline vision (no file written). "
+			"Returns {success, width, height, quality, data_size} plus {base64_data, mimeType} when return_base64 is true (mimeType is image/jpeg for quality 1-99, image/png for quality 100). "
+			"Params: width (integer px, default 1280); height (integer px, default 720); quality (integer 1-100, JPEG below 100 else lossless PNG, default 85); return_base64 (bool, default true; false omits base64_data and just reports size); force_redraw (bool, default true). "
+			"Workflow: ALWAYS call first for visual feedback, then estimate (x,y) in 0-1 screen space for viewport/trace_from_screen or utility/select_at_screen; call again after edits to verify. "
+			"Warning: this auto-redraws by default (synchronously repaints the Level Editor viewport before reading pixels), so the frame already reflects the latest camera/scene state after set_location/set_rotation/focus_actor/orbit/set_fov/set_view_mode/toggle_game_view or python camera edits -- a separate viewport/force_redraw is NOT needed; pass force_redraw:false only to skip the repaint for speed. Always targets the Level Editor viewport (never a focused material/Niagara/preview window). Large width/height produce huge base64 payloads, so prefer the defaults.");
+
 		TSharedPtr<FJsonObject> WidthParam = MakeShared<FJsonObject>();
 		WidthParam->SetStringField(TEXT("type"), TEXT("number"));
 		WidthParam->SetStringField(TEXT("description"), TEXT("Image width in pixels (default: 1280)"));
 		Tool.Parameters->SetObjectField(TEXT("width"), WidthParam);
-		
+
 		TSharedPtr<FJsonObject> HeightParam = MakeShared<FJsonObject>();
 		HeightParam->SetStringField(TEXT("type"), TEXT("number"));
 		HeightParam->SetStringField(TEXT("description"), TEXT("Image height in pixels (default: 720)"));
 		Tool.Parameters->SetObjectField(TEXT("height"), HeightParam);
-		
+
 		TSharedPtr<FJsonObject> QualityParam = MakeShared<FJsonObject>();
 		QualityParam->SetStringField(TEXT("type"), TEXT("number"));
 		QualityParam->SetStringField(TEXT("description"), TEXT("JPEG quality 1-99, or 100 for lossless PNG (default: 85)"));
 		Tool.Parameters->SetObjectField(TEXT("quality"), QualityParam);
-		
+
+		TSharedPtr<FJsonObject> Base64Param = MakeShared<FJsonObject>();
+		Base64Param->SetStringField(TEXT("type"), TEXT("boolean"));
+		Base64Param->SetStringField(TEXT("description"), TEXT("Include the encoded image as base64_data/mimeType in the result (default: true). Set false to only report width/height/data_size without the payload."));
+		Tool.Parameters->SetObjectField(TEXT("return_base64"), Base64Param);
+
+		TSharedPtr<FJsonObject> RedrawParam = MakeShared<FJsonObject>();
+		RedrawParam->SetStringField(TEXT("type"), TEXT("boolean"));
+		RedrawParam->SetStringField(TEXT("description"), TEXT("Repaint the viewport before reading pixels so the frame is fresh (default: true). Set false to skip for speed."));
+		Tool.Parameters->SetObjectField(TEXT("force_redraw"), RedrawParam);
+
 		Tools.Add(Tool);
 	}
 	
@@ -59,18 +70,32 @@ TArray<FMCPToolInfo> FScreenshotService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("save");
-		Tool.Description = TEXT("Capture the active editor viewport and write it to a PNG file on disk. Returns {file_path, width, height, file_size}. "
-			"Params: file_path (string, absolute path, required), width (integer px, default 1920), height (integer px, default 1080). "
-			"Workflow: use instead of capture when you want a persisted artifact rather than inline base64. "
-			"IMPORTANT: if you just changed the viewport camera, call viewport/force_redraw first so the captured frame reflects the new view (same caveat as screenshot/capture). "
-			"Warning: file_path parent directory must exist; existing files are overwritten.");
-		
+		Tool.Description = TEXT("Capture the Level Editor viewport and write it to a lossless PNG file on disk. Returns {success, file_path, width, height, file_size}. "
+			"Params: file_path (string, absolute OS path, required); width (integer px, default 1920); height (integer px, default 1080); force_redraw (bool, default true). "
+			"Workflow: use instead of screenshot/capture when you want a persisted PNG artifact rather than inline base64; pass an absolute OS path (NOT a /Game virtual path). "
+			"Warning: this auto-redraws by default (synchronously repaints the Level Editor viewport before reading pixels), so the saved frame reflects the latest camera/scene state and a separate viewport/force_redraw is NOT needed. The parent directory of file_path must already exist; an existing file at file_path is overwritten without prompting.");
+
 		TSharedPtr<FJsonObject> FileParam = MakeShared<FJsonObject>();
 		FileParam->SetStringField(TEXT("type"), TEXT("string"));
-		FileParam->SetStringField(TEXT("description"), TEXT("File path to save screenshot"));
+		FileParam->SetStringField(TEXT("description"), TEXT("Absolute OS file path to save the PNG screenshot to (parent directory must exist; not a /Game virtual path)"));
 		Tool.Parameters->SetObjectField(TEXT("file_path"), FileParam);
 		Tool.RequiredParams.Add(TEXT("file_path"));
-		
+
+		TSharedPtr<FJsonObject> SaveWidthParam = MakeShared<FJsonObject>();
+		SaveWidthParam->SetStringField(TEXT("type"), TEXT("number"));
+		SaveWidthParam->SetStringField(TEXT("description"), TEXT("Image width in pixels (default: 1920)"));
+		Tool.Parameters->SetObjectField(TEXT("width"), SaveWidthParam);
+
+		TSharedPtr<FJsonObject> SaveHeightParam = MakeShared<FJsonObject>();
+		SaveHeightParam->SetStringField(TEXT("type"), TEXT("number"));
+		SaveHeightParam->SetStringField(TEXT("description"), TEXT("Image height in pixels (default: 1080)"));
+		Tool.Parameters->SetObjectField(TEXT("height"), SaveHeightParam);
+
+		TSharedPtr<FJsonObject> SaveRedrawParam = MakeShared<FJsonObject>();
+		SaveRedrawParam->SetStringField(TEXT("type"), TEXT("boolean"));
+		SaveRedrawParam->SetStringField(TEXT("description"), TEXT("Repaint the viewport before reading pixels (default: true)."));
+		Tool.Parameters->SetObjectField(TEXT("force_redraw"), SaveRedrawParam);
+
 		Tools.Add(Tool);
 	}
 	
@@ -92,6 +117,7 @@ FMCPResponse FScreenshotService::HandleCapture(const FMCPRequest& Request)
 	int32 Height = 720;
 	int32 Quality = 85;  // JPEG quality (1-100), use 100 for PNG
 	bool bReturnBase64 = true;
+	bool bForceRedraw = true;  // repaint the viewport before reading so the frame is fresh
 
 	if (Request.Params.IsValid())
 	{
@@ -99,31 +125,25 @@ FMCPResponse FScreenshotService::HandleCapture(const FMCPRequest& Request)
 		Request.Params->TryGetNumberField(TEXT("height"), Height);
 		Request.Params->TryGetNumberField(TEXT("quality"), Quality);
 		Request.Params->TryGetBoolField(TEXT("return_base64"), bReturnBase64);
+		Request.Params->TryGetBoolField(TEXT("force_redraw"), bForceRedraw);
 	}
-	
+
 	// Clamp quality to valid range
 	Quality = FMath::Clamp(Quality, 1, 100);
 
 	// Capture on game thread
-	auto CaptureTask = [Width, Height, Quality, bReturnBase64]() -> TSharedPtr<FJsonObject>
+	auto CaptureTask = [Width, Height, Quality, bReturnBase64, bForceRedraw]() -> TSharedPtr<FJsonObject>
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-		// Get the active viewport
-		FViewport* Viewport = GEditor->GetActiveViewport();
+		// Resolve the level-editor viewport (never a focused material/preview
+		// viewport) and, by default, force a synchronous repaint so the frame
+		// reflects any queued camera/scene change rather than a stale backbuffer.
+		FViewport* Viewport = FMCPViewport::GetViewportForCapture(bForceRedraw);
 		if (!Viewport)
 		{
 			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport found"));
-			return Result;
-		}
-
-		// Get viewport client
-		FViewportClient* ViewportClient = Viewport->GetClient();
-		if (!ViewportClient)
-		{
-			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No viewport client found"));
+			Result->SetStringField(TEXT("error"), TEXT("No Level Editor viewport available to capture"));
 			return Result;
 		}
 
@@ -221,20 +241,22 @@ FMCPResponse FScreenshotService::HandleSave(const FMCPRequest& Request)
 
 	int32 Width = 1920;
 	int32 Height = 1080;
+	bool bForceRedraw = true;
 	Request.Params->TryGetNumberField(TEXT("width"), Width);
 	Request.Params->TryGetNumberField(TEXT("height"), Height);
+	Request.Params->TryGetBoolField(TEXT("force_redraw"), bForceRedraw);
 
 	// Capture and save on game thread
-	auto SaveTask = [Width, Height, FilePath]() -> TSharedPtr<FJsonObject>
+	auto SaveTask = [Width, Height, FilePath, bForceRedraw]() -> TSharedPtr<FJsonObject>
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-		// Get the active viewport
-		FViewport* Viewport = GEditor->GetActiveViewport();
+		// Resolve the level-editor viewport and force a fresh frame (see capture).
+		FViewport* Viewport = FMCPViewport::GetViewportForCapture(bForceRedraw);
 		if (!Viewport)
 		{
 			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport found"));
+			Result->SetStringField(TEXT("error"), TEXT("No Level Editor viewport available to capture"));
 			return Result;
 		}
 

@@ -33,6 +33,10 @@ public:
      *  work items and signals subsequent Enqueue calls to fail fast. */
     void Shutdown();
 
+    /** True once Shutdown() has been requested. Lets blocking waiters bail
+     *  out promptly during editor exit instead of spinning to their timeout. */
+    bool IsShuttingDown() const { return bShuttingDown.load(std::memory_order_acquire); }
+
     template<typename ReturnType>
     TFuture<ReturnType> Enqueue(TFunction<ReturnType()> Task)
     {

@@ -402,6 +402,27 @@ FMCPResponse FReflectionService::HandleCallFunction(const FMCPRequest& Request)
 				*FunctionName, *Target->GetClass()->GetName()));
 		}
 
+		// Only allow safe, directly-callable functions. Invoking an arbitrary
+		// UFunction (net RPC, latent/async, delegate signature, ubergraph stub)
+		// through a synthetic stack frame can hit check()s deep in engine code
+		// that abort the whole editor — and ProcessEvent cannot guard against
+		// that. Require an explicitly-callable function and reject the unsafe
+		// classes outright.
+		const EFunctionFlags FFlags = Function->FunctionFlags;
+		const bool bCallable = (FFlags & (FUNC_BlueprintCallable | FUNC_Exec)) != 0;
+		const bool bUnsafe   = (FFlags & (FUNC_Net | FUNC_NetRequest | FUNC_NetResponse | FUNC_Delegate | FUNC_UbergraphFunction)) != 0;
+		if (!bCallable || bUnsafe)
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Function '%s' is not safely callable: requires BlueprintCallable or Exec and must not be a net/delegate/ubergraph function"),
+				*FunctionName));
+		}
+		if (Function->HasMetaData(TEXT("Latent")))
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Function '%s' is latent/async and cannot be invoked synchronously via call_function"), *FunctionName));
+		}
+
 		// Enforce primitive-only policy on every Parm.
 		TArray<FProperty*> ParamProps;
 		FProperty* ReturnProp = nullptr;
@@ -496,51 +517,49 @@ TArray<FMCPToolInfo> FReflectionService::GetAvailableTools() const
 	TArray<FMCPToolInfo> Tools;
 
 	Tools.Add(FMCPToolBuilder(TEXT("list_classes"),
-		TEXT("List UClass objects currently loaded in the editor, optionally filtered by prefix or base class.\n"
-			"Params: prefix (string, optional, match at start of class name), base_class (string, optional, UClass name/path — descendants only), "
-			"max_results (integer, optional, default 500).\n"
-			"Workflow: list_classes -> get_class_info -> list_properties/list_functions.\n"
-			"Warning: Iterates the full UObject class set — avoid running without filters on large projects."))
+		TEXT("List native and Blueprint UClass objects currently loaded in the editor, optionally filtered by name prefix and/or base class. Returns {classes:[{name, path, super}], count}.\n"
+			"Params: prefix (string, optional, case-sensitive StartsWith match on the class name — note class names have no U/A/F prefix here, e.g. 'StaticMesh'); base_class (string, optional, short name or path of a UClass — only its descendants are returned; errors if not found); max_results (integer, optional, default 500, caps the result).\n"
+			"Workflow: list_classes -> reflection/get_class_info -> reflection/list_properties / reflection/list_functions.\n"
+			"Warning: iterates the entire loaded UClass set; an unfiltered call on a large project is slow and hits the max_results cap silently — always pass a prefix or base_class."))
 		.OptionalString(TEXT("prefix"), TEXT("Filter by class-name prefix (case-sensitive)"))
 		.OptionalString(TEXT("base_class"), TEXT("Only return descendants of this UClass"))
 		.OptionalInteger(TEXT("max_results"), TEXT("Cap on returned classes (default 500)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("get_class_info"),
-		TEXT("Describe a UClass: name, super class, package, counts of inherited properties and functions.\n"
-			"Params: class_name (string, UClass short name or path).\n"
-			"Workflow: get_class_info -> list_properties / list_functions for the detail.\n"
-			"Warning: Counts include inherited members — call list_properties with include_inherited=false for the own-only subset."))
+		TEXT("Describe one UClass. Returns {name, path, super, package, property_count, function_count, is_native}.\n"
+			"Params: class_name (string, required, UClass short name like 'Actor' or full path; resolved by exact name match then path lookup).\n"
+			"Workflow: get_class_info -> reflection/list_properties / reflection/list_functions for the actual members.\n"
+			"Warning: property_count and function_count INCLUDE inherited members; call list_properties/list_functions with include_inherited=false for the own-declared subset. Errors if the class is not loaded."))
 		.RequiredString(TEXT("class_name"), TEXT("UClass short name or path"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("list_properties"),
-		TEXT("List FProperty fields on a UClass with type strings.\n"
-			"Params: class_name (string, UClass short name or path), include_inherited (boolean, optional, default true).\n"
-			"Workflow: list_properties -> call_function / blueprint/set_default_value.\n"
-			"Warning: FProperty::GetCPPType() strings may differ from source declarations (e.g., TArray wrappers)."))
+		TEXT("List the FProperty fields on a UClass with their C++ type strings. Returns {properties:[{name, type, owner (declaring class)}], count}.\n"
+			"Params: class_name (string, required, UClass short name or path); include_inherited (boolean, optional, default true — set false for own-declared properties only).\n"
+			"Workflow: list_properties -> reflection/call_function or blueprint/set_default_value using the property name.\n"
+			"Warning: 'type' comes from FProperty::GetCPPType() and may differ from the source declaration (e.g. TArray<...> wrappers, enum underlying types). Errors if the class is not loaded."))
 		.RequiredString(TEXT("class_name"), TEXT("UClass short name or path"))
 		.OptionalBool(TEXT("include_inherited"), TEXT("Include parent-class properties (default true)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("list_functions"),
-		TEXT("List UFunction members on a UClass with signature strings.\n"
-			"Params: class_name (string, UClass short name or path), include_inherited (boolean, optional, default true).\n"
-			"Workflow: list_functions -> call_function (if signature is primitive-only).\n"
-			"Warning: Includes non-callable internals (RPCs, delegate signatures) — inspect flags via Unreal docs."))
+		TEXT("List the UFunction members on a UClass with reconstructed signatures. Returns {functions:[{name, signature, num_params, owner (declaring class)}], count}.\n"
+			"Params: class_name (string, required, UClass short name or path); include_inherited (boolean, optional, default true — set false for own-declared functions only).\n"
+			"Workflow: list_functions -> reflection/call_function, but only functions that are BlueprintCallable/Exec and primitive-only are actually invokable there.\n"
+			"Warning: this lists ALL UFunctions including non-invokable internals (net RPCs, delegate signatures, ubergraph/latent stubs); call_function will reject those. Errors if the class is not loaded."))
 		.RequiredString(TEXT("class_name"), TEXT("UClass short name or path"))
 		.OptionalBool(TEXT("include_inherited"), TEXT("Include parent-class functions (default true)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("call_function"),
-		TEXT("Invoke a UFunction on a live UObject via ProcessEvent. Primitive args only: bool, int, float, string, name, FVector.\n"
-			"Params: object_path (string, full UObject path — e.g., /Game/Map.Map:PersistentLevel.MyActor), "
-			"function_name (string, UFunction name), args (array of primitives, optional, stringified per UE ImportText rules).\n"
-			"Workflow: list_functions -> call_function -> inspect return_value.\n"
-			"Warning: Returns error if any parameter is a struct other than FVector, or an object/array/map — use blueprint/set_default_value or Python for complex calls."))
+		TEXT("Invoke a UFunction on a live UObject via ProcessEvent with primitive args only (bool, int, float, string, FName, FVector). Returns {object_path, function_name, return_value (text-exported, only if the function returns a primitive)}.\n"
+			"Params: object_path (string, required, full UObject path — e.g. /Game/Map.Map:PersistentLevel.MyActor — resolved in-memory then via LoadObject); function_name (string, required, exact UFunction name); args (array, optional, one entry per non-return parameter in declared order — numbers/bools/strings, or a 3-element [X,Y,Z] cm array marshalled to FVector via UE ImportText).\n"
+			"Workflow: reflection/list_functions to read the signature -> call_function -> inspect return_value.\n"
+			"Warning: only functions flagged BlueprintCallable or Exec are allowed; net (RPC), delegate, ubergraph, and latent/async functions are rejected to avoid editor-aborting check()s. Any struct other than FVector, or object/array/map params, are rejected (use blueprint/set_default_value or python/execute instead). arg count must exactly match the parameter count or it errors."))
 		.RequiredString(TEXT("object_path"), TEXT("Full UObject path of the call target"))
 		.RequiredString(TEXT("function_name"), TEXT("UFunction name to invoke"))
-		.OptionalArrayOfString(TEXT("args"), TEXT("Array of primitive args (bool/int/float/string/name/[X,Y,Z])"))
+		.OptionalArrayOfString(TEXT("args"), TEXT("One entry per non-return parameter, in declared order: bool/int/float/string/FName values, or a 3-element [X,Y,Z] array (cm) marshalled to an FVector."))
 		.Build());
 
 	return Tools;

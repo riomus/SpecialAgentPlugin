@@ -23,60 +23,74 @@ TArray<FMCPToolInfo> FProjectService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("get_setting"),
-        TEXT("Read a string setting from DefaultGame.ini (GGameIni). "
-             "Params: section (string, required, e.g. '/Script/EngineSettings.GameMapsSettings'); key (string, required). "
-             "Workflow: pair with project/set_setting to round-trip. "
-             "Warning: returns found=false if key missing."))
+        TEXT("Read a single string config value from the game INI hierarchy (GGameIni, backed by DefaultGame.ini). "
+             "Returns {success, section, key, found, value}. "
+             "Params: section (string, required, INI section header e.g. '/Script/EngineSettings.GameMapsSettings'); key (string, required, INI key name). "
+             "Workflow: pair with project/set_setting to round-trip a value. "
+             "Warning: read-only; returns found=false (and empty value) when the key is absent rather than erroring."))
         .RequiredString(TEXT("section"), TEXT("INI section header (e.g. '/Script/EngineSettings.GameMapsSettings')."))
         .RequiredString(TEXT("key"), TEXT("INI key name."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_setting"),
-        TEXT("Write a string setting to DefaultGame.ini and flush to disk. "
-             "Params: section (string, required); key (string, required); value (string, required). "
-             "Workflow: verify with project/get_setting. "
-             "Warning: some settings are cached by subsystems and may require an editor restart."))
+        TEXT("Write a string config value into the game INI hierarchy and flush it to DefaultGame.ini on disk. "
+             "Returns {success, section, key, value}. "
+             "Params: section (string, required, INI section header); key (string, required, INI key name); value (string, required, empty string allowed). "
+             "Workflow: verify the write with project/get_setting afterwards. "
+             "Warning: persists to disk immediately; many settings are cached by subsystems at startup, so changes often require an editor restart to take effect."))
         .RequiredString(TEXT("section"), TEXT("INI section header."))
         .RequiredString(TEXT("key"), TEXT("INI key name."))
-        .RequiredString(TEXT("value"), TEXT("New value (string)."))
+        .RequiredString(TEXT("value"), TEXT("New value (string; empty string allowed)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_version"),
-        TEXT("Get the current Unreal Engine version. Returns {version} as the string form of FEngineVersion::Current (e.g. '5.7.0-...'). "
+        TEXT("Get the running Unreal Engine version. "
+             "Returns {success, version, major, minor, patch} where version is the full FEngineVersion::Current string (e.g. '5.7.0-...') and major/minor/patch are integers. "
              "Params: (none). "
-             "Workflow: useful for guarding scripts that call version-specific APIs."))
+             "Workflow: check major/minor before calling version-specific APIs (this codebase targets 5.7). "
+             "Warning: read-only; reports the editor build, not the project's target version."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_plugins"),
-        TEXT("List all discovered plugins with their enabled state. "
+        TEXT("List every discovered plugin with its enabled and mounted state. "
+             "Returns {success, count, plugins:[{name, friendly_name, enabled, mounted, base_dir}]} where name matches IPlugin::GetName. "
              "Params: (none). "
-             "Workflow: feed plugin names to project/enable_plugin or project/disable_plugin."))
+             "Workflow: feed a plugin's 'name' to project/enable_plugin or project/disable_plugin. "
+             "Warning: read-only; lists discovered plugins on disk, which is a superset of those enabled in the .uproject."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("enable_plugin"),
-        TEXT("Enable a plugin in the current project (.uproject). "
-             "Params: name (string, required, plugin name, not path). "
-             "Warning: requires an editor restart to take effect for most plugins."))
+        TEXT("Enable a plugin in the current project and persist the change to the .uproject file. "
+             "Returns {success, name, enable:true, saved, note} (save_error present if writing the .uproject failed). "
+             "Params: name (string, required, plugin name matching IPlugin::GetName, not a path). "
+             "Workflow: call project/list_plugins first to get the exact 'name'. "
+             "Warning: writes the .uproject to disk; most plugins do NOT load until the editor is restarted."))
         .RequiredString(TEXT("name"), TEXT("Plugin name (matches IPlugin::GetName)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("disable_plugin"),
-        TEXT("Disable a plugin in the current project (.uproject). "
-             "Params: name (string, required). "
-             "Warning: requires an editor restart to fully unload."))
-        .RequiredString(TEXT("name"), TEXT("Plugin name."))
+        TEXT("Disable a plugin in the current project and persist the change to the .uproject file. "
+             "Returns {success, name, enable:false, saved, note} (save_error present if writing the .uproject failed). "
+             "Params: name (string, required, plugin name matching IPlugin::GetName, not a path). "
+             "Workflow: call project/list_plugins first to get the exact 'name'. "
+             "Warning: writes the .uproject to disk; the plugin is not fully unloaded until the editor is restarted."))
+        .RequiredString(TEXT("name"), TEXT("Plugin name (matches IPlugin::GetName)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_content_path"),
-        TEXT("Get the absolute filesystem path of the project's Content/ directory. Returns {path}. "
+        TEXT("Get the absolute OS filesystem path of the project's Content/ directory. "
+             "Returns {success, content_path} (an absolute OS path, NOT a /Game/ virtual path). "
              "Params: (none). "
-             "Workflow: use to resolve /Game/... asset paths to on-disk locations for python/execute_file or Mount points."))
+             "Workflow: use to map a virtual /Game/... asset path to an on-disk location for python/execute_file or mount points. "
+             "Warning: read-only; the /Game/ mount maps to this folder, but the two path forms are not interchangeable."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_project_path"),
-        TEXT("Get the absolute filesystem path of the active .uproject file. Returns {path}. "
+        TEXT("Get the absolute OS filesystem paths of the active .uproject file and its containing project directory. "
+             "Returns {success, project_file, project_dir} (both absolute OS paths). "
              "Params: (none). "
-             "Workflow: combine with assets/* tools when scripting out-of-editor tooling."))
+             "Workflow: combine with project/get_content_path when scripting out-of-editor tooling. "
+             "Warning: read-only; these are OS paths, not /Game/ virtual paths."))
         .Build());
 
     return Tools;

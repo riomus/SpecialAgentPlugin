@@ -331,36 +331,45 @@ TArray<FMCPToolInfo> FNavigationService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("rebuild_navmesh"),
-		TEXT("Rebuild the navigation mesh for the current editor world. Invokes FEditorBuildUtils::EditorBuild (NAME_BuildAIPaths) and falls back to UNavigationSystemV1::Build.\n"
-		     "Params: (none).\n"
-		     "Workflow: Call after adding or modifying ANavMeshBoundsVolume, geometry, or agent settings.\n"
-		     "Warning: Build is synchronous from the request's perspective but remaining_build_tasks may be non-zero on return for async tiles."))
+		TEXT("Rebuild the navigation mesh for the current editor world, then poll until build tasks drain (300s cap). "
+		     "Invokes FEditorBuildUtils::EditorBuild (FBuildOptions::BuildAIPaths) and falls back to UNavigationSystemV1::Build. "
+		     "Returns {success, editor_build_invoked:bool, remaining_build_tasks:int, timed_out:bool (only when it times out)}. "
+		     "Params: (none). "
+		     "Workflow: a NavMeshBoundsVolume + generated RecastNavMesh must exist or every navigation/* query returns empty; call this after adding/moving an ANavMeshBoundsVolume, editing world geometry, or changing agent settings, before navigation/test_path or find_nearest_reachable_point. "
+		     "Warning: slow, runs on the game thread and stalls the editor while tiles compile; remaining_build_tasks may still be non-zero on return for async tiles and timed_out=true means tasks were still pending at the 300s cap."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("test_path"),
-		TEXT("Find a synchronous navmesh path from start to end. Returns waypoints, length, and validity flags.\n"
-		     "Params: start ([X,Y,Z] cm, required), end ([X,Y,Z] cm, required).\n"
-		     "Workflow: Use after rebuild_navmesh or when debugging AI reachability.\n"
-		     "Warning: Returns is_valid=false when no nav data covers the points; call find_nearest_reachable_point first to snap onto the navmesh."))
+		TEXT("Compute a synchronous navmesh path between two world points (UNavigationSystemV1::FindPathToLocationSynchronously). "
+		     "Returns {is_valid:bool, is_partial:bool, path_length:cm, waypoints:[{point:[X,Y,Z] cm}], waypoint_count, start, end}. "
+		     "Params: start (number[3], required, world-space cm [X,Y,Z]), end (number[3], required, world-space cm [X,Y,Z]). "
+		     "Workflow: build coverage with navigation/rebuild_navmesh first; snap loose endpoints with navigation/find_nearest_reachable_point. "
+		     "Warning: read-only query but errors with null when there is no nav data; is_valid=false (or is_partial=true) when the points are off the navmesh -- a NavMeshBoundsVolume + built RecastNavMesh must cover both points."))
 		.RequiredVec3(TEXT("start"), TEXT("Path start [X,Y,Z] world cm"))
 		.RequiredVec3(TEXT("end"), TEXT("Path end [X,Y,Z] world cm"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("get_navmesh_bounds"),
-		TEXT("List all ANavMeshBoundsVolume actors with their bounds, plus a combined min/max encompassing them.\n"
-		     "Params: (none).\n"
-		     "Workflow: Inspect navmesh coverage before running test_path or placing AI."))
+		TEXT("List every ANavMeshBoundsVolume in the editor world with its bounds, plus a combined box spanning all of them. "
+		     "Returns {volumes:[{label, origin, extent, min, max}], volume_count, combined_min, combined_max, combined_center, combined_extent} "
+		     "(combined_* present only when at least one volume exists); all positions/extents in world-space cm. "
+		     "Params: (none). "
+		     "Workflow: read-only inspection of navmesh coverage before navigation/test_path or before placing AI; volume_count==0 means no nav coverage exists yet. "
+		     "Warning: reports the bounds VOLUMES, not the generated RecastNavMesh tiles -- a volume can exist without a built navmesh, so still call navigation/rebuild_navmesh if queries return empty."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("find_nearest_reachable_point"),
-		TEXT("Project a world-space point onto the nearest navmesh location using ProjectPointToNavigation.\n"
-		     "Params: point ([X,Y,Z] cm, required), query_extent ([X,Y,Z] cm, optional, default [500,500,500]).\n"
-		     "Workflow: Use to snap spawn locations or pathing endpoints onto reachable nav surfaces."))
+		TEXT("Snap a world-space point onto the nearest navmesh location (UNavigationSystemV1::ProjectPointToNavigation). "
+		     "Returns {found:bool, input_point, query_extent, projected_point (only when found), distance:cm (only when found)}. "
+		     "Params: point (number[3], required, world-space cm [X,Y,Z]), "
+		     "query_extent (number[3], optional, search-box HALF-extents in cm, default [500,500,500]). "
+		     "Workflow: use to fix loose spawn locations or pathing endpoints before navigation/test_path; build coverage with navigation/rebuild_navmesh first. "
+		     "Warning: read-only query; found=false (no projected_point) when nothing on the navmesh is within the search box -- widen query_extent if a known-good point fails."))
 		.RequiredVec3(TEXT("point"), TEXT("World-space point to project [X,Y,Z] cm"))
-		.OptionalVec3(TEXT("query_extent"), TEXT("Search box half-extents [X,Y,Z] cm (default 500,500,500)"))
+		.OptionalVec3(TEXT("query_extent"), TEXT("Search box half-extents [X,Y,Z] cm (default [500,500,500])"))
 		.Build());
 
 	return Tools;

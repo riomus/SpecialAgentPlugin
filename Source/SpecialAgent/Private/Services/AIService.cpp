@@ -484,61 +484,74 @@ TArray<FMCPToolInfo> FAIService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("spawn_ai_pawn"),
-            TEXT("Spawn a Pawn actor and optionally assign its default AIController. Result includes serialized pawn transform. "
-                 "Params: pawn_class (string, asset path or native class name), location ([X,Y,Z] cm world), "
-                 "rotation (optional [Pitch,Yaw,Roll] deg), auto_possess (bool, default true). "
-                 "Workflow: follow with ai/run_behavior_tree to start AI logic. "
-                 "Warning: pawn_class must resolve to an APawn subclass; auto_possess=false leaves the pawn unpossessed."))
-        .RequiredString(TEXT("pawn_class"),   TEXT("Blueprint/class path (e.g. /Game/AI/BP_Enemy.BP_Enemy) or native name of an APawn subclass"))
-        .RequiredVec3  (TEXT("location"),     TEXT("Spawn location [X, Y, Z] in cm (world space)"))
-        .OptionalVec3  (TEXT("rotation"),     TEXT("Rotation [Pitch, Yaw, Roll] in degrees"))
+            TEXT("Spawn a Pawn into the editor world and optionally let it spawn its default AIController. "
+                 "Returns {pawn:{label,name,transform,...}, controller_class, controller_name} (controller_class empty when unpossessed). "
+                 "Params: pawn_class (string, required, virtual asset path /Game/AI/BP_Enemy.BP_Enemy or native APawn-subclass name), "
+                 "location (number[3], required, world-space cm [X,Y,Z]), "
+                 "rotation (number[3], optional, degrees [Pitch,Yaw,Roll]; the Details panel labels these X=Roll/Y=Pitch/Z=Yaw -- order differs), "
+                 "auto_possess (bool, optional, default true -- calls Pawn->SpawnDefaultController()). "
+                 "Workflow: spawn -> ai/assign_controller (for a custom AIController) -> ai/run_behavior_tree to start logic. "
+                 "Warning: pawn_class must resolve to an APawn subclass or this returns an error; the pawn is spawned in the persistent editor level (not saved to disk here) and does NOT tick until PIE runs, so AI/movement only animates in Play-In-Editor."))
+        .RequiredString(TEXT("pawn_class"),   TEXT("Virtual asset path (e.g. /Game/AI/BP_Enemy.BP_Enemy) or native class name of an APawn subclass"))
+        .RequiredVec3  (TEXT("location"),     TEXT("Spawn location [X, Y, Z] in cm, world space"))
+        .OptionalVec3  (TEXT("rotation"),     TEXT("Rotation [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
         .OptionalBool  (TEXT("auto_possess"), TEXT("If true, call Pawn->SpawnDefaultController() after spawn (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("assign_controller"),
-            TEXT("Attach an AIController (or subclass) to an existing Pawn, replacing any current controller. "
-                 "Params: pawn_name (string, actor label), controller_class (string, optional asset path/class name; empty = Pawn->SpawnDefaultController). "
-                 "Workflow: precondition for ai/run_behavior_tree and ai/set_blackboard_value. "
-                 "Warning: destroys the previous controller."))
+            TEXT("Spawn and possess an AController (or subclass) on an existing Pawn, replacing whatever controller it had. "
+                 "Returns {pawn:actor_label, controller_class, controller_name}. "
+                 "Params: pawn_name (string, required, actor label of the Pawn), "
+                 "controller_class (string, optional, virtual asset path or native AController-subclass name; empty/omitted = Pawn->SpawnDefaultController). "
+                 "Workflow: required before ai/run_behavior_tree and ai/set_blackboard_value, which need an AAIController. "
+                 "Warning: the existing controller is unpossessed AND destroyed first; the new controller is spawned transient (not saved with the level) and only drives the pawn once PIE is ticking."))
         .RequiredString(TEXT("pawn_name"),        TEXT("Actor label of the Pawn to possess"))
-        .OptionalString(TEXT("controller_class"), TEXT("Asset path or native name of AController subclass; empty = use default controller"))
+        .OptionalString(TEXT("controller_class"), TEXT("Virtual asset path or native name of an AController subclass; empty = SpawnDefaultController"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("run_behavior_tree"),
-            TEXT("Start a BehaviorTree asset on a Pawn's AIController via AAIController::RunBehaviorTree. "
-                 "Params: pawn_name (string, actor label), behavior_tree (string, asset path). "
-                 "Workflow: requires a Pawn possessed by an AAIController (see ai/assign_controller). "
-                 "Warning: resets any BT currently running on that controller."))
+            TEXT("Load a UBehaviorTree asset and run it on a Pawn's AAIController (AAIController::RunBehaviorTree). "
+                 "Returns {pawn:actor_label, controller, behavior_tree:object_path}. "
+                 "Params: pawn_name (string, required, actor label), "
+                 "behavior_tree (string, required, virtual asset path /Game/AI/BT_Enemy.BT_Enemy). "
+                 "Workflow: ai/assign_controller first (pawn must be possessed by an AAIController); the BT's referenced Blackboard provides the keys for ai/set_blackboard_value. "
+                 "Warning: replaces any BT already running on that controller; StateTree is Epic's recommended forward path but BehaviorTrees still run in 5.7. AI only moves while PIE ticks and only if a NavMeshBoundsVolume + built RecastNavMesh cover the area (see navigation/rebuild_navmesh)."))
         .RequiredString(TEXT("pawn_name"),     TEXT("Actor label of the Pawn whose AIController will run the BT"))
-        .RequiredString(TEXT("behavior_tree"), TEXT("Asset path to the UBehaviorTree (e.g. /Game/AI/BT_Enemy.BT_Enemy)"))
+        .RequiredString(TEXT("behavior_tree"), TEXT("Virtual asset path to the UBehaviorTree (e.g. /Game/AI/BT_Enemy.BT_Enemy)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_blackboard_value"),
-            TEXT("Write a typed value to a pawn's blackboard key via SetValueAs*. "
-                 "Params: pawn_name (string), key (string, blackboard key name), value_type (enum bool|int|float|vector|object|string|name), value (typed). "
-                 "For 'object', value is an actor label resolved via the editor world. "
-                 "Workflow: call after ai/run_behavior_tree so the blackboard component exists. "
-                 "Warning: key type must match the blackboard definition; setting a missing key is a silent no-op."))
+            TEXT("Write a typed value to a key on a pawn's AIController Blackboard via the matching SetValueAs* call. "
+                 "Returns {pawn:actor_label, key, value_type}. "
+                 "Params: pawn_name (string, required, actor label), key (string, required, Blackboard key name), "
+                 "value_type (enum, required: bool|int|float|vector|object|string|name -- selects the SetValueAs* overload), "
+                 "value (required; JSON type must match value_type: bool->boolean, int->integer, float->number, "
+                 "vector->[X,Y,Z] number array in cm, string/name->string, object->actor-label string resolved against the editor world). "
+                 "Workflow: run ai/run_behavior_tree first so the AIController has a Blackboard component (this errors if none exists). "
+                 "Warning: the key must already be defined on the Blackboard with a matching type -- SetValueAs* on an unknown key is a no-op, and a type mismatch writes nothing. object value errors if the named actor is not found."))
         .RequiredString(TEXT("pawn_name"),  TEXT("Actor label of the Pawn whose AIController owns the blackboard"))
-        .RequiredString(TEXT("key"),        TEXT("Blackboard key name"))
+        .RequiredString(TEXT("key"),        TEXT("Blackboard key name (must already exist with a matching type)"))
         .RequiredEnum  (TEXT("value_type"), { TEXT("bool"), TEXT("int"), TEXT("float"), TEXT("vector"), TEXT("object"), TEXT("string"), TEXT("name") },
-                                             TEXT("Value type — drives which SetValueAs* overload is called"))
+                                             TEXT("Value type that drives which SetValueAs* overload is called"))
         .RequiredAny   (TEXT("value"),      TEXT("Value whose JSON type must match value_type: "
                                                  "bool -> boolean; int -> integer; float -> number; "
-                                                 "vector -> [X, Y, Z] number array; "
+                                                 "vector -> [X, Y, Z] number array (cm); "
                                                  "string/name -> string; "
                                                  "object -> actor-label string (resolved against the editor world)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("stop_ai"),
-            TEXT("Stop the behavior tree running on a Pawn's AIController via BrainComponent::StopLogic, optionally unpossess. "
-                 "Params: pawn_name (string), reason (string, optional log tag), unpossess (bool, default false). "
-                 "Workflow: inverse of ai/run_behavior_tree. "
-                 "Warning: unpossess=true detaches the controller without spawning a replacement."))
+            TEXT("Stop the logic (BehaviorTree/StateTree) running on a Pawn's AIController via BrainComponent::StopLogic, optionally unpossess it. "
+                 "Returns {pawn:actor_label, stopped_logic:bool, unpossessed:bool, reason}. "
+                 "Params: pawn_name (string, required, actor label), "
+                 "reason (string, optional, log tag forwarded to StopLogic, default \"ai/stop_ai MCP request\"), "
+                 "unpossess (bool, optional, default false -- also calls AIController::UnPossess). "
+                 "Workflow: inverse of ai/run_behavior_tree; re-run that tool to resume logic. "
+                 "Warning: errors if the pawn has no AAIController; unpossess=true detaches the controller (the pawn is left uncontrolled) without spawning a replacement."))
         .RequiredString(TEXT("pawn_name"), TEXT("Actor label of the Pawn whose AI is being stopped"))
         .OptionalString(TEXT("reason"),    TEXT("Human-readable reason string forwarded to StopLogic() (default: \"ai/stop_ai MCP request\")"))
         .OptionalBool  (TEXT("unpossess"), TEXT("If true, also call AIController::UnPossess() (default false)"))

@@ -5,6 +5,7 @@
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPRequestContext.h"
 #include "MCPCommon/MCPToolBuilder.h"
+#include "MCPCommon/MCPViewport.h"
 
 #include "CoreGlobals.h"
 #include "Editor.h"
@@ -34,12 +35,11 @@ TArray<FMCPToolInfo> FRenderingService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("set_scalability"),
-        TEXT("Set engine scalability quality levels. Applies via Scalability::SetQualityLevels. "
-             "Params: level (integer, 0=low 1=medium 2=high 3=epic 4=cinematic). Optional per-bucket overrides: "
-             "view_distance, anti_aliasing, shadow, global_illumination, reflection, post_process, texture, "
-             "effects, foliage, shading (each integer 0-4). "
-             "Workflow: set once per editor session; visible immediately in viewport. "
-             "Warning: affects the whole editor, not just PIE."))
+        TEXT("Set engine scalability quality levels for the editor. Returns {success, view_distance, anti_aliasing, shadow, global_illumination, reflection, post_process, texture, effects, foliage, shading} -- the resulting 0-4 level of every bucket. "
+             "Params: level (integer 0-4, optional; 0=low 1=medium 2=high 3=epic 4=cinematic; sets every bucket at once). Optional per-bucket overrides applied on top of level: "
+             "view_distance, anti_aliasing, shadow, global_illumination, reflection, post_process, texture, effects, foliage, shading (each integer 0-4). "
+             "Workflow: pass level for a quick global preset, or individual buckets for fine control; takes effect immediately in the viewport. "
+             "Warning: changes the whole editor's render quality (not just PIE) and persists -- the new state is saved to GEditorSettingsIni. All values are clamped to 0-4."))
         .OptionalInteger(TEXT("level"), TEXT("Overall level 0..4 (low..cinematic)"))
         .OptionalInteger(TEXT("view_distance"),         TEXT("View distance quality 0..4"))
         .OptionalInteger(TEXT("anti_aliasing"),         TEXT("Anti-aliasing quality 0..4"))
@@ -54,11 +54,11 @@ TArray<FMCPToolInfo> FRenderingService::GetAvailableTools() const
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_view_mode"),
-        TEXT("Set the editor viewport view mode (lit, unlit, wireframe, etc.). "
-             "Params: mode (string enum: lit, unlit, wireframe, detail_lighting, lighting_only, "
-             "shader_complexity, lightmap_density, reflections, buffer_visualization, lod_coloration, path_tracing). "
-             "Workflow: set before capturing screenshots for diagnostic views. "
-             "Warning: path_tracing requires hardware ray-tracing enabled in project settings."))
+        TEXT("Set the active Level Editor viewport's render/visualization mode. Returns {success, mode, mode_index}. "
+             "Params: mode (enum, required) -- one of lit, unlit, wireframe, detail_lighting, lighting_only, "
+             "shader_complexity, lightmap_density, reflections, buffer_visualization, lod_coloration, path_tracing. "
+             "Workflow: set a diagnostic mode, then screenshot/capture (auto-redraws); switch back to lit when done. "
+             "Warning: mutates the user's active viewport rendering. path_tracing requires hardware ray tracing enabled in Project Settings (unavailable on macOS/Metal). Sibling viewport/set_view_mode covers a different mode set (brush_wireframe, light_complexity, stationary_light_overlap)."))
         .RequiredEnum(TEXT("mode"),
             {TEXT("lit"), TEXT("unlit"), TEXT("wireframe"), TEXT("detail_lighting"),
              TEXT("lighting_only"), TEXT("shader_complexity"), TEXT("lightmap_density"),
@@ -68,29 +68,29 @@ TArray<FMCPToolInfo> FRenderingService::GetAvailableTools() const
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("high_res_screenshot"),
-        TEXT("Request a high-resolution screenshot of the active viewport with custom resolution. "
-             "Params: width (integer, pixels), height (integer, pixels), show_ui (bool, optional). "
-             "Workflow: triggers the engine's built-in HRES path; saved to Saved/Screenshots. "
-             "Warning: asynchronous — does not wait for the file to be written."))
-        .RequiredInteger(TEXT("width"),  TEXT("Screenshot width in pixels"))
-        .RequiredInteger(TEXT("height"), TEXT("Screenshot height in pixels"))
-        .OptionalBool(TEXT("show_ui"),   TEXT("Include UI overlay in screenshot (default false)"))
+        TEXT("Request a high-resolution screenshot of the active viewport at a custom resolution, written to a PNG under <Project>/Saved/Screenshots/. Returns {success, width, height, show_ui, note}. "
+             "Params: width (integer px, required, > 0); height (integer px, required, > 0); show_ui (bool, optional, default false; include the editor UI overlay). "
+             "Workflow: for inline vision prefer screenshot/capture (returns base64 synchronously); use this only when you need a large PNG on disk. "
+             "Warning: ASYNCHRONOUS -- it returns immediately and the file does NOT yet exist on disk (the engine writes it on a later frame); the success in the result only means the request was queued, not that the image is ready."))
+        .RequiredInteger(TEXT("width"),  TEXT("Screenshot width in pixels (> 0)"))
+        .RequiredInteger(TEXT("height"), TEXT("Screenshot height in pixels (> 0)"))
+        .OptionalBool(TEXT("show_ui"),   TEXT("Include the editor UI overlay in the screenshot (default false)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("toggle_nanite"),
-        TEXT("Enable or disable Nanite rendering via the r.Nanite CVar. "
-             "Params: enabled (bool). "
-             "Workflow: toggle off to compare performance / shadow behavior. "
-             "Warning: global engine setting; takes effect on next frame."))
-        .RequiredBool(TEXT("enabled"), TEXT("True to enable Nanite, false to disable"))
+        TEXT("Enable or disable Nanite rendering globally via the r.Nanite console variable. Returns {success, enabled}. "
+             "Params: enabled (bool, required; true sets r.Nanite=1, false sets r.Nanite=0). "
+             "Workflow: disable, then screenshot/capture to compare detail/performance/shadow behavior, then re-enable. "
+             "Warning: this is a global engine CVar affecting the whole editor (not per-actor or PIE-only); it takes effect on the next frame and returns an error if r.Nanite is not registered."))
+        .RequiredBool(TEXT("enabled"), TEXT("true to enable Nanite (r.Nanite=1), false to disable (r.Nanite=0)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("toggle_lumen"),
-        TEXT("Enable or disable Lumen GI & reflections via r.DynamicGlobalIlluminationMethod and r.ReflectionMethod. "
-             "Params: enabled (bool). "
-             "Workflow: toggle to compare lit scene vs. baked-only. "
-             "Warning: switches GI method 1 (Lumen) vs 0 (None) and Reflection method 1 vs 2."))
-        .RequiredBool(TEXT("enabled"), TEXT("True to enable Lumen, false to disable"))
+        TEXT("Enable or disable Lumen dynamic global illumination and reflections via r.DynamicGlobalIlluminationMethod and r.ReflectionMethod. Returns {success, enabled, gi_method, reflection_method}. "
+             "Params: enabled (bool, required). When true: GI method = 1 (Lumen), reflection method = 1 (Lumen). When false: GI method = 0 (None) and reflection method = 2 (Screen Space) as the fallback. "
+             "Workflow: disable, then screenshot/capture to compare against the Lumen-lit look, then re-enable (Lumen is the UE5.7 default GI/reflection method). "
+             "Warning: global engine CVars affecting the whole editor (not per-actor); disabling does not produce baked lighting -- it just drops dynamic GI and falls back to screen-space reflections. Returns an error if the CVars are not found."))
+        .RequiredBool(TEXT("enabled"), TEXT("true to enable Lumen GI + reflections, false to disable (GI None, reflections Screen Space)"))
         .Build());
 
     return Tools;
@@ -188,11 +188,7 @@ FMCPResponse FRenderingService::HandleSetViewMode(const FMCPRequest& Request)
 
     auto Task = [Mode, ModeIndex]() -> TSharedPtr<FJsonObject>
     {
-        FLevelEditorViewportClient* Viewport = GCurrentLevelEditingViewportClient;
-        if (!Viewport && GEditor && GEditor->GetActiveViewport())
-        {
-            Viewport = static_cast<FLevelEditorViewportClient*>(GEditor->GetActiveViewport()->GetClient());
-        }
+        FLevelEditorViewportClient* Viewport = FMCPViewport::GetLevelClient();
         if (!Viewport)
         {
             return FMCPJson::MakeError(TEXT("No active level editor viewport"));

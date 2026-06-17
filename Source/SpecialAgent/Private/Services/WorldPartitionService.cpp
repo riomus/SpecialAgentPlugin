@@ -418,44 +418,51 @@ TArray<FMCPToolInfo> FWorldPartitionService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("list_cells"),
-		TEXT("List all UWorldPartition runtime streaming cells for the editor world. Returns name, debug name, bounds, and state (unloaded/loaded/activated) per cell.\n"
-		     "Params: (none).\n"
-		     "Workflow: Call first to discover cell names for load_cell and unload_cell.\n"
-		     "Warning: Returns an error if the current map is not a World Partition map."))
+		TEXT("List every UWorldPartition runtime streaming cell for the editor world. "
+		     "Returns {cells:[{name, debug_name, level_package, is_always_loaded, is_spatially_loaded, state:'unloaded'|'loaded'|'activated', content_min/content_max (world-space cm AABB), cell_min/cell_max (world-space cm AABB)}], count, streaming_enabled}. "
+		     "Params: (none). "
+		     "Workflow: Read-only; call first to get a cell name/debug_name/level_package to feed load_cell or unload_cell, or use the bounds to pick a region for force_load_region. "
+		     "Warning: Returns an error if the current map is not a World Partition map (use streaming/list_levels for classic sublevel maps)."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("load_cell"),
-		TEXT("Load a specific World Partition cell by name. Uses the editor FLoaderAdapterShape across the cell bounds when available.\n"
-		     "Params: cell_name (string, required; name, debug name, or level package name from list_cells).\n"
-		     "Workflow: Discover via list_cells then load_cell by name.\n"
-		     "Warning: Loader adapters created in the editor must be released via unload_cell/force_load_region tracking; always-loaded cells cannot be unloaded."))
+		TEXT("Load a single World Partition cell into the editor by spawning an FLoaderAdapterShape over the cell's content bounds (falls back to cell bounds), which pins the actors so they appear in the editor world. "
+		     "Returns {cell_name, debug_name, state, used_loader_adapter, bounds_min/bounds_max (world-space cm)}. "
+		     "Params: cell_name (string, required; matched against the cell name, debug_name, or level_package from list_cells). "
+		     "Workflow: Call list_cells first to get a valid name; for a rectangular area spanning several cells prefer force_load_region. "
+		     "Warning: The loader adapter is intentionally leaked (kept alive by World Partition) and is NOT tracked, so unload_cell cannot release it; this mutates in-memory editor state only and is not saved. Unknown names return an error."))
 		.RequiredString(TEXT("cell_name"), TEXT("Cell name, debug name, or level package path from list_cells"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("unload_cell"),
-		TEXT("Request that a specific World Partition cell unload. Best-effort in the editor (calls the cell's Unload method).\n"
-		     "Params: cell_name (string, required).\n"
-		     "Warning: Loader adapters bound to the cell keep actors referenced; always-loaded cells return an error."))
+		TEXT("Request that a single World Partition cell unload by calling its Unload() interface. Best-effort in the editor. "
+		     "Returns {cell_name, debug_name, state, note}. "
+		     "Params: cell_name (string, required; matched against name, debug_name, or level_package from list_cells). "
+		     "Workflow: Call list_cells (or get_loaded_cells) first to find a loaded, non-always-loaded cell. "
+		     "Warning: Cannot release loader adapters created by load_cell or force_load_region (those are untracked and keep their actors pinned, so the cell may stay loaded); always-loaded cells return an error; in-memory only, not saved."))
 		.RequiredString(TEXT("cell_name"), TEXT("Cell name, debug name, or level package path"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("get_loaded_cells"),
-		TEXT("List only the cells currently Loaded, Activated, or Always-Loaded.\n"
-		     "Params: (none).\n"
-		     "Workflow: Quick check of streaming state after calls to load_cell/force_load_region."))
+		TEXT("List only the World Partition cells currently Loaded, Activated, or Always-Loaded (a filtered view of list_cells). "
+		     "Returns {cells:[...same per-cell shape as list_cells...], count, loaded_count, activated_count, total_cells}. "
+		     "Params: (none). "
+		     "Workflow: Read-only; use as a quick state check after load_cell / force_load_region / unload_cell. "
+		     "Warning: Returns an error if the current map is not a World Partition map."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("force_load_region"),
-		TEXT("Force-load every cell that intersects an axis-aligned bounding box via FLoaderAdapterShape. Returns list of intersecting cells.\n"
-		     "Params: min ([X,Y,Z] cm, required, lower corner), max ([X,Y,Z] cm, required, upper corner).\n"
-		     "Workflow: Use to pre-stream a viewport area before screenshots or gameplay tests.\n"
-		     "Warning: Large regions pull many cells; stay within the editor world bounds to avoid unnecessary loads."))
+		TEXT("Force-load every World Partition cell intersecting an axis-aligned box by spawning an FLoaderAdapterShape over the region. "
+		     "Returns {min, max, intersecting_cells, cells:[...same per-cell shape as list_cells...], loader_adapter_created:true}. "
+		     "Params: min ([X,Y,Z] world-space cm, required, lower corner), max ([X,Y,Z] world-space cm, required, upper corner; each axis must be strictly greater than min). "
+		     "Workflow: Read list_cells bounds (or viewport/get_transform) to pick a box, then pre-stream that area before screenshots, triangle counts, or tests. "
+		     "Warning: The loader adapter is leaked/untracked, so unload_cell cannot release it and the region stays pinned for the editor session; in-memory only, not saved. A degenerate box (zero/negative volume) returns an error; large boxes pull in many cells."))
 		.RequiredVec3(TEXT("min"), TEXT("Region min corner [X,Y,Z] world cm"))
-		.RequiredVec3(TEXT("max"), TEXT("Region max corner [X,Y,Z] world cm"))
+		.RequiredVec3(TEXT("max"), TEXT("Region max corner [X,Y,Z] world cm; each axis strictly greater than min"))
 		.Build());
 
 	return Tools;

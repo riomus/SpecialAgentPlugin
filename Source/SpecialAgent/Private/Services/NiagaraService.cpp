@@ -37,61 +37,79 @@ TArray<FMCPToolInfo> FNiagaraService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("spawn_emitter"),
-        TEXT("Spawn a Niagara system in the world at a location. Returns the spawned actor label. "
-             "Params: system_path (string, /Game/... UNiagaraSystem asset), location ([X,Y,Z] cm), "
-             "rotation ([Pitch,Yaw,Roll] deg, optional), auto_destroy (bool, optional). "
-             "Workflow: use set_user_float / set_user_vec3 to configure after spawn. "
-             "Warning: asset must be a UNiagaraSystem, not an emitter/script."))
-        .RequiredString(TEXT("system_path"), TEXT("Asset path to UNiagaraSystem"))
-        .RequiredVec3(TEXT("location"), TEXT("Spawn location [X, Y, Z] cm"))
-        .OptionalVec3(TEXT("rotation"), TEXT("Rotation [Pitch, Yaw, Roll] deg"))
-        .OptionalBool(TEXT("auto_destroy"), TEXT("Destroy when system completes (default true)"))
+        TEXT("Spawn a Niagara system at a world location and auto-activate it. Returns {actor_name (label, use for all "
+             "follow-up calls), component_name, system_path}. "
+             "Params: system_path (string, required, /Game/... object path of a UNiagaraSystem asset), "
+             "location (array [X,Y,Z], required, world cm), rotation (array [Pitch,Yaw,Roll], optional, degrees), "
+             "auto_destroy (bool, optional, default true; destroys the actor once the system finishes). "
+             "Workflow: spawn_emitter -> set_user_float / set_user_vec3 / set_parameter to configure. "
+             "Warning: system_path MUST be a UNiagaraSystem, not a UNiagaraEmitter or script (the #1 mistake). "
+             "Spawns auto-activated, so User. params set after this take effect next activate(reset=true), not retroactively. "
+             "Looping systems with auto_destroy=false linger until you deactivate and remove the actor."))
+        .RequiredString(TEXT("system_path"), TEXT("/Game/... object path of a UNiagaraSystem"))
+        .RequiredVec3(TEXT("location"), TEXT("Spawn location [X, Y, Z] in world cm"))
+        .OptionalVec3(TEXT("rotation"), TEXT("Rotation [Pitch, Yaw, Roll] in degrees"))
+        .OptionalBool(TEXT("auto_destroy"), TEXT("Destroy the actor when the system completes (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_parameter"),
-        TEXT("Set a float parameter on a spawned Niagara actor's component. "
-             "Params: actor_name (string, label), parameter (string, variable name), value (number). "
+        TEXT("Set a float parameter on a spawned Niagara component via SetFloatParameter. Returns {actor_name, parameter, value}. "
+             "For exposed User. namespace variables prefer set_user_float instead. "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "parameter (string, required, the float parameter name), value (number, required). "
              "Workflow: spawn_emitter -> set_parameter. "
-             "Warning: parameter must match a float variable exposed by the system."))
-        .RequiredString(TEXT("actor_name"), TEXT("Label of the Niagara actor in the world"))
-        .RequiredString(TEXT("parameter"), TEXT("Niagara float parameter name"))
-        .RequiredNumber(TEXT("value"), TEXT("Float value"))
+             "Warning: STRONGLY TYPED to float - the parameter must be a declared float on the system. "
+             "If the name does not match an exposed parameter the set is a silent no-op (no error is returned)."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .RequiredString(TEXT("parameter"), TEXT("Name of the float parameter to set"))
+        .RequiredNumber(TEXT("value"), TEXT("Float value to assign"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("activate"),
-        TEXT("Activate a spawned Niagara system (start emission). "
-             "Params: actor_name (string, label), reset (bool, optional - true to reset state). "
-             "Workflow: spawn_emitter -> activate (if spawned inactive). "
-             "Warning: no-op on an already active component."))
-        .RequiredString(TEXT("actor_name"), TEXT("Label of the Niagara actor in the world"))
-        .OptionalBool(TEXT("reset"), TEXT("Reset system state on activation (default false)"))
+        TEXT("Activate a spawned Niagara component to (re)start emission. Returns {actor_name, is_active (bool)}. "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "reset (bool, optional, default false; true restarts the system from its initial state). "
+             "Workflow: spawn_emitter auto-activates, so use this mainly after deactivate or to reset; "
+             "set User. params (set_user_float / set_user_vec3) before activate(reset=true) so they take effect. "
+             "Warning: activating an already-active component is a no-op unless reset=true."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .OptionalBool(TEXT("reset"), TEXT("Restart the system from its initial state (default false)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("deactivate"),
-        TEXT("Deactivate a spawned Niagara system (stop emission, particles die off). "
-             "Params: actor_name (string, label). "
-             "Workflow: activate -> deactivate pairs for toggle. "
-             "Warning: does not destroy the actor; call world/delete_actor to remove."))
-        .RequiredString(TEXT("actor_name"), TEXT("Label of the Niagara actor in the world"))
+        TEXT("Deactivate a spawned Niagara component: stops emission, existing particles finish their lifetime and die off. "
+             "Returns {actor_name, is_active (bool)}. "
+             "Params: actor_name (string, required, actor label from spawn_emitter). "
+             "Workflow: pair with activate to toggle a system on and off. "
+             "Warning: does NOT destroy the actor or component (use the world delete-actor tool to remove it); "
+             "re-enable later with activate."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_user_float"),
-        TEXT("Set a 'User.' float variable on a spawned Niagara actor (without the prefix). "
-             "Params: actor_name (string, label), name (string, variable name w/o 'User.'), value (number). "
-             "Workflow: spawn_emitter -> set_user_float. "
-             "Warning: affects only 'User.' namespace; system parameters use set_parameter."))
-        .RequiredString(TEXT("actor_name"), TEXT("Label of the Niagara actor in the world"))
-        .RequiredString(TEXT("name"), TEXT("User variable name (without 'User.' prefix)"))
-        .RequiredNumber(TEXT("value"), TEXT("Float value"))
+        TEXT("Set a User. namespace float exposure variable on a spawned Niagara component via SetVariableFloat. "
+             "Returns {actor_name, name, value}. Give the bare name without the 'User.' prefix (it is added internally). "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "name (string, required, variable name WITHOUT the 'User.' prefix), value (number, required). "
+             "Workflow: spawn_emitter -> set_user_float; set before activate(reset=true) so it applies on this run. "
+             "Warning: only affects User. exposure variables that are declared as float and exposed by the system - "
+             "an unexposed or wrong-typed name is a silent no-op. For non-User parameters use set_parameter."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
+        .RequiredNumber(TEXT("value"), TEXT("Float value to assign"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_user_vec3"),
-        TEXT("Set a 'User.' vec3 variable on a spawned Niagara actor (without the prefix). "
-             "Params: actor_name (string, label), name (string, variable name w/o 'User.'), value ([X,Y,Z]). "
-             "Workflow: spawn_emitter -> set_user_vec3. "
-             "Warning: affects only 'User.' namespace; exposed variables only."))
-        .RequiredString(TEXT("actor_name"), TEXT("Label of the Niagara actor in the world"))
-        .RequiredString(TEXT("name"), TEXT("User variable name (without 'User.' prefix)"))
+        TEXT("Set a User. namespace Vector (vec3) exposure variable on a spawned Niagara component via SetVariableVec3. "
+             "Returns {actor_name, name, value [X,Y,Z]}. Give the bare name without the 'User.' prefix (added internally). "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "name (string, required, variable name WITHOUT the 'User.' prefix), "
+             "value (array [X,Y,Z], required; interpret as cm only if the variable is a position). "
+             "Workflow: spawn_emitter -> set_user_vec3; set before activate(reset=true) so it applies on this run. "
+             "Warning: only affects User. exposure variables declared as Vector and exposed by the system - "
+             "an unexposed or wrong-typed name is a silent no-op."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
         .RequiredVec3(TEXT("value"), TEXT("Vector value [X, Y, Z]"))
         .Build());
 

@@ -14,6 +14,7 @@
 #include "UObject/UnrealType.h"
 #include "UObject/Class.h"
 #include "UObject/Package.h"
+#include "ScopedTransaction.h"
 
 namespace
 {
@@ -116,6 +117,9 @@ FMCPResponse FComponentService::HandleAdd(const FMCPRequest& Request)
             CompFName = MakeUniqueObjectName(Actor, Class, FName(*ComponentName));
         }
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Add Component")));
+        Actor->Modify();
+
         UActorComponent* NewComp = NewObject<UActorComponent>(Actor, Class, CompFName);
         if (!NewComp) return FMCPJson::MakeError(TEXT("NewObject returned null"));
 
@@ -130,6 +134,8 @@ FMCPResponse FComponentService::HandleAdd(const FMCPRequest& Request)
                 Scene->AttachToComponent(Root, FAttachmentTransformRules::KeepRelativeTransform);
             }
         }
+
+        NewComp->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("component_name"), NewComp->GetName());
@@ -167,8 +173,14 @@ FMCPResponse FComponentService::HandleRemove(const FMCPRequest& Request)
         UActorComponent* Comp = FindComponentOnActor(Actor, ComponentName);
         if (!Comp) return FMCPJson::MakeError(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Remove Component")));
+        Actor->Modify();
+        Comp->Modify();
+
         Actor->RemoveInstanceComponent(Comp);
         Comp->DestroyComponent();
+
+        Actor->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("actor_name"), Actor->GetActorLabel());
@@ -301,6 +313,7 @@ FMCPResponse FComponentService::HandleSetProperty(const FMCPRequest& Request)
         FProperty* Prop = Comp->GetClass()->FindPropertyByName(FName(*PropertyName));
         if (!Prop) return FMCPJson::MakeError(FString::Printf(TEXT("Property not found: %s"), *PropertyName));
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Component Property")));
         Comp->Modify();
         void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Comp);
         const TCHAR* ImportResult = Prop->ImportText_Direct(*Value, ValuePtr, Comp, PPF_None);
@@ -311,6 +324,7 @@ FMCPResponse FComponentService::HandleSetProperty(const FMCPRequest& Request)
 
         FPropertyChangedEvent ChangeEvent(Prop, EPropertyChangeType::ValueSet);
         Comp->PostEditChangeProperty(ChangeEvent);
+        Comp->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> Res = FMCPJson::MakeSuccess();
         Res->SetStringField(TEXT("component_name"), Comp->GetName());
@@ -365,7 +379,12 @@ FMCPResponse FComponentService::HandleAttach(const FMCPRequest& Request)
             ParseAttachmentRule(ScaleRuleStr,    EAttachmentRule::KeepRelative),
             /*bWeldSimulatedBodies*/ false);
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Attach Component")));
+        Child->Modify();
+
         const bool bAttached = Child->AttachToComponent(Parent, Rules, SocketName.IsEmpty() ? NAME_None : FName(*SocketName));
+
+        Child->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetBoolField  (TEXT("attached"), bAttached);
@@ -414,7 +433,12 @@ FMCPResponse FComponentService::HandleDetach(const FMCPRequest& Request)
             ParseDetachmentRule(ScaleRuleStr,    EDetachmentRule::KeepWorld),
             /*bCallModify*/ true);
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Detach Component")));
+        Child->Modify();
+
         Child->DetachFromComponent(Rules);
+
+        Child->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetStringField(TEXT("child"), Child->GetName());
@@ -433,84 +457,85 @@ TArray<FMCPToolInfo> FComponentService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("add"),
-            TEXT("Add a component to an actor. Instantiates via NewObject and registers at runtime. "
-                 "Params: actor_name (string, actor label), component_class (string, native class name like 'StaticMeshComponent' or asset path to a blueprint component class), component_name (string, optional desired name). "
-                 "Workflow: use world/list_actors to discover labels, then component/list to confirm. "
-                 "Warning: treated as an instance component and lost on level reload unless the actor is re-saved."))
-        .RequiredString(TEXT("actor_name"),      TEXT("Actor label"))
-        .RequiredString(TEXT("component_class"), TEXT("Component class name or asset path"))
-        .OptionalString(TEXT("component_name"),  TEXT("Optional name for the new component"))
+            TEXT("Add an instance component to a placed actor in the editor world. Returns {component_name (resolved, may be uniquified), component_class, actor_name}. "
+                 "Params: actor_name (string, required, actor LABEL as shown in the World Outliner, not the internal name), component_class (string, required, native class short name like 'StaticMeshComponent' / 'PointLightComponent', or a /Game/... path to a Blueprint-generated component class), component_name (string, optional; auto-uniquified if it collides). "
+                 "Workflow: find labels via the world/actor listing tool, then component/list to confirm the add; scene components auto-attach to the actor root with KeepRelativeTransform. "
+                 "Warning: this is a transient INSTANCE component (AddInstanceComponent + RegisterComponent), not a persistent Blueprint subobject -- it is lost on level reload unless the level is saved, and it is the wrong tool for authoring components into a Blueprint class."))
+        .RequiredString(TEXT("actor_name"),      TEXT("Actor label as shown in the World Outliner"))
+        .RequiredString(TEXT("component_class"), TEXT("Native class short name or /Game/... path to a component class"))
+        .OptionalString(TEXT("component_name"),  TEXT("Desired component name; auto-uniquified on collision"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("remove"),
-            TEXT("Remove a component from an actor. Calls DestroyComponent. "
-                 "Params: actor_name (string), component_name (string, exact name as reported by component/list). "
-                 "Workflow: use component/list to discover components. "
-                 "Warning: irreversible; cannot remove the root component."))
-        .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .RequiredString(TEXT("component_name"), TEXT("Component name"))
+            TEXT("Remove an instance component from a placed actor (RemoveInstanceComponent + DestroyComponent). Returns {actor_name, component_name}. "
+                 "Params: actor_name (string, required, actor LABEL from the World Outliner), component_name (string, required, exact name as reported by component/list). "
+                 "Workflow: call component/list first to copy the exact component name. "
+                 "Warning: undoable (wrapped in an undo transaction); destroying the root scene component or a component the actor depends on can leave the actor in a broken state -- avoid targeting the root."))
+        .RequiredString(TEXT("actor_name"),     TEXT("Actor label as shown in the World Outliner"))
+        .RequiredString(TEXT("component_name"), TEXT("Exact component name from component/list"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("list"),
-            TEXT("List all components on an actor. Returns name, class, and is_scene_component flag per entry. "
-                 "Params: actor_name (string). "
-                 "Workflow: precedes component/get_properties and component/set_property."))
-        .RequiredString(TEXT("actor_name"), TEXT("Actor label"))
+            TEXT("List every component currently on a placed actor. Returns {components[{name, class, is_scene_component (bool)}], count}. "
+                 "Params: actor_name (string, required, actor LABEL from the World Outliner). Read-only, no side effects. "
+                 "Workflow: run this first to get exact component names for component/get_properties, set_property, attach, detach, or remove. "
+                 "Warning: reflects live editor-world state, so it includes both native components and any instance components added this session; only entries with is_scene_component=true can be attached/detached."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label as shown in the World Outliner"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("get_properties"),
-            TEXT("Get all UProperty values from a component as strings (via TFieldIterator). "
-                 "Params: actor_name (string), component_name (string). "
-                 "Workflow: pair with component/set_property to round-trip edits. "
-                 "Warning: values are stringified (ExportTextItem_Direct); struct payloads may be verbose."))
-        .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .RequiredString(TEXT("component_name"), TEXT("Component name"))
+            TEXT("Read all reflected properties of a component as strings. Returns {component_name, component_class, properties{<prop_name>: {type (C++ type, e.g. 'FVector'), value (stringified)}}}. "
+                 "Params: actor_name (string, required, actor LABEL), component_name (string, required, exact name from component/list). Read-only, no side effects. "
+                 "Workflow: read here to learn exact property names and current values, then round-trip an edit through component/set_property. "
+                 "Warning: every value is stringified via ExportTextItem (e.g. FVector as '(X=0,Y=0,Z=0)' in cm, FRotator in degrees); struct and array payloads can be large/verbose."))
+        .RequiredString(TEXT("actor_name"),     TEXT("Actor label as shown in the World Outliner"))
+        .RequiredString(TEXT("component_name"), TEXT("Exact component name from component/list"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_property"),
-            TEXT("Set a UProperty on a component by name via ImportText_Direct. Accepts any type the UE text importer understands. "
-                 "Params: actor_name (string), component_name (string), property_name (string), value (string, UE text form e.g. '(X=1,Y=2,Z=3)' for FVector, 'true/false' for bool). "
-                 "Workflow: call component/get_properties first to inspect the current stringified value. "
-                 "Warning: malformed text is rejected but a correctly-parsed-but-wrong value still applies."))
-        .RequiredString(TEXT("actor_name"),     TEXT("Actor label"))
-        .RequiredString(TEXT("component_name"), TEXT("Component name"))
-        .RequiredString(TEXT("property_name"),  TEXT("Property name"))
-        .RequiredString(TEXT("value"),          TEXT("Value in UE text form"))
+            TEXT("Set one reflected property on a component (ImportText + PostEditChangeProperty). Returns {component_name, property_name, value}. "
+                 "Params: actor_name (string, required, actor LABEL), component_name (string, required, exact name from component/list), property_name (string, required, exact reflected name), value (string, required, UE ImportText form: '(X=1,Y=2,Z=3)' FVector in cm, '(Pitch=0,Yaw=90,Roll=0)' FRotator in degrees, 'true'/'false' bool, plain number for int/float). "
+                 "Workflow: call component/get_properties first to get exact names and the current value form to mirror. "
+                 "Warning: edits the live editor-world component only and does NOT save the level -- changes are lost on reload unless the level is saved. Malformed text is rejected, but a well-formed but semantically wrong value still applies silently."))
+        .RequiredString(TEXT("actor_name"),     TEXT("Actor label as shown in the World Outliner"))
+        .RequiredString(TEXT("component_name"), TEXT("Exact component name from component/list"))
+        .RequiredString(TEXT("property_name"),  TEXT("Exact reflected property name"))
+        .RequiredString(TEXT("value"),          TEXT("Value in UE ImportText form matching the property type"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("attach"),
-            TEXT("Attach one scene component to another on the same actor via AttachToComponent. "
-                 "Params: actor_name (string), child_component (string), parent_component (string), "
-                 "location_rule/rotation_rule/scale_rule (enum KeepRelative|KeepWorld|SnapToTarget, default KeepRelative), "
-                 "socket (string, optional socket name on parent). "
-                 "Workflow: use component/list to enumerate scene components first. "
-                 "Warning: both components must be USceneComponent subclasses."))
-        .RequiredString(TEXT("actor_name"),       TEXT("Actor label"))
-        .RequiredString(TEXT("child_component"),  TEXT("Child scene component name"))
-        .RequiredString(TEXT("parent_component"), TEXT("Parent scene component name"))
-        .OptionalEnum  (TEXT("location_rule"),    {TEXT("KeepRelative"), TEXT("KeepWorld"), TEXT("SnapToTarget")}, TEXT("Location attachment rule"))
-        .OptionalEnum  (TEXT("rotation_rule"),    {TEXT("KeepRelative"), TEXT("KeepWorld"), TEXT("SnapToTarget")}, TEXT("Rotation attachment rule"))
-        .OptionalEnum  (TEXT("scale_rule"),       {TEXT("KeepRelative"), TEXT("KeepWorld"), TEXT("SnapToTarget")}, TEXT("Scale attachment rule"))
-        .OptionalString(TEXT("socket"),           TEXT("Optional socket name on the parent"))
+            TEXT("Attach one scene component to another scene component on the SAME actor (AttachToComponent). Returns {attached (bool), child, parent}. "
+                 "Params: actor_name (string, required, actor LABEL), child_component (string, required), parent_component (string, required), "
+                 "location_rule / rotation_rule / scale_rule (enum KeepRelative|KeepWorld|SnapToTarget, optional, each default KeepRelative), "
+                 "socket (string, optional, named socket on the parent; omit to attach to the parent origin). "
+                 "Workflow: run component/list and pick two entries with is_scene_component=true before calling. "
+                 "Warning: both components must be USceneComponent subclasses on the same actor or it errors. Always check the returned attached flag -- AttachToComponent can return false (e.g. attaching to a descendant would create a cycle)."))
+        .RequiredString(TEXT("actor_name"),       TEXT("Actor label as shown in the World Outliner"))
+        .RequiredString(TEXT("child_component"),  TEXT("Child scene component name (must be a USceneComponent)"))
+        .RequiredString(TEXT("parent_component"), TEXT("Parent scene component name (must be a USceneComponent)"))
+        .OptionalEnum  (TEXT("location_rule"),    {TEXT("KeepRelative"), TEXT("KeepWorld"), TEXT("SnapToTarget")}, TEXT("Location attachment rule (default KeepRelative)"))
+        .OptionalEnum  (TEXT("rotation_rule"),    {TEXT("KeepRelative"), TEXT("KeepWorld"), TEXT("SnapToTarget")}, TEXT("Rotation attachment rule (default KeepRelative)"))
+        .OptionalEnum  (TEXT("scale_rule"),       {TEXT("KeepRelative"), TEXT("KeepWorld"), TEXT("SnapToTarget")}, TEXT("Scale attachment rule (default KeepRelative)"))
+        .OptionalString(TEXT("socket"),           TEXT("Optional named socket on the parent component"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("detach"),
-            TEXT("Detach a scene component from its parent via DetachFromComponent. "
-                 "Params: actor_name (string), child_component (string), "
-                 "location_rule/rotation_rule/scale_rule (enum KeepRelative|KeepWorld, default KeepWorld). "
-                 "Workflow: inverse of component/attach. "
-                 "Warning: no-op if the component has no parent."))
-        .RequiredString(TEXT("actor_name"),      TEXT("Actor label"))
-        .RequiredString(TEXT("child_component"), TEXT("Child scene component name"))
-        .OptionalEnum  (TEXT("location_rule"),   {TEXT("KeepRelative"), TEXT("KeepWorld")}, TEXT("Location detachment rule"))
-        .OptionalEnum  (TEXT("rotation_rule"),   {TEXT("KeepRelative"), TEXT("KeepWorld")}, TEXT("Rotation detachment rule"))
-        .OptionalEnum  (TEXT("scale_rule"),      {TEXT("KeepRelative"), TEXT("KeepWorld")}, TEXT("Scale detachment rule"))
+            TEXT("Detach a scene component from its current parent (DetachFromComponent). Returns {child}. "
+                 "Params: actor_name (string, required, actor LABEL), child_component (string, required, scene component to detach), "
+                 "location_rule / rotation_rule / scale_rule (enum KeepRelative|KeepWorld, optional, each default KeepWorld so the component keeps its world transform). "
+                 "Workflow: inverse of component/attach; use KeepWorld (default) to leave the component visually in place. "
+                 "Warning: the child must be a USceneComponent or it errors; calling on a component with no parent is effectively a no-op. Does not save the level."))
+        .RequiredString(TEXT("actor_name"),      TEXT("Actor label as shown in the World Outliner"))
+        .RequiredString(TEXT("child_component"), TEXT("Child scene component name to detach"))
+        .OptionalEnum  (TEXT("location_rule"),   {TEXT("KeepRelative"), TEXT("KeepWorld")}, TEXT("Location detachment rule (default KeepWorld)"))
+        .OptionalEnum  (TEXT("rotation_rule"),   {TEXT("KeepRelative"), TEXT("KeepWorld")}, TEXT("Rotation detachment rule (default KeepWorld)"))
+        .OptionalEnum  (TEXT("scale_rule"),      {TEXT("KeepRelative"), TEXT("KeepWorld")}, TEXT("Scale detachment rule (default KeepWorld)"))
         .Build());
 
     return Tools;

@@ -327,27 +327,28 @@ TArray<FMCPToolInfo> FValidationService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("validate_selected"),
-        TEXT("Run UEditorValidatorSubsystem on assets selected in the Content Browser plus\n"
-             "the class assets of any selected actors. Uses project-configured validators\n"
-             "(IsDataValid overrides, asset-naming, custom EditorValidatorBase).\n"
-             "Returns validated_count, issue_count, errors[], warnings[] plus per-asset detail.\n"
-             "Params: (none).\n"
-             "Workflow: utility/focus_asset_in_browser or actor selection first, then call this."))
+        TEXT("Run UEditorValidatorSubsystem over assets selected in the Content Browser plus the class assets of any selected actors. "
+             "Honors project-configured validators (IsDataValid overrides, asset-naming, custom UEditorValidatorBase). "
+             "Returns {success, source:'selection', validated_count, issue_count, num_valid, num_invalid, errors[], warnings[], assets:[{asset, package, result, num_errors, num_warnings, errors[], warnings[]}]}. "
+             "Params: (none). "
+             "Workflow: select assets in the Content Browser (or actors in the viewport) first, then call this. "
+             "Warning: read-only validation, but validators may load assets, which can trigger shader/texture compiles; returns validated_count=0 when nothing is selected."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("validate_level"),
-        TEXT("Validate the current editor level and its on-disk package dependencies via\n"
-             "UEditorValidatorSubsystem. Capped at 256 dep packages; Engine/script excluded.\n"
-             "Params: (none).\n"
-             "Workflow: Use before checking in a level; follow with content_browser/save for any fixes."))
+        TEXT("Validate the current editor level plus its on-disk package dependencies through UEditorValidatorSubsystem. "
+             "Returns {success, level_package, level_deps_scanned, validated_count, issue_count, num_valid, num_invalid, errors[], warnings[], assets:[...]}. "
+             "Params: (none). "
+             "Workflow: open the level first (level/open), run before submitting via source_control, then fix and re-run. "
+             "Warning: read-only but can be slow - it walks up to 256 dependency packages (Engine and /Script packages skipped) and may load assets, triggering compiles; errors if there is no active editor world."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_errors"),
-        TEXT("Survey AssetCheck, MapCheck, AssetTools, and LoadErrors message logs. Returns\n"
-             "counts per severity and up to 32 recent tokenized messages per log where the\n"
-             "log listing UI is registered.\n"
-             "Params: (none).\n"
-             "Workflow: pair with validation/validate_level to inspect post-validation messages."))
+        TEXT("Survey the AssetCheck, MapCheck, AssetTools, and LoadErrors message logs for accumulated messages. "
+             "Returns {success, total, total_errors, total_warnings, logs:[{log, num_messages, num_warnings, num_errors, recent_messages:[{severity, text}]}]}. "
+             "Params: (none). "
+             "Workflow: run after validation/validate_level (or after risky edits) to read the actual message text behind the counts. "
+             "Warning: read-only; up to 32 recent messages per log are returned only for logs whose listing UI is registered, otherwise just counts; messages persist across calls and are not cleared here."))
         .Build());
 
     return Tools;

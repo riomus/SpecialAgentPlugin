@@ -23,33 +23,38 @@ TArray<FMCPToolInfo> FConsoleService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("execute"),
-        TEXT("Execute an Unreal console command against the editor world. "
+        TEXT("Run an arbitrary Unreal console command line against the editor world via GEngine->Exec. "
+             "Returns {success, command, executed} where 'executed' is the Exec bool (true only if a handler claimed the command). "
              "Params: command (string, required, full command line, e.g. 'stat fps' or 'r.ScreenPercentage 75'). "
-             "Workflow: cross-reference with console/list_commands for examples. "
-             "Warning: commands run in the editor world; PIE-specific commands may be ignored."))
-        .RequiredString(TEXT("command"), TEXT("Console command line to execute."))
+             "Workflow: see console/list_commands for common examples; for a single CVar prefer console/set_cvar so you get the read-back value. "
+             "Warning: side-effecting and not undoable; runs in the editor world, so PIE/gameplay-only commands may report executed=false or be ignored."))
+        .RequiredString(TEXT("command"), TEXT("Console command line to execute (e.g. 'stat fps')."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_commands"),
-        TEXT("Return a curated list of commonly-used console commands and CVars. "
+        TEXT("Return a static, curated catalog of commonly-used console commands and CVars (stat/show/viewmode toggles, Nanite, Lumen, VSM, etc.). "
+             "Returns {success, commands:[{name, description}]}. "
              "Params: (none). "
-             "Workflow: inspect before calling console/execute or console/set_cvar."))
+             "Workflow: browse for a name, then pass it to console/execute, or pass a CVar name to console/set_cvar / console/get_cvar. "
+             "Warning: read-only and not exhaustive; it is a hand-picked reference, not a live dump of every registered command."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_cvar"),
-        TEXT("Set a console variable by name. "
-             "Params: name (string, required, CVar name e.g. 'r.ScreenPercentage'); value (string, required, new value). "
-             "Workflow: use console/get_cvar to read back; console/list_commands for candidates. "
-             "Warning: fails if the CVar does not exist."))
+        TEXT("Set a console variable by name (priority ECVF_SetByConsole) and read its value back. "
+             "Returns {success, name, value} where value is the CVar's GetString() after the set. "
+             "Params: name (string, required, CVar name e.g. 'r.ScreenPercentage'); value (string, required, parsed by the CVar's own type). "
+             "Workflow: pick a name from console/list_commands; confirm with console/get_cvar for typed renderings. "
+             "Warning: side-effecting and not undoable; returns an error result if the CVar does not exist (it is not created)."))
         .RequiredString(TEXT("name"), TEXT("CVar name (e.g. r.ScreenPercentage)."))
-        .RequiredString(TEXT("value"), TEXT("New CVar value as string."))
+        .RequiredString(TEXT("value"), TEXT("New CVar value as a string (parsed per the CVar's type)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_cvar"),
-        TEXT("Read a console variable's current value. "
-             "Params: name (string, required, CVar name). "
-             "Returns: string, float, int and bool renderings. "
-             "Warning: fails if the CVar does not exist."))
+        TEXT("Read a console variable's current value in every typed rendering. "
+             "Returns {success, name, string_value, float_value, int_value, bool_value} (all derived from the one underlying CVar). "
+             "Params: name (string, required, CVar name e.g. 'r.ScreenPercentage'). "
+             "Workflow: use after console/set_cvar to confirm a change, or to inspect defaults. "
+             "Warning: read-only; returns an error result if the CVar does not exist."))
         .RequiredString(TEXT("name"), TEXT("CVar name (e.g. r.ScreenPercentage)."))
         .Build());
 

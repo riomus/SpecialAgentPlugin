@@ -338,34 +338,37 @@ void FSAConnection::HandlePostMCPSSE(const FSAHttpRequest& Req)
     // the socket to flush keep-alives while the router runs, preventing any
     // client-side HTTP read timeout from firing during long handlers (e.g.
     // material/* normal-map compute, asset imports, PIE start).
-    std::atomic<bool> bDone{ false };
+    // bDone is shared (not a stack-local captured by reference): if the client
+    // disconnects mid-handler the keep-alive loop below exits on Writer.IsDead()
+    // and this function can return while the detached worker is still inside
+    // RouteRequest. The worker must therefore not touch this stack frame —
+    // capturing a stack &bDone here was a use-after-free on disconnect.
+    TSharedRef<std::atomic<bool>> bDone = MakeShared<std::atomic<bool>>(false);
     TPromise<FString> P;
     auto Fut = P.GetFuture();
     AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
-        [Router = Router, Msg, Ctx = MoveTemp(Ctx), &bDone, Promise = MoveTemp(P)]() mutable
+        [Router = Router, Msg, Ctx = MoveTemp(Ctx), bDone, Promise = MoveTemp(P)]() mutable
         {
             FMCPResponse R = Router->RouteRequest(Msg, Ctx);
             Promise.SetValue(FSpecialAgentMCPServer::FormatResponse(R));
-            bDone.store(true, std::memory_order_release);
+            bDone->store(true, std::memory_order_release);
         });
 
     // Keep-alive ticker. Wait up to kKeepAliveIntervalSeconds in 100 ms slices
     // so we respond to bStopping / socket death within one slice. When the
     // slice elapses without completion, flush a ": keepalive\n\n" frame.
-    // NOTE: capturing &bDone is safe because Fut.Get() below blocks this
-    // function until the background task has run.
-    while (!bDone.load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
+    while (!bDone->load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
     {
         for (int32 i = 0;
              i < SATransport::KeepAliveIntervalSeconds * 10
-                 && !bDone.load(std::memory_order_acquire)
+                 && !bDone->load(std::memory_order_acquire)
                  && !bStopping
                  && !Writer.IsDead();
              ++i)
         {
             FPlatformProcess::Sleep(0.1f);
         }
-        if (!bDone.load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
+        if (!bDone->load(std::memory_order_acquire) && !bStopping && !Writer.IsDead())
         {
             Writer.WriteKeepAlive();
         }

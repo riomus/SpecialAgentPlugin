@@ -15,6 +15,7 @@
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
 #include "Engine/DirectionalLight.h"
+#include "ScopedTransaction.h"
 
 namespace
 {
@@ -25,6 +26,8 @@ namespace
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
 
+		const FScopedTransaction Transaction(FText::FromString(FString::Printf(TEXT("SpecialAgent: %s"), Verb)));
+
 		FActorSpawnParameters SP;
 		TActor* Actor = World->SpawnActor<TActor>(TActor::StaticClass(), Location, FRotator::ZeroRotator, SP);
 		if (!Actor) return FMCPJson::MakeError(FString::Printf(TEXT("Failed to spawn %s"), Verb));
@@ -33,6 +36,7 @@ namespace
 		{
 			Actor->SetActorLabel(ActorLabel);
 		}
+		Actor->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		TSharedPtr<FJsonObject> ActorJson = MakeShared<FJsonObject>();
@@ -151,6 +155,8 @@ FMCPResponse FSkyService::HandleSetSunAngle(const FMCPRequest& Request)
 		if (bHasYaw) NewYaw = static_cast<float>(Yaw);
 
 		const FRotator NewRot(NewPitch, NewYaw, Current.Roll);
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set sun angle")));
+		Sun->Modify();
 		Sun->SetActorRotation(NewRot);
 		Sun->MarkPackageDirty();
 
@@ -176,45 +182,53 @@ TArray<FMCPToolInfo> FSkyService::GetAvailableTools() const
 	auto BuildSpawnTool = [](const TCHAR* Name, const TCHAR* Description)
 	{
 		return FMCPToolBuilder(Name, Description)
-			.OptionalVec3(TEXT("location"), TEXT("World-space [X,Y,Z] cm (defaults to origin)"))
-			.OptionalString(TEXT("actor_label"), TEXT("Optional custom actor label"))
+			.OptionalVec3(TEXT("location"), TEXT("World-space spawn location [X,Y,Z] in cm, default origin [0,0,0]"))
+			.OptionalString(TEXT("actor_label"), TEXT("Custom editor label for the spawned actor (optional)"))
 			.Build();
 	};
 
 	Tools.Add(BuildSpawnTool(TEXT("spawn_sky_atmosphere"),
-		TEXT("Spawn ASkyAtmosphere. Provides physically-based sky color and aerial perspective.\n"
-			 "Params: location ([X,Y,Z] optional), actor_label (string optional).\n"
-			 "Workflow: pair with a DirectionalLight for the sun and ASkyLight for indirect sky capture.\n"
-			 "Warning: one atmosphere per level is typical; multiples can produce undefined results.")));
+		TEXT("Spawn an ASkyAtmosphere actor: physically-based sky color, horizon, and aerial perspective. "
+			 "Returns {success, actor:{actor_label, ...}}; pass the returned actor_label to follow-up tools. "
+			 "Params: location (world-space cm [X,Y,Z], optional, default origin; position is irrelevant since the effect is global), actor_label (string, optional). "
+			 "Workflow: spawn a directional light (lighting/spawn_light) as the atmosphere sun and an ASkyLight (sky/spawn_sky_light) for indirect capture; rotate the sun via sky/set_sun_angle. "
+			 "Warning: spawns into the in-memory level only (not saved). One atmosphere per level is enough; extra ones double-apply scattering. Its internal distances are in KILOMETERS (ground_radius ~6360, atmosphere_height ~60), not cm.")));
 
 	Tools.Add(BuildSpawnTool(TEXT("spawn_height_fog"),
-		TEXT("Spawn AExponentialHeightFog - exponential fog with height falloff.\n"
-			 "Params: location ([X,Y,Z] optional), actor_label (string optional).\n"
-			 "Workflow: edit Settings on the spawned actor (future tools) for density/color.\n"
-			 "Warning: only one fog actor is rendered at a time by the engine.")));
+		TEXT("Spawn an AExponentialHeightFog actor: exponential atmospheric fog with height-based density falloff. "
+			 "Returns {success, actor:{actor_label, ...}}; pass the returned actor_label to follow-up tools. "
+			 "Params: location (world-space cm [X,Y,Z], optional, default origin), actor_label (string, optional). "
+			 "Workflow: pair with sky/spawn_sky_atmosphere; tune density/color/volumetric-fog through the post-process or fog tools. "
+			 "Warning: spawns into the in-memory level only (not saved). Only one height-fog actor is sampled by the engine, so reuse an existing one rather than stacking duplicates. Fog distances are in cm, density/falloff are unitless.")));
 
 	Tools.Add(BuildSpawnTool(TEXT("spawn_cloud"),
-		TEXT("Spawn AVolumetricCloud - volumetric clouds atop an ASkyAtmosphere.\n"
-			 "Params: location ([X,Y,Z] optional), actor_label (string optional).\n"
-			 "Workflow: requires an ASkyAtmosphere for correct scattering.\n"
-			 "Warning: volumetric clouds are GPU heavy; disable on low-spec previews.")));
+		TEXT("Spawn an AVolumetricCloud actor: a volumetric cloud layer rendered above an ASkyAtmosphere. "
+			 "Returns {success, actor:{actor_label, ...}}; pass the returned actor_label to follow-up tools. "
+			 "Params: location (world-space cm [X,Y,Z], optional, default origin; the layer is global so position is irrelevant), actor_label (string, optional). "
+			 "Workflow: requires an ASkyAtmosphere (sky/spawn_sky_atmosphere) plus an atmosphere-sun directional light for correct scattering; a Volume-domain cloud material gives best results. "
+			 "Warning: spawns into the in-memory level only (not saved). GPU-heavy, so avoid on low-spec previews. Cloud altitudes/thickness are in KILOMETERS, not cm.")));
 
 	Tools.Add(BuildSpawnTool(TEXT("spawn_sky_light"),
-		TEXT("Spawn ASkyLight. Captures the sky environment for indirect/IBL lighting.\n"
-			 "Params: location ([X,Y,Z] optional), actor_label (string optional).\n"
-			 "Workflow: trigger 'Recapture Scene' via editor or rebuild lighting for accurate capture.\n"
-			 "Warning: only one active SkyLight is sampled per scene.")));
+		TEXT("Spawn an ASkyLight actor: captures the surrounding sky/scene into a cubemap for ambient and image-based (IBL) indirect lighting. "
+			 "Returns {success, actor:{actor_label, ...}}; pass the returned actor_label to the lighting/set_* tools. "
+			 "Params: location (world-space cm [X,Y,Z], optional, default origin; position is irrelevant for the global capture), actor_label (string, optional). "
+			 "Workflow: spawn after sky/spawn_sky_atmosphere and the sun; the SkyLight captures the scene once on spawn/load, so re-capture (Recapture Scene in the editor, or enable Real Time Capture) after later sky changes. "
+			 "Warning: spawns into the in-memory level only (not saved). Only one SkyLight is sampled per scene; reuse an existing one. SkyLight intensity is a unitless scale (default 1).")));
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_sun_angle"),
-		TEXT("Rotate an ADirectionalLight (the sun) to a given angle or time-of-day.\n"
-			 "Params: actor_label (string optional, defaults to the first ADirectionalLight found), "
-			 "time_of_day (number, 0-24 hours; maps to pitch), pitch (number, degrees), yaw (number, degrees).\n"
-			 "Workflow: pair with post_process/set_exposure to respect the lighting change.\n"
-			 "Warning: time_of_day drives pitch only; set yaw separately for compass heading."))
-		.OptionalString(TEXT("actor_label"), TEXT("ADirectionalLight actor label (optional)"))
-		.OptionalNumber(TEXT("time_of_day"), TEXT("Hours 0-24 (0=midnight, 6=sunrise, 12=noon, 18=sunset); maps to pitch"))
-		.OptionalNumber(TEXT("pitch"), TEXT("Explicit pitch in degrees (overrides time_of_day)"))
-		.OptionalNumber(TEXT("yaw"), TEXT("Yaw in degrees (compass direction)"))
+		TEXT("Rotate a directional light (the sun) to an explicit pitch/yaw or a time-of-day, driving the sky lighting. "
+			 "Returns {success, actor:{actor_label, ...}, rotation:[pitch,yaw,roll]} plus time_of_day when that was supplied. "
+			 "Params: actor_label (string, optional; targets that ADirectionalLight, else uses the first directional light in the level), "
+			 "time_of_day (number, 0-24 hours, optional; mapped to pitch as 0=midnight/below, 6=sunrise on horizon, 12=noon overhead, 18=sunset), "
+			 "pitch (number, degrees, optional; overrides time_of_day's pitch when both are given), "
+			 "yaw (number, degrees, optional; compass heading, applied independently). "
+			 "Provide time_of_day OR pitch/yaw (at least one is required). "
+			 "Workflow: spawn the sun via lighting/spawn_light and an ASkyAtmosphere via sky/spawn_sky_atmosphere first; for the sun to drive the atmosphere it must be the Atmosphere Sun Light; recapture the SkyLight and adjust exposure after large changes. "
+			 "Warning: edits the in-memory actor rotation and marks the package dirty, but does not save the level. time_of_day sets pitch only, so set yaw separately for heading. Note the Details panel labels rotation as X=Roll/Y=Pitch/Z=Yaw, which does not match this [pitch,yaw,roll] order. Errors if actor_label is not a directional light, or if no directional light exists."))
+		.OptionalString(TEXT("actor_label"), TEXT("Editor label of the ADirectionalLight (optional; defaults to the first one found)"))
+		.OptionalNumber(TEXT("time_of_day"), TEXT("Hours 0-24 (0=midnight, 6=sunrise, 12=noon, 18=sunset); sets pitch only"))
+		.OptionalNumber(TEXT("pitch"), TEXT("Explicit pitch in degrees (overrides the time_of_day-derived pitch)"))
+		.OptionalNumber(TEXT("yaw"), TEXT("Yaw in degrees (compass heading), applied independently"))
 		.Build());
 
 	return Tools;

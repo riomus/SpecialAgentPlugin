@@ -469,9 +469,25 @@ FMCPResponse FMCPRequestRouter::HandleToolsCall(const FMCPRequest& Request, cons
 		return FMCPResponse::Error(Request.Id, -32602, TEXT("Invalid params"));
 	}
 	
-	FString ToolName = Request.Params->GetStringField(TEXT("name"));
-	TSharedPtr<FJsonObject> Arguments = Request.Params->GetObjectField(TEXT("arguments"));
-	
+	FString ToolName;
+	if (!Request.Params->TryGetStringField(TEXT("name"), ToolName) || ToolName.IsEmpty())
+	{
+		return FMCPResponse::Error(Request.Id, -32602, TEXT("Invalid params: tools/call requires a 'name'"));
+	}
+
+	// 'arguments' is optional — zero-arg tools omit it. Never use the non-Try
+	// accessor here: a tools/call without 'arguments' would otherwise assert.
+	TSharedPtr<FJsonObject> Arguments;
+	const TSharedPtr<FJsonObject>* ArgsPtr = nullptr;
+	if (Request.Params->TryGetObjectField(TEXT("arguments"), ArgsPtr) && ArgsPtr && ArgsPtr->IsValid())
+	{
+		Arguments = *ArgsPtr;
+	}
+	else
+	{
+		Arguments = MakeShared<FJsonObject>();
+	}
+
 	// Split tool name into service/method
 	FString ServicePrefix;
 	FString MethodName;
@@ -507,17 +523,51 @@ FMCPResponse FMCPRequestRouter::WrapToolResponse(const FMCPResponse& ServiceResp
 	TSharedPtr<FJsonObject> MCPResult = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> ContentArray;
 	
+	// A handler may signal a genuine failure via {"success": false, "error": ...}
+	// while still returning a JSON-RPC success envelope. Surface that as a tool
+	// error (isError:true) so the model's error channel reflects reality instead
+	// of reading "ok" with a failure buried in the body.
+	//
+	// Guard on a NON-EMPTY error string, not on success alone: some tools use
+	// success=false for a benign no-op outcome (e.g. "deleted 0 assets", "no
+	// match") with no error message — those must stay normal results, not errors.
+	bool bInnerSuccess = true;
+	FString InnerError;
+	bool bHasError = false;
+	if (ServiceResponse.bSuccess && ServiceResponse.Result.IsValid())
+	{
+		ServiceResponse.Result->TryGetBoolField(TEXT("success"), bInnerSuccess);
+		bHasError = ServiceResponse.Result->TryGetStringField(TEXT("error"), InnerError) && !InnerError.IsEmpty();
+	}
+
+	if (ServiceResponse.bSuccess && ServiceResponse.Result.IsValid() && !bInnerSuccess && bHasError)
+	{
+		TSharedPtr<FJsonObject> TextContent = MakeShared<FJsonObject>();
+		TextContent->SetStringField(TEXT("type"), TEXT("text"));
+		TextContent->SetStringField(TEXT("text"),
+			FString::Printf(TEXT("%s/%s failed: %s"), *ServicePrefix, *MethodName, *InnerError));
+		ContentArray.Add(MakeShared<FJsonValueObject>(TextContent));
+		MCPResult->SetArrayField(TEXT("content"), ContentArray);
+		MCPResult->SetBoolField(TEXT("isError"), true);
+		return FMCPResponse::Success(ServiceResponse.Id, MCPResult);
+	}
+
 	if (ServiceResponse.bSuccess && ServiceResponse.Result.IsValid())
 	{
 		// Check if this is a screenshot response with base64 data
 		FString Base64Data;
 		if (ServiceResponse.Result->TryGetStringField(TEXT("base64_data"), Base64Data))
 		{
-			// Add image content block
+			// Add image content block. Use the mimeType the service actually
+			// produced (capture emits JPEG by default) — never assume PNG, or
+			// strict MCP image decoders receive JPEG bytes labelled image/png.
+			FString Mime = TEXT("image/png");
+			ServiceResponse.Result->TryGetStringField(TEXT("mimeType"), Mime);
+
 			TSharedPtr<FJsonObject> ImageContent = MakeShared<FJsonObject>();
 			ImageContent->SetStringField(TEXT("type"), TEXT("image"));
 			ImageContent->SetStringField(TEXT("data"), Base64Data);
-			ImageContent->SetStringField(TEXT("mimeType"), TEXT("image/png"));
+			ImageContent->SetStringField(TEXT("mimeType"), Mime);
 			ContentArray.Add(MakeShared<FJsonValueObject>(ImageContent));
 			
 			// Also add text description

@@ -22,38 +22,45 @@ TArray<FMCPToolInfo> FLevelService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("open"),
-        TEXT("Open (load) an existing level by package path. "
-             "Params: map_path (string, required, content-path e.g. '/Game/Maps/MyLevel'). "
-             "Workflow: use level/get_current_path after to confirm. "
-             "Warning: unsaved edits in the current level are prompted by the editor."))
-        .RequiredString(TEXT("map_path"), TEXT("Level package path (e.g. /Game/Maps/MyLevel)."))
+        TEXT("Load an existing level into the editor by virtual package path, replacing the current world. "
+             "Returns {success, map_path, world_path}. "
+             "Params: map_path (string, required, virtual content path like '/Game/Maps/MyLevel', no extension, never an OS path). "
+             "Workflow: call level/get_current_path afterwards to confirm the active world. "
+             "Warning: switches the active editor world; the editor prompts to save unsaved edits in the current level first."))
+        .RequiredString(TEXT("map_path"), TEXT("Virtual level package path (e.g. /Game/Maps/MyLevel)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("new"),
-        TEXT("Create a new untitled blank map in the editor. "
-             "Params: save_existing (bool, optional, save current before replacing; default false). "
-             "Workflow: follow with level/save_as to write to disk. "
-             "Warning: discards unsaved work if save_existing is false."))
-        .OptionalBool(TEXT("save_existing"), TEXT("If true, prompt/save current map before creating new."))
+        TEXT("Create a new untitled blank map and make it the active editor world (in memory only, not yet on disk). "
+             "Returns {success, world_path}. "
+             "Params: save_existing (bool, optional, default false; when true the editor prompts to save the current map before replacing it). "
+             "Workflow: follow with level/save_as to write the new map to a virtual content path. "
+             "Warning: discards unsaved work in the current level when save_existing is false; the new map is transient until saved."))
+        .OptionalBool(TEXT("save_existing"), TEXT("If true, prompt to save the current map before creating the new one (default false)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("save_as"),
-        TEXT("Save the current level as a new asset. The editor shows a path dialog. "
+        TEXT("Save the current editor level to disk under a new name; the editor shows an interactive Save-As path dialog. "
+             "Returns {success, saved_filename} where saved_filename is the on-disk OS path written. "
              "Params: (none). "
-             "Workflow: use after level/new or to fork an existing level. "
-             "Warning: returns success=false if the user cancels the dialog."))
+             "Workflow: use after level/new to persist an untitled map, or to fork an existing level. "
+             "Warning: requires a human at the dialog; returns success=false if there is no active world or the user cancels."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_current_path"),
-        TEXT("Return the package name / file path of the currently open level. "
+        TEXT("Return the world object path and virtual package name of the currently open editor level. "
+             "Returns {success, world_path, package_name} (package_name is the /Game/... virtual path, no extension). "
              "Params: (none). "
-             "Workflow: call before level/open to compare."))
+             "Workflow: call before level/open to compare, or after level/open to confirm the switch took effect. "
+             "Warning: read-only; returns an error result when there is no active editor world (e.g. during startup)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_templates"),
-        TEXT("Return the built-in new-level templates recognized by this service. "
+        TEXT("Return the static catalog of new-level template names this service documents (Empty, Basic, OpenWorld, VR-Basic, TimeOfDay). "
+             "Returns {success, templates:[{name, description}]}. "
              "Params: (none). "
-             "Workflow: pick one and feed its name to level/new when template support is added."))
+             "Workflow: informational only; level/new currently always creates a blank map and does NOT accept a template argument. "
+             "Warning: read-only; these names are not yet wired into level/new, so picking one has no effect on map creation."))
         .Build());
 
     return Tools;

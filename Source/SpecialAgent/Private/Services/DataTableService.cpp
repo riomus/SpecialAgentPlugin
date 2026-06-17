@@ -11,6 +11,7 @@
 #include "JsonObjectConverter.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
+#include "ScopedTransaction.h"
 
 namespace
 {
@@ -228,6 +229,9 @@ FMCPResponse FDataTableService::HandleRequest(const FMCPRequest& Request, const 
                 return Result;
             }
 
+            const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Write DataTable Row")));
+            Table->Modify();
+
             Table->AddRow(RowKey, StructStorage.GetData(), RowStruct);
             RowStruct->DestroyStruct(StructStorage.GetData());
 
@@ -277,6 +281,9 @@ FMCPResponse FDataTableService::HandleRequest(const FMCPRequest& Request, const 
                 Result->SetStringField(TEXT("error"), FString::Printf(TEXT("Row not found: %s"), *RowName));
                 return Result;
             }
+            const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Delete DataTable Row")));
+            Table->Modify();
+
             Table->RemoveRow(RowKey);
             Table->GetOutermost()->MarkPackageDirty();
 
@@ -350,57 +357,66 @@ TArray<FMCPToolInfo> FDataTableService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("list_tables"),
-        TEXT("List all UDataTable assets in the project.\n"
-             "Params: (none).\n"
-             "Workflow: Follow with list_rows / get_row_struct to inspect a specific table."))
+        TEXT("List every UDataTable asset in the project via the Asset Registry (no asset loads). Returns {tables[{name, path (object path), package_name}], count}. "
+             "Params: (none). Read-only, no side effects. "
+             "Workflow: pick a path here, then data_table/get_row_struct to learn the row shape and data_table/list_rows to enumerate rows. "
+             "Warning: reads cached registry metadata, so a freshly created table may not appear until the registry has scanned it."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("list_rows"),
-        TEXT("List row names of a data table.\n"
-             "Params: table_path (string, required, /Game/... asset path).\n"
-             "Workflow: pair with data_table/get_row to read individual rows."))
-        .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
+        TEXT("List the row keys (names) of one DataTable. Returns {table_path, rows[string], count}. "
+             "Params: table_path (string, required, virtual object path /Game/...; loads the asset). Read-only, no side effects. "
+             "Workflow: pair with data_table/get_row to read a row's fields, or use the names as row_name for set_row/delete_row. "
+             "Warning: returns an error if table_path does not resolve to a UDataTable."))
+        .RequiredString(TEXT("table_path"), TEXT("DataTable object path, e.g. /Game/Data/MyTable.MyTable"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_row"),
-        TEXT("Read one row as JSON (reflection-based).\n"
-             "Params: table_path (string), row_name (string).\n"
-             "Workflow: Field names and types come from get_row_struct."))
-        .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
-        .RequiredString(TEXT("row_name"), TEXT("Row key (FName)"))
+        TEXT("Read one DataTable row as a JSON object, serialized from the row struct by reflection. Returns {table_path, row_name, row (object keyed by struct field names)}. "
+             "Params: table_path (string, required, virtual object path /Game/...), row_name (string, required, exact row key FName from list_rows). Read-only, no side effects. "
+             "Workflow: get the field names/types from data_table/get_row_struct, list keys with data_table/list_rows, then read here. "
+             "Warning: returns an error if the table is missing or the row key is not found / fails to serialize."))
+        .RequiredString(TEXT("table_path"), TEXT("DataTable object path, e.g. /Game/Data/MyTable.MyTable"))
+        .RequiredString(TEXT("row_name"), TEXT("Exact row key (FName) from list_rows"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_row"),
-        TEXT("Update an existing row from JSON (reflection-based).\n"
-             "Params: table_path (string), row_name (string), row (object, keys matching struct field names).\n"
-             "Workflow: Call content_browser/save afterward to persist.\n"
-             "Warning: Fails if row does not exist — use add_row to create."))
-        .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
-        .RequiredString(TEXT("row_name"), TEXT("Row key (FName)"))
+        TEXT("Overwrite an EXISTING DataTable row from a JSON object (reflection-based). Returns {table_path, row_name, created (always false here)}. "
+             "Params: table_path (string, required, virtual object path /Game/...), row_name (string, required, must already exist), "
+             "row (object, required, keys must match the row struct's field names; get them from data_table/get_row_struct). "
+             "Workflow: get_row_struct -> build the row object -> set_row -> content_browser/save to persist. "
+             "Warning: returns an error if the row does not exist -- use data_table/add_row to create. Only marks the package dirty; it does NOT save to disk, so persist with content_browser/save. Fields whose keys do not match the struct are silently ignored."))
+        .RequiredString(TEXT("table_path"), TEXT("DataTable object path, e.g. /Game/Data/MyTable.MyTable"))
+        .RequiredString(TEXT("row_name"), TEXT("Existing row key (FName)"))
+        .RequiredAny(TEXT("row"), TEXT("Row values as a JSON object keyed by row-struct field names (from get_row_struct)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("add_row"),
-        TEXT("Add or replace a row in the table with JSON payload.\n"
-             "Params: table_path (string), row_name (string), row (object, struct shape).\n"
-             "Workflow: Get the expected shape with get_row_struct."))
-        .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
+        TEXT("Upsert a DataTable row from a JSON object: creates it if absent, replaces it if present (reflection-based). Returns {table_path, row_name, created (true if the row was newly added)}. "
+             "Params: table_path (string, required, virtual object path /Game/...), row_name (string, required, FName key), "
+             "row (object, required, keys must match the row struct's field names; get them from data_table/get_row_struct). "
+             "Workflow: get_row_struct -> build the row object -> add_row -> content_browser/save to persist. "
+             "Warning: this is a single-row upsert (UDataTable::AddRow), so it does not clear the rest of the table. Only marks the package dirty -- persist with content_browser/save. Keys not matching the struct are silently dropped; check the Output Log if a row looks empty."))
+        .RequiredString(TEXT("table_path"), TEXT("DataTable object path, e.g. /Game/Data/MyTable.MyTable"))
         .RequiredString(TEXT("row_name"), TEXT("Row key (FName)"))
+        .RequiredAny(TEXT("row"), TEXT("Row values as a JSON object keyed by row-struct field names (from get_row_struct)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("delete_row"),
-        TEXT("Remove a row from a DataTable.\n"
-             "Params: table_path (string, required), row_name (string, required, FName key).\n"
-             "Workflow: pair with content_browser/save to persist; data_table/list_rows to verify.\n"
-             "Warning: irreversible without an open undo transaction."))
-        .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
-        .RequiredString(TEXT("row_name"), TEXT("Row key (FName)"))
+        TEXT("Remove a single row from a DataTable (UDataTable::RemoveRow). Returns {table_path, row_name}. "
+             "Params: table_path (string, required, virtual object path /Game/...), row_name (string, required, exact FName key). "
+             "Workflow: confirm the key with data_table/list_rows, delete here, then content_browser/save to persist; list_rows again to verify. "
+             "Warning: returns an error if the row key does not exist. Only marks the package dirty (no in-memory undo here) -- the deletion becomes permanent on the next save."))
+        .RequiredString(TEXT("table_path"), TEXT("DataTable object path, e.g. /Game/Data/MyTable.MyTable"))
+        .RequiredString(TEXT("row_name"), TEXT("Exact row key (FName) from list_rows"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_row_struct"),
-        TEXT("Return the row struct name, path, and field list (name + cpp_type) for a DataTable.\n"
-             "Params: table_path (string).\n"
-             "Workflow: Call first when constructing add_row/set_row payloads."))
-        .RequiredString(TEXT("table_path"), TEXT("DataTable asset path"))
+        TEXT("Describe a DataTable's row struct schema. Returns {table_path, row_struct_name, row_struct_path, fields[{name, cpp_type}]}. "
+             "Params: table_path (string, required, virtual object path /Game/...). Read-only, no side effects. "
+             "Workflow: call this FIRST when building an add_row/set_row 'row' object -- the field names here are exactly the keys the row JSON must use. "
+             "Warning: returns an error if the table is missing; if the table has no RowStruct, row_struct_name is empty and fields is omitted."))
+        .RequiredString(TEXT("table_path"), TEXT("DataTable object path, e.g. /Game/Data/MyTable.MyTable"))
         .Build());
 
     return Tools;

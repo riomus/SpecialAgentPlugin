@@ -374,56 +374,65 @@ TArray<FMCPToolInfo> FStreamingService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("list_levels"),
-		TEXT("List streaming sublevels registered on the current editor world. Returns package name and loaded/visible state per level.\n"
-		     "Params: (none).\n"
-		     "Workflow: Pair with load_level/unload_level to toggle state by package name."))
+		TEXT("List the streaming sublevels (ULevelStreaming) registered on the current editor world, plus the persistent base level. "
+		     "Returns {levels:[{package_name (/Game/... path), class, is_loaded, is_visible, should_be_loaded, should_be_visible, lod_index}], count}; "
+		     "the persistent entry adds is_persistent=true. "
+		     "Params: (none). "
+		     "Workflow: Read-only; call first to get a package_name to feed load_level / unload_level / set_level_visibility. "
+		     "Warning: World Partition cells are not ULevelStreaming sublevels; use world_partition/list_cells for those."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("load_level"),
-		TEXT("Load a streaming sublevel (existing ULevelStreaming or new ULevelStreamingDynamic instance). Returns loaded/visible state.\n"
-		     "Params: level_name (string, /Game/... path or short package name, required), location ([X,Y,Z] cm, optional for new instances), rotation ([P,Y,R] deg, optional), make_visible (bool, default true).\n"
-		     "Workflow: Call list_levels first to discover existing sublevels."))
+		TEXT("Load a streaming sublevel into the editor world. If level_name already matches a registered ULevelStreaming it just flags it loaded/visible; otherwise it spawns a fresh ULevelStreamingDynamic instance at location/rotation. "
+		     "Returns {package_name, is_loaded, is_visible, path:'existing_streaming_level'|'dynamic_instance'}. "
+		     "Params: level_name (string, /Game/Maps/MyLevel path or short package name, required), location ([X,Y,Z] world-space cm, optional, default [0,0,0], applied only to new dynamic instances), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0], new instances only), make_visible (bool, optional, default true). "
+		     "Workflow: Call list_levels first to discover sublevels and their package_name. "
+		     "Warning: Mutates in-memory streaming state and runs a blocking FlushLevelStreaming (Full) on the game thread; not persisted to disk. Fails if the level asset is missing or already loaded as a dynamic instance."))
 		.RequiredString(TEXT("level_name"), TEXT("Level package path (/Game/Maps/MyLevel) or short name"))
-		.OptionalVec3(TEXT("location"), TEXT("Spawn location for dynamic level instances [X,Y,Z] cm"))
-		.OptionalVec3(TEXT("rotation"), TEXT("Spawn rotation [Pitch,Yaw,Roll] degrees"))
-		.OptionalBool(TEXT("make_visible"), TEXT("Set should-be-visible flag after loading (default true)"))
+		.OptionalVec3(TEXT("location"), TEXT("Spawn location for new dynamic instances [X,Y,Z] world cm; default [0,0,0]"))
+		.OptionalVec3(TEXT("rotation"), TEXT("Spawn rotation for new dynamic instances [Pitch,Yaw,Roll] degrees; default [0,0,0]"))
+		.OptionalBool(TEXT("make_visible"), TEXT("Set should-be-visible after loading; default true"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("unload_level"),
-		TEXT("Unload a streaming sublevel. Clears should-be-loaded, should-be-visible, and requests removal.\n"
-		     "Params: level_name (string, package path or short name, required).\n"
-		     "Workflow: Call list_levels first to confirm the level is loaded.\n"
-		     "Warning: Unloading the persistent level is not supported."))
+		TEXT("Unload a registered streaming sublevel: clears should-be-loaded and should-be-visible, requests removal, then flushes streaming. "
+		     "Returns {package_name, is_loaded, is_visible}. "
+		     "Params: level_name (string, package path or short name, required; must match a ULevelStreaming from list_levels). "
+		     "Workflow: Call list_levels first to confirm the level is loaded and get the exact package_name. "
+		     "Warning: Mutates in-memory state via a blocking FlushLevelStreaming (Full); not persisted. The persistent base level cannot be unloaded, and unknown names return an error."))
 		.RequiredString(TEXT("level_name"), TEXT("Level package path or short name"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("set_level_visibility"),
-		TEXT("Show or hide a loaded streaming sublevel without unloading it. Sets ULevelStreaming::SetShouldBeVisible.\n"
-		     "Params: level_name (string, required), visible (bool, required).\n"
-		     "Workflow: Use to cheaply toggle rendering of a loaded sublevel; call load_level first if not loaded."))
+		TEXT("Show or hide an already-loaded streaming sublevel without unloading it, by toggling ULevelStreaming should-be-visible and flushing visibility. "
+		     "Returns {package_name, should_be_visible, is_visible}. "
+		     "Params: level_name (string, package path or short name, required), visible (bool, required; true shows, false hides). "
+		     "Workflow: Call list_levels to confirm is_loaded; cheaper than unload_level/load_level for flicker-free toggling. "
+		     "Warning: Changes in-memory state only (not saved); runs a blocking visibility flush. Unknown names return an error."))
 		.RequiredString(TEXT("level_name"), TEXT("Level package path or short name"))
 		.RequiredBool(TEXT("visible"), TEXT("true to show, false to hide"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 		TEXT("set_level_streaming_volume"),
-		TEXT("Spawn a ALevelStreamingVolume at location/extent and bind it to a streaming sublevel.\n"
-		     "Params: level_name (string, required), location ([X,Y,Z] cm, required, volume center), extent ([X,Y,Z] cm, optional, default [1000,1000,1000]), usage (string enum, optional, default 'loading_and_visibility').\n"
-		     "Workflow: Call list_levels to pick the level, then this tool to drive streaming from viewport position.\n"
-		     "Warning: Volumes apply only when the player camera is inside; set make_visible on the sublevel for editor-time previews."))
+		TEXT("Spawn an ALevelStreamingVolume centered at location, sized to extent, and bind it to a streaming sublevel so the volume drives that level's load/visibility. "
+		     "Returns {package_name, volume_label, usage, location, extent}. "
+		     "Params: level_name (string, required; must match a ULevelStreaming from list_levels), location ([X,Y,Z] world-space cm, required, volume center), extent ([X,Y,Z] cm full box size, optional, default [1000,1000,1000]; applied as actor scale of the unit-cube brush), usage (enum string, optional, default 'loading_and_visibility'). "
+		     "Workflow: Call list_levels to pick the level, then place the volume so streaming follows the player/camera position. "
+		     "Warning: Spawns a new actor in the level (in-memory only, not saved) and the streaming volume only activates when the camera is inside it; for an editor-time preview load the sublevel directly with load_level. Unknown level names return an error."))
 		.RequiredString(TEXT("level_name"), TEXT("Level package path or short name"))
 		.RequiredVec3(TEXT("location"), TEXT("Volume center [X,Y,Z] world cm"))
-		.OptionalVec3(TEXT("extent"), TEXT("Volume half-extents [X,Y,Z] cm (default 1000,1000,1000)"))
+		.OptionalVec3(TEXT("extent"), TEXT("Volume full box size [X,Y,Z] cm; default [1000,1000,1000]"))
 		.OptionalEnum(TEXT("usage"), {
 			TEXT("loading"),
 			TEXT("loading_and_visibility"),
 			TEXT("visibility_blocking_on_load"),
 			TEXT("blocking_on_load"),
 			TEXT("loading_not_visible")
-		}, TEXT("Streaming usage mode"))
+		}, TEXT("Streaming usage mode; default loading_and_visibility"))
 		.Build());
 
 	return Tools;

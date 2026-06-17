@@ -8,6 +8,13 @@ Full Python API access • ~294 tools across 45 services • Visual feedback loo
 
 ## What's new
 
+- **Phase 4 — stability & screenshots:**
+  - **Reliable screenshots.** `screenshot/capture` and `screenshot/save` now always target the Level Editor viewport (never a focused material/Niagara/preview window) and synchronously repaint it before reading pixels, so captures no longer return stale or black frames — you no longer need a separate `viewport/force_redraw`. Image responses also report the correct MIME type (JPEG bytes are no longer mislabelled as PNG), fixing blank/garbled images in strict vision clients.
+  - **No more silent hangs.** Every game-thread call is now time-bounded: a stalled/backgrounded editor returns a clean error instead of wedging the request forever. The editor's "Use Less CPU when in Background" throttle is disabled on startup so requests keep flowing while the editor is not the foreground window.
+  - **Crash hardening.** Fixed an SSE use-after-free on client disconnect, a re-entrant PIE single-step crash, unchecked viewport-client casts (focusing a non-level viewport no longer crashes), unguarded JSON accessors on the network path, and several reachable `check()` aborts from hostile/invalid tool arguments. `reflection/call_function` now only invokes safe, directly-callable functions.
+  - **Truthful results.** Tool failures now surface through the MCP error channel (`isError`) instead of being reported as success. Malformed coordinates are rejected instead of silently becoming `(0,0,0)`.
+  - **Docs overhaul (~294 tools).** Every tool description was rewritten against researched UE5.7 best practices to a consistent shape (what it does + return shape → `Params:` with units/defaults → `Workflow:` chaining → `Warning:` side-effects). Fixed dozens of schema-vs-handler mismatches (wrong/undocumented params), wrong units and defaults, inaccurate return shapes, and removed all references to deprecated APIs (EditorLevelLibrary/EditorAssetLibrary/etc.) in favor of the modern Editor Subsystems. Actor results now include a clear `actor_label` and `path` handle.
+  - **Durable, undoable edits.** Mutating tools (spawn/transform/property/material/component/datatable/lighting/sky/post-process/decal/foliage/landscape/PCG/gameplay/sequencer, etc.) now wrap their changes in an undo transaction and mark the owning package dirty, so edits show up for save and can be reverted with Ctrl+Z instead of silently evaporating on reload.
 - **Phase 0:** fixed a task-graph reentrancy crash that could hang the editor when MCP requests were dispatched to the game thread while another game-thread task was mid-flight. Requests are now dispatched without re-entering the calling task.
 - **Phase 3:** expanded the service surface from 13 to 45 services (~294 tools), added 12 new MCP prompts, and refreshed the system instructions string sent to clients.
 
@@ -213,19 +220,21 @@ Counts are approximate as services evolve; call `tools/list` at runtime for the 
 
 ## Configuration
 
-Edit `Config/DefaultSpecialAgent.ini` to customize:
+Edit `Config/DefaultSpecialAgent.ini` (shipped with the plugin) to customize:
 
 ```ini
 [/Script/SpecialAgent.SpecialAgentSettings]
+; Auto-start the MCP server when the editor launches
+ServerEnabled=true
+
 ; Server port (change if 8767 is in use)
 ServerPort=8767
-
-; Auto-start server when editor launches
-bAutoStart=true
-
-; Enable verbose logging
-bVerboseLogging=false
 ```
+
+To override these per project without editing the plugin, add the same
+`[/Script/SpecialAgent.SpecialAgentSettings]` section with `ServerEnabled` /
+`ServerPort` to your project's `Config/DefaultGame.ini` — project settings take
+precedence over the plugin defaults.
 
 ---
 
@@ -265,10 +274,16 @@ bVerboseLogging=false
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [QUICKSTART.md](QUICKSTART.md) | Step-by-step setup guide |
-| [STRUCTURE.md](STRUCTURE.md) | Plugin architecture and file layout |
+In-editor, the server exposes browsable docs as MCP resources (call `resources/list`):
+
+| Resource URI | Description |
+|--------------|-------------|
+| `mcp://unreal/cheatsheet` | UE5 Python cheat sheet (subsystems, idempotency, sampler types, redraw, idioms) |
+| `mcp://unreal/deprecations` | Deprecated → modern API mapping |
+| `mcp://unreal/services` | Auto-generated index of every registered service and tool |
+| `mcp://unreal/idioms/*` | Cookbook entries (spawn_actor, material_params, transactions, …) |
+
+The authoritative tool list is always available at runtime via `tools/list`.
 
 ---
 
@@ -305,6 +320,16 @@ Both layers work together: quick tools for common tasks, unlimited scripting for
 ### Client not connecting
 
 - Some IDEs like Cursor may need to be started after your Unreal Engine editor as the connection attempt only occurs on startup.
+
+### Screenshots look black, stale, or fail to decode
+
+- `screenshot/capture` and `screenshot/save` now force a viewport repaint and report the correct image MIME type, so this should be fixed. If a capture is still black, confirm a **Level Editor viewport** is open (the tools target it specifically) and that the level has finished loading.
+- Pass `force_redraw: false` only if you intentionally want the last drawn frame (faster, but may be stale).
+
+### Requests hang or time out
+
+- The plugin disables the editor's *"Use Less CPU when in Background"* setting on startup so the game thread keeps ticking while the editor is not the foreground window — the most common cause of MCP requests appearing to hang. If you re-enable it manually, background requests will be slow again.
+- Game-thread operations are time-bounded (~120s); a genuinely stuck editor (open modal dialog, long blocking import/compile) returns a structured error rather than hanging forever. Avoid tools that open modal dialogs (`utility/show_dialog`, interactive save-as) while driving the editor unattended.
 
 ---
 

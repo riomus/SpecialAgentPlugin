@@ -13,6 +13,7 @@
 #include "Engine/TargetPoint.h"
 #include "GameFramework/KillZVolume.h"
 #include "GameFramework/PlayerStart.h"
+#include "ScopedTransaction.h"
 
 FGameplayService::FGameplayService()
 {
@@ -46,6 +47,8 @@ namespace
 			return Result;
 		}
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: spawn actor")));
+
 		FActorSpawnParameters SpawnParams;
 		TActor* NewActor = World->SpawnActor<TActor>(TActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
 		if (!NewActor)
@@ -70,6 +73,9 @@ namespace
 		{
 			NewActor->SetActorLabel(OptionalLabel);
 		}
+
+		// Flag the owning level package dirty so the new actor is saveable.
+		NewActor->MarkPackageDirty();
 
 		Result->SetBoolField(TEXT("success"), true);
 		TSharedPtr<FJsonObject> ActorObj = MakeShared<FJsonObject>();
@@ -368,72 +374,72 @@ TArray<FMCPToolInfo> FGameplayService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("spawn_trigger_volume"),
-			TEXT("Spawn a trigger volume. Places an ATriggerVolume (AVolume-derived box trigger) in the level. "
-			     "Params: location ([X,Y,Z] cm, world), rotation ([Pitch,Yaw,Roll] deg, optional), box_extent ([X,Y,Z] cm half-size, optional — applied via actor scale; default 100,100,100), label (string, optional actor label). "
-			     "Workflow: use viewport/trace_from_screen for placement, then world/list_actors to confirm. "
-			     "Warning: extent is mapped onto ActorScale3D — the volume's brush stays unit-size."))
-		.RequiredVec3  (TEXT("location"),   TEXT("Spawn location as [X, Y, Z] in cm"))
-		.OptionalVec3  (TEXT("rotation"),   TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"))
-		.OptionalVec3  (TEXT("box_extent"), TEXT("Optional half-extent as [X, Y, Z] in cm; default 100,100,100"))
-		.OptionalString(TEXT("label"),      TEXT("Optional actor label"))
+			TEXT("Spawn an ATriggerVolume (box trigger) into the persistent editor world. Returns {success, actor:{actor_label, path, class, location, rotation, scale, tags}}. "
+			     "Params: location ([X,Y,Z] world-space cm, required — volume center), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0]), box_extent ([X,Y,Z] cm half-extent, optional, default [100,100,100]), label (string, optional actor label). "
+			     "Workflow: use viewport/trace_from_screen to pick a location, then world/list_actors to confirm by the returned label. "
+			     "Warning: in-memory only — NOT saved to disk (save the level package to persist). box_extent is applied via ActorScale3D (extent/100), so the underlying brush stays unit-size; default volume is a 200 cm cube (extent 100)."))
+		.RequiredVec3  (TEXT("location"),   TEXT("Volume center as world-space [X, Y, Z] in cm"))
+		.OptionalVec3  (TEXT("rotation"),   TEXT("Rotation as [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
+		.OptionalVec3  (TEXT("box_extent"), TEXT("Half-extent as [X, Y, Z] in cm, applied via actor scale (default [100,100,100])"))
+		.OptionalString(TEXT("label"),      TEXT("Actor label shown in the World Outliner (optional)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("spawn_player_start"),
-			TEXT("Spawn a player start. Places an APlayerStart — the default spawn location for Pawns at PIE/game start. "
-			     "Params: location ([X,Y,Z] cm, world), rotation ([Pitch,Yaw,Roll] deg, optional — determines initial facing), label (string, optional). "
-			     "Workflow: place on walkable ground; use viewport/trace_from_screen to snap to geometry. "
-			     "Warning: if multiple player starts exist, UE chooses one via GameMode rules — label them to disambiguate."))
-		.RequiredVec3  (TEXT("location"), TEXT("Spawn location as [X, Y, Z] in cm"))
-		.OptionalVec3  (TEXT("rotation"), TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"))
-		.OptionalString(TEXT("label"),    TEXT("Optional actor label"))
+			TEXT("Spawn an APlayerStart (the default Pawn spawn point at PIE/game start) into the editor world. Returns {success, actor:{actor_label, path, class, location, rotation, scale, tags}}. "
+			     "Params: location ([X,Y,Z] world-space cm, required), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0] — sets the Pawn's initial facing; yaw is the heading), label (string, optional actor label). "
+			     "Workflow: place on walkable ground; use viewport/trace_from_screen to snap location to geometry, then world/list_actors to confirm. "
+			     "Warning: in-memory only — NOT saved to disk until you save the level. With multiple player starts the GameMode picks one; set distinct labels to disambiguate."))
+		.RequiredVec3  (TEXT("location"), TEXT("Spawn location as world-space [X, Y, Z] in cm"))
+		.OptionalVec3  (TEXT("rotation"), TEXT("Initial facing as [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
+		.OptionalString(TEXT("label"),    TEXT("Actor label shown in the World Outliner (optional)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("spawn_note"),
-			TEXT("Spawn an editor note. Places an ANote — an editor-only sticky-note actor used to flag design tasks. "
-			     "Params: location ([X,Y,Z] cm), rotation ([Pitch,Yaw,Roll] deg, optional), text (string, optional note body), label (string, optional). "
-			     "Workflow: use to annotate level review findings; visible only in editor. "
-			     "Warning: text is stripped from cooked builds (WITH_EDITORONLY_DATA)."))
-		.RequiredVec3  (TEXT("location"), TEXT("Spawn location as [X, Y, Z] in cm"))
-		.OptionalVec3  (TEXT("rotation"), TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"))
-		.OptionalString(TEXT("text"),     TEXT("Optional note body text"))
-		.OptionalString(TEXT("label"),    TEXT("Optional actor label"))
+			TEXT("Spawn an ANote (editor-only sticky-note actor) used to flag design tasks. Returns {success, actor:{actor_label, path, class, location, rotation, scale, tags}}. "
+			     "Params: location ([X,Y,Z] world-space cm, required), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0]), text (string, optional — the note body, applied to ANote.Text), label (string, optional actor label). "
+			     "Workflow: use to annotate level-review findings; visible only in the editor. "
+			     "Warning: in-memory only — NOT saved to disk until you save the level. The note text lives behind WITH_EDITORONLY_DATA and is stripped from cooked builds."))
+		.RequiredVec3  (TEXT("location"), TEXT("Spawn location as world-space [X, Y, Z] in cm"))
+		.OptionalVec3  (TEXT("rotation"), TEXT("Rotation as [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
+		.OptionalString(TEXT("text"),     TEXT("Note body text written to ANote.Text (optional)"))
+		.OptionalString(TEXT("label"),    TEXT("Actor label shown in the World Outliner (optional)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("spawn_target_point"),
-			TEXT("Spawn a target point. Places an ATargetPoint — a lightweight transform marker for AI, cinematics, or pathing hooks. "
-			     "Params: location ([X,Y,Z] cm), rotation ([Pitch,Yaw,Roll] deg, optional — encodes facing/vector for consumers), label (string, optional). "
+			TEXT("Spawn an ATargetPoint (lightweight transform marker) for AI, cinematics, or pathing hooks. Returns {success, actor:{actor_label, path, class, location, rotation, scale, tags}}. "
+			     "Params: location ([X,Y,Z] world-space cm, required), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0] — encodes a facing/vector for consumers), label (string, optional actor label). "
 			     "Workflow: reference target points by label from Blueprints or behavior trees. "
-			     "Warning: has no runtime logic — it's a pure transform bearer."))
-		.RequiredVec3  (TEXT("location"), TEXT("Spawn location as [X, Y, Z] in cm"))
-		.OptionalVec3  (TEXT("rotation"), TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"))
-		.OptionalString(TEXT("label"),    TEXT("Optional actor label"))
+			     "Warning: in-memory only — NOT saved to disk until you save the level. Has no runtime logic; it is a pure transform bearer."))
+		.RequiredVec3  (TEXT("location"), TEXT("Spawn location as world-space [X, Y, Z] in cm"))
+		.OptionalVec3  (TEXT("rotation"), TEXT("Facing as [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
+		.OptionalString(TEXT("label"),    TEXT("Actor label shown in the World Outliner (optional)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("spawn_killz_volume"),
-			TEXT("Spawn a kill-Z volume. Places an AKillZVolume (PhysicsVolume-derived) that destroys any actor entering it by calling FellOutOfWorld. "
-			     "Params: location ([X,Y,Z] cm — volume center), rotation ([Pitch,Yaw,Roll] deg, optional), box_extent ([X,Y,Z] cm half-size, optional — via actor scale; default 100,100,100), label (string, optional). "
-			     "Workflow: place below playable area to catch fallen actors. "
-			     "Warning: destroys ANY pawn/actor overlapping it; verify extent before stretching across a level."))
-		.RequiredVec3  (TEXT("location"),   TEXT("Spawn location as [X, Y, Z] in cm (volume center)"))
-		.OptionalVec3  (TEXT("rotation"),   TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"))
-		.OptionalVec3  (TEXT("box_extent"), TEXT("Optional half-extent as [X, Y, Z] in cm; default 100,100,100"))
-		.OptionalString(TEXT("label"),      TEXT("Optional actor label"))
+			TEXT("Spawn an AKillZVolume (PhysicsVolume-derived) that destroys actors entering it (FellOutOfWorld). Returns {success, actor:{actor_label, path, class, location, rotation, scale, tags}}. "
+			     "Params: location ([X,Y,Z] world-space cm, required — volume center), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0]), box_extent ([X,Y,Z] cm half-extent, optional, default [100,100,100]), label (string, optional actor label). "
+			     "Workflow: place below the playable area to catch fallen actors at runtime. "
+			     "Warning: in-memory only — NOT saved to disk until you save the level. box_extent is applied via ActorScale3D (extent/100); destroys ANY overlapping pawn/actor in PIE/game, so size it deliberately before stretching across the level."))
+		.RequiredVec3  (TEXT("location"),   TEXT("Volume center as world-space [X, Y, Z] in cm"))
+		.OptionalVec3  (TEXT("rotation"),   TEXT("Rotation as [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
+		.OptionalVec3  (TEXT("box_extent"), TEXT("Half-extent as [X, Y, Z] in cm, applied via actor scale (default [100,100,100])"))
+		.OptionalString(TEXT("label"),      TEXT("Actor label shown in the World Outliner (optional)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("spawn_blocking_volume"),
-			TEXT("Spawn a blocking volume. Places an ABlockingVolume — an invisible collider that blocks pawns and physics but has no rendering cost. "
-			     "Params: location ([X,Y,Z] cm — volume center), rotation ([Pitch,Yaw,Roll] deg, optional), box_extent ([X,Y,Z] cm half-size, optional — via actor scale; default 100,100,100), label (string, optional). "
+			TEXT("Spawn an ABlockingVolume (invisible collider) that blocks pawns and physics with no rendering cost. Returns {success, actor:{actor_label, path, class, location, rotation, scale, tags}}. "
+			     "Params: location ([X,Y,Z] world-space cm, required — volume center), rotation ([Pitch,Yaw,Roll] degrees, optional, default [0,0,0]), box_extent ([X,Y,Z] cm half-extent, optional, default [100,100,100]), label (string, optional actor label). "
 			     "Workflow: use for invisible walls on ledges or level boundaries. "
-			     "Warning: still collides in cooked builds; exclude from streaming only if you mean it."))
-		.RequiredVec3  (TEXT("location"),   TEXT("Spawn location as [X, Y, Z] in cm (volume center)"))
-		.OptionalVec3  (TEXT("rotation"),   TEXT("Optional rotation as [Pitch, Yaw, Roll] in degrees"))
-		.OptionalVec3  (TEXT("box_extent"), TEXT("Optional half-extent as [X, Y, Z] in cm; default 100,100,100"))
-		.OptionalString(TEXT("label"),      TEXT("Optional actor label"))
+			     "Warning: in-memory only — NOT saved to disk until you save the level. box_extent is applied via ActorScale3D (extent/100); collision persists in cooked builds."))
+		.RequiredVec3  (TEXT("location"),   TEXT("Volume center as world-space [X, Y, Z] in cm"))
+		.OptionalVec3  (TEXT("rotation"),   TEXT("Rotation as [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
+		.OptionalVec3  (TEXT("box_extent"), TEXT("Half-extent as [X, Y, Z] in cm, applied via actor scale (default [100,100,100])"))
+		.OptionalString(TEXT("label"),      TEXT("Actor label shown in the World Outliner (optional)"))
 		.Build());
 
 	return Tools;

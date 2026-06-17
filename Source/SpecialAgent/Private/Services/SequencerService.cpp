@@ -22,6 +22,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "UObject/ConstructorHelpers.h"
+#include "ScopedTransaction.h"
 
 FString FSequencerService::GetServiceDescription() const
 {
@@ -45,62 +46,80 @@ TArray<FMCPToolInfo> FSequencerService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("create"),
-        TEXT("Create Level Sequence asset. Saves a new ULevelSequence into the content browser. "
-             "Params: name (string, asset name), package_path (string, /Game/... directory). "
+        TEXT("Create a new ULevelSequence (cinematic) asset in the content browser. Returns {asset_path, name}; "
+             "pass asset_path to every downstream sequencer tool. "
+             "Params: name (string, required, bare asset name, no path or extension), "
+             "package_path (string, optional, /Game/... destination folder, default /Game/Cinematics). "
              "Workflow: create -> add_actor_binding -> add_transform_track -> add_keyframe -> set_playback_range -> play. "
-             "Warning: fails if asset already exists at that path."))
-        .RequiredString(TEXT("name"), TEXT("Asset name (without path)"))
-        .OptionalString(TEXT("package_path"), TEXT("Content path (default: /Game/Cinematics)"))
+             "Warning: creates a new on-disk asset; FAILS if an asset of that name already exists at package_path "
+             "(check first and pick a unique name rather than retrying)."))
+        .RequiredString(TEXT("name"), TEXT("Bare asset name, no path or extension"))
+        .OptionalString(TEXT("package_path"), TEXT("/Game/... destination folder (default /Game/Cinematics)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("add_actor_binding"),
-        TEXT("Bind an actor to a Level Sequence as possessable. Returns the binding GUID used by tracks. "
-             "Params: sequence_path (string, /Game/... asset path), actor_name (string, label in level). "
-             "Workflow: needed before add_transform_track. "
-             "Warning: actor must exist in the current editor world."))
-        .RequiredString(TEXT("sequence_path"), TEXT("Asset path of Level Sequence"))
-        .RequiredString(TEXT("actor_name"), TEXT("Actor label in the editor world"))
+        TEXT("Bind an existing level actor to a Level Sequence as a possessable. Returns {binding_guid, actor_name}; "
+             "the binding_guid is required by add_transform_track and add_keyframe. "
+             "Params: sequence_path (string, required, /Game/... object path of the ULevelSequence), "
+             "actor_name (string, required, the actor's editor label, e.g. as shown in the World Outliner). "
+             "Workflow: create -> add_actor_binding -> add_transform_track; keep the returned binding_guid for later calls. "
+             "Warning: resolves the actor by label in the current editor world; fails if no actor with that label exists. "
+             "Marks the sequence package dirty (in-memory); save the asset to persist."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
+        .RequiredString(TEXT("actor_name"), TEXT("Editor label of the actor in the current editor world"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("add_transform_track"),
-        TEXT("Add a 3D transform track to a binding. Creates an empty transform section. "
-             "Params: sequence_path (string), binding_guid (string, GUID from add_actor_binding). "
+        TEXT("Add a 3D transform track (with a single full-range section) to an actor binding so it can hold transform keys. "
+             "Returns {created (bool; false if the track already existed), binding_guid}. "
+             "Params: sequence_path (string, required, /Game/... object path of the ULevelSequence), "
+             "binding_guid (string, required, GUID returned by add_actor_binding). "
              "Workflow: add_actor_binding -> add_transform_track -> add_keyframe. "
-             "Warning: a binding can have at most one transform track; re-adding is a no-op."))
-        .RequiredString(TEXT("sequence_path"), TEXT("Asset path of Level Sequence"))
+             "Warning: idempotent - reuses the existing transform track if one is present, so re-calling is safe. "
+             "Marks the package dirty (in-memory); save to persist."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
         .RequiredString(TEXT("binding_guid"), TEXT("GUID returned by add_actor_binding"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("add_keyframe"),
-        TEXT("Add a transform keyframe to a binding's transform track at a given display-rate frame. "
-             "Params: sequence_path (string), binding_guid (string), frame (integer, in display rate), "
-             "location ([X,Y,Z] cm), rotation ([Pitch,Yaw,Roll] deg), scale ([X,Y,Z] multiplier). "
-             "Workflow: add_transform_track before this. "
-             "Warning: times outside playback range are still accepted but will not play."))
-        .RequiredString(TEXT("sequence_path"), TEXT("Asset path of Level Sequence"))
+        TEXT("Add a cubic-interpolated transform keyframe on a binding's transform track at a display-rate frame. "
+             "Returns {frame (the display-rate frame you passed), tick_frame (internal tick-resolution frame)}. "
+             "Params: sequence_path (string, required), binding_guid (string, required), "
+             "frame (integer, required, frame index in Display Rate, NOT tick resolution), "
+             "location (array [X,Y,Z], optional, world cm), rotation (array [Pitch,Yaw,Roll], optional, degrees), "
+             "scale (array [X,Y,Z], optional, unitless, default [1,1,1]). At least one of location/rotation/scale is required. "
+             "Workflow: call add_transform_track first; set_playback_range so keys fall inside it. "
+             "Warning: Sequencer transform tracks are relative to the binding. The Details panel labels the rotation "
+             "channels X=Roll, Y=Pitch, Z=Yaw - this tool takes [Pitch,Yaw,Roll] and maps them correctly. "
+             "Keys outside the playback range are stored but will not play. Marks the package dirty; save to persist."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
         .RequiredString(TEXT("binding_guid"), TEXT("GUID returned by add_actor_binding"))
-        .RequiredInteger(TEXT("frame"), TEXT("Display-rate frame index"))
-        .OptionalVec3(TEXT("location"), TEXT("World location [X, Y, Z] cm"))
-        .OptionalVec3(TEXT("rotation"), TEXT("Rotation [Pitch, Yaw, Roll] deg"))
-        .OptionalVec3(TEXT("scale"), TEXT("Scale [X, Y, Z] multiplier (default [1,1,1])"))
+        .RequiredInteger(TEXT("frame"), TEXT("Frame index in Display Rate (not tick resolution)"))
+        .OptionalVec3(TEXT("location"), TEXT("World location [X, Y, Z] in cm"))
+        .OptionalVec3(TEXT("rotation"), TEXT("Rotation [Pitch, Yaw, Roll] in degrees"))
+        .OptionalVec3(TEXT("scale"), TEXT("Scale [X, Y, Z], unitless (default [1,1,1])"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_playback_range"),
-        TEXT("Set the playback range of a Level Sequence in display-rate frames. "
-             "Params: sequence_path (string), start_frame (integer, inclusive), end_frame (integer, exclusive). "
-             "Workflow: typically called once after keyframes placed. "
-             "Warning: end_frame must be greater than start_frame."))
-        .RequiredString(TEXT("sequence_path"), TEXT("Asset path of Level Sequence"))
-        .RequiredInteger(TEXT("start_frame"), TEXT("Start frame (display rate, inclusive)"))
-        .RequiredInteger(TEXT("end_frame"), TEXT("End frame (display rate, exclusive)"))
+        TEXT("Set the playback range of a Level Sequence, in Display-Rate frames. Returns {start_frame, end_frame}. "
+             "Params: sequence_path (string, required), start_frame (integer, required, Display Rate, inclusive), "
+             "end_frame (integer, required, Display Rate, exclusive). "
+             "Workflow: usually called once after all keyframes are placed; play uses this range. "
+             "Warning: end_frame must be strictly greater than start_frame (else rejected). Frames are Display Rate, "
+             "not tick resolution. Marks the package dirty (in-memory); save the asset to persist."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
+        .RequiredInteger(TEXT("start_frame"), TEXT("Start frame, Display Rate, inclusive"))
+        .RequiredInteger(TEXT("end_frame"), TEXT("End frame, Display Rate, exclusive (must be > start_frame)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("play"),
-        TEXT("Play a Level Sequence in the editor world. Spawns a transient ALevelSequenceActor and calls Play. "
-             "Params: sequence_path (string). "
-             "Workflow: finalize keyframes & playback range first. "
-             "Warning: plays once; does not loop by default; PIE is NOT started."))
-        .RequiredString(TEXT("sequence_path"), TEXT("Asset path of Level Sequence"))
+        TEXT("Play a Level Sequence in the editor world. Creates a transient ULevelSequencePlayer (and backing "
+             "ALevelSequenceActor) and calls Play. Returns {sequence_path, playing (bool)}. "
+             "Params: sequence_path (string, required, /Game/... object path of the ULevelSequence). "
+             "Workflow: finalize add_keyframe and set_playback_range before playing. "
+             "Warning: plays once and does NOT loop by default; PIE is NOT started. The player is transient and not "
+             "saved with the level. Editor-world actors only tick to update while the editor viewport is being redrawn."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
         .Build());
 
     return Tools;
@@ -200,6 +219,9 @@ FMCPResponse FSequencerService::HandleAddActorBinding(const FMCPRequest& Request
             return FMCPJson::MakeError(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
         }
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add sequencer actor binding")));
+        Sequence->Modify();
+
         // CreatePossessable is virtual on UMovieSceneSequence. Call via base-class pointer
         // so we don't hit ULevelSequence's protected override.
         UMovieSceneSequence* BaseSequence = Sequence;
@@ -259,6 +281,9 @@ FMCPResponse FSequencerService::HandleAddTransformTrack(const FMCPRequest& Reque
         {
             return FMCPJson::MakeError(TEXT("Sequence has no MovieScene"));
         }
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add sequencer transform track")));
+        MovieScene->Modify();
 
         // Idempotent — return the existing track if any.
         UMovieScene3DTransformTrack* Track = MovieScene->FindTrack<UMovieScene3DTransformTrack>(BindingGuid);
@@ -400,6 +425,7 @@ FMCPResponse FSequencerService::HandleAddKeyframe(const FMCPRequest& Request)
             FFrameTime(FFrameNumber(DisplayFrame)), DisplayRate, TickResolution);
         const FFrameNumber TickFrame = TickTime.GetFrame();
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add sequencer keyframe")));
         Section->Modify();
 
         if (bHasLoc)
@@ -481,6 +507,7 @@ FMCPResponse FSequencerService::HandleSetPlaybackRange(const FMCPRequest& Reques
         const FFrameNumber EndTick = FFrameRate::TransformTime(
             FFrameTime(FFrameNumber(EndDisplay)), DisplayRate, TickResolution).GetFrame();
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set sequencer playback range")));
         MovieScene->Modify();
         MovieScene->SetPlaybackRange(TRange<FFrameNumber>(StartTick, EndTick));
         Sequence->MarkPackageDirty();

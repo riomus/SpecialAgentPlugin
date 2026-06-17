@@ -6,6 +6,7 @@
 #include "MCPCommon/MCPJson.h"
 #include "MCPCommon/MCPToolBuilder.h"
 #include "MCPCommon/MCPActorResolver.h"
+#include "MCPCommon/MCPViewport.h"
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "EngineUtils.h"
@@ -25,6 +26,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/App.h"
 #include "Framework/Docking/TabManager.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
@@ -464,19 +466,19 @@ FMCPResponse FUtilityService::HandleSelectAtScreen(const FMCPRequest& Request)
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 
-		FViewport* Viewport = GEditor->GetActiveViewport();
-		if (!Viewport)
-		{
-			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport found"));
-			return Result;
-		}
-
-		FLevelEditorViewportClient* ViewportClient = static_cast<FLevelEditorViewportClient*>(Viewport->GetClient());
+		FLevelEditorViewportClient* ViewportClient = FMCPViewport::GetLevelClient();
 		if (!ViewportClient)
 		{
 			Result->SetBoolField(TEXT("success"), false);
-			Result->SetStringField(TEXT("error"), TEXT("No active viewport client found"));
+			Result->SetStringField(TEXT("error"), TEXT("No Level Editor viewport available"));
+			return Result;
+		}
+
+		FViewport* Viewport = ViewportClient->Viewport;
+		if (!Viewport)
+		{
+			Result->SetBoolField(TEXT("success"), false);
+			Result->SetStringField(TEXT("error"), TEXT("Level Editor viewport has no render target"));
 			return Result;
 		}
 
@@ -853,6 +855,15 @@ FMCPResponse FUtilityService::HandleShowDialog(const FMCPRequest& Request)
 
 	auto Task = [Message, Title, TypeStr]() -> TSharedPtr<FJsonObject>
 	{
+		// A modal dialog blocks the game thread until a human answers, which
+		// also blocks the MCP processor Tick and therefore every other in-flight
+		// request. Refuse when nobody can answer (headless/unattended) instead of
+		// wedging the editor.
+		if (FApp::IsUnattended() || !FApp::CanEverRender())
+		{
+			return FMCPJson::MakeError(TEXT("Cannot show a modal dialog while the editor is unattended/headless — it would block the game thread and all other MCP requests"));
+		}
+
 		EAppMsgType::Type Type = EAppMsgType::Ok;
 		if (TypeStr.Equals(TEXT("yes_no"), ESearchCase::IgnoreCase)) Type = EAppMsgType::YesNo;
 		else if (TypeStr.Equals(TEXT("ok_cancel"), ESearchCase::IgnoreCase)) Type = EAppMsgType::OkCancel;
@@ -910,10 +921,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("save_level");
-		Tool.Description = TEXT("Save the current editor level to disk. Persists unsaved actor edits via FEditorFileUtils::SaveCurrentLevel; returns {success, message}. "
+		Tool.Description = TEXT("Save the current/persistent editor level to disk via FEditorFileUtils::SaveCurrentLevel, committing unsaved actor and level edits. Returns {success, message} (or {success:false, error}). "
 			"Params: (none). "
-			"Workflow: call after world/spawn_actor or bulk edits to commit changes. "
-			"Warning: writes to source control if active; may prompt for checkout.");
+			"Workflow: call after spawning/transforming actors or other level mutations to persist them; this saves the level package only — modified asset packages (materials, blueprints) are saved through their own save paths, not here. "
+			"Warning: writes to disk and, when source control is active, may prompt for checkout; only affects the currently loaded level, not every dirty package.");
 		Tools.Add(Tool);
 	}
 	
@@ -921,9 +932,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("undo");
-		Tool.Description = TEXT("Undo N editor actions. Rewinds GEditor->Trans up to 'steps' times or until the stack is empty; returns {success, steps_undone}. "
-			"Params: steps (integer, count of transactions to undo, default 1). "
-			"Workflow: pair with utility/redo. Wrap grouped edits in begin_transaction/end_transaction to undo them atomically.");
+		Tool.Description = TEXT("Undo recent editor transactions. Rewinds the editor transactor up to 'steps' times, stopping early if the undo stack empties. Returns {success, steps_undone}. "
+			"Params: steps (number, count of transactions to undo, default 1). "
+			"Workflow: pair with utility/redo; wrap grouped edits in utility/begin_transaction + end_transaction so they undo as one step. "
+			"Warning: steps_undone echoes the requested count and does NOT report how many actually rewound when the stack ran out; only transacted operations are undoable (raw Python edits outside a transaction are not).");
 		
 		TSharedPtr<FJsonObject> StepsParam = MakeShared<FJsonObject>();
 		StepsParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -937,9 +949,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("redo");
-		Tool.Description = TEXT("Redo N previously-undone editor actions. Replays the transactor forward up to 'steps' times; returns {success, steps_redone}. "
-			"Params: steps (integer, count of transactions to redo, default 1). "
-			"Workflow: pair with utility/undo.");
+		Tool.Description = TEXT("Redo previously-undone editor transactions. Replays the editor transactor forward up to 'steps' times, stopping early when nothing remains to redo. Returns {success, steps_redone}. "
+			"Params: steps (number, count of transactions to redo, default 1). "
+			"Workflow: pair with utility/undo to step back and forth through the transaction history. "
+			"Warning: steps_redone echoes the requested count and does NOT report how many actually replayed; making any new edit clears the redo stack.");
 		
 		TSharedPtr<FJsonObject> StepsParam = MakeShared<FJsonObject>();
 		StepsParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -953,9 +966,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("select_actor");
-		Tool.Description = TEXT("Select an actor in the editor by label. Highlights it in the viewport/outliner and returns {actor_name, added_to_selection}. "
-			"Params: actor_name (string, outliner label, required); add_to_selection (bool, default false — when true, adds to existing selection instead of replacing). "
-			"Workflow: pair with utility/get_selection, utility/get_selection_bounds, or viewport/focus_actor to zoom in.");
+		Tool.Description = TEXT("Select a single actor in the editor by its outliner label and highlight it in the viewport/outliner. Returns {success, actor_name, added_to_selection}. "
+			"Params: actor_name (string, required, exact outliner label, case-sensitive); add_to_selection (boolean, default false — true adds to the current selection, false replaces it). "
+			"Workflow: pair with utility/get_selection or utility/get_selection_bounds to inspect, then viewport/focus_actor to frame it. "
+			"Warning: matches the first actor whose label equals actor_name (labels are not guaranteed unique); returns success=false with an error if no actor matches.");
 		
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -975,9 +989,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_selection");
-		Tool.Description = TEXT("Get the currently selected actors in the editor. Returns {selected_actors:[{name,class}], count}. "
+		Tool.Description = TEXT("List the actors currently selected in the editor. Returns {selected_actors:[{name (outliner label), class}], count}. "
 			"Params: (none). "
-			"Workflow: call after utility/select_actor, select_by_class, or select_at_screen to confirm the working set before mutating.");
+			"Workflow: call after utility/select_actor, utility/select_by_class, or utility/select_at_screen to confirm the working set before mutating it; use utility/get_selection_bounds for transforms and bounds. "
+			"Warning: returns count=0 with an empty list when nothing is selected (not an error).");
 		Tools.Add(Tool);
 	}
 	
@@ -985,9 +1000,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_selection_bounds");
-		Tool.Description = TEXT("Get detailed transform and bounds data for each currently selected actor. Returns per-actor {name, id, class, location, rotation, scale, forward/right/up_vector, bounds:{min,max,center,extent,size}}. "
+		Tool.Description = TEXT("Get detailed transform and world-space bounds for each currently selected actor. Returns {actors:[{name (label), id (internal name), class, location ([X,Y,Z] world cm), rotation ([pitch,yaw,roll] degrees), scale ([X,Y,Z] unitless), forward/right/up_vector (unit), bounds:{min,max,center,extent (half-size),size} all in cm}], count}. "
 			"Params: (none). "
-			"Workflow: select first via utility/select_actor or select_at_screen, then call to size/position follow-up spawns.");
+			"Workflow: select first via utility/select_actor, utility/select_by_class, or utility/select_at_screen, then call this to size and position follow-up spawns. "
+			"Warning: rotation order is [pitch,yaw,roll] (note the Details panel labels these X=Roll/Y=Pitch/Z=Yaw); bounds are omitted for an actor whose components have no valid bounding box; returns count=0 when nothing is selected.");
 		Tools.Add(Tool);
 	}
 	
@@ -995,10 +1011,10 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("select_at_screen");
-		Tool.Description = TEXT("Select the actor under a screen-space point by deproject+line-trace. Returns {hit, actor_name, actor_class, hit_location, actor_location/rotation/scale, bounds, tags}. "
-			"Params: screen_x (number 0-1, fraction from left edge); screen_y (number 0-1, fraction from top edge); add_to_selection (bool, default false). "
-			"Workflow: screenshot/capture -> estimate (x,y) -> select_at_screen -> utility/get_selection_bounds or world/set_actor_* to edit. "
-			"Warning: misses when the click hits empty sky; verify hit==true before chaining.");
+		Tool.Description = TEXT("Pick the actor under a screen-space point in the level viewport by deprojecting to a world ray and line-tracing on the Visibility channel (up to ~1000 m). Returns {success, hit, screen_x, screen_y, and on hit: actor_name (label), actor_id, actor_class, hit_location/actor_location ([X,Y,Z] world cm), actor_rotation ([pitch,yaw,roll] degrees), actor_scale, bounds:{min,max,size} (cm), tags}. "
+			"Params: screen_x (number 0..1, fraction from the left edge, default 0.5, clamped); screen_y (number 0..1, fraction from the top edge, default 0.5, clamped); add_to_selection (boolean, default false — true adds rather than replaces). "
+			"Workflow: screenshot/capture -> estimate (x,y) from the image -> select_at_screen -> utility/get_selection_bounds or a world/set_actor_* tool to edit the hit actor. "
+			"Warning: success=true even with no hit (hit=false, e.g. ray hits empty sky or non-colliding geometry) — always check hit==true before chaining; only the primary level-editor perspective viewport is traced.");
 		
 		TSharedPtr<FJsonObject> XParam = MakeShared<FJsonObject>();
 		XParam->SetStringField(TEXT("type"), TEXT("number"));
@@ -1020,95 +1036,106 @@ TArray<FMCPToolInfo> FUtilityService::GetAvailableTools() const
 
 	// ---------- Phase 1.A additions ----------
 	Tools.Add(FMCPToolBuilder(TEXT("focus_asset_in_browser"),
-		TEXT("Navigate the Content Browser to an asset. Effect: opens Content Browser and highlights the asset. "
-			 "Params: asset_path (string, required, e.g. /Game/Meshes/Rock.Rock). "
-			 "Workflow: pair with assets/get_info to inspect the highlighted asset."))
-		.RequiredString(TEXT("asset_path"), TEXT("Full asset path /Game/..."))
+		TEXT("Sync the Content Browser to a single asset, opening the browser and highlighting (selecting) that asset for the user. Returns {success, asset_path}. "
+			 "Params: asset_path (string, required, an Unreal object path under /Game/... — e.g. /Game/Meshes/Rock.Rock; resolved through the asset registry, not an OS path). "
+			 "Workflow: locate the path via an asset-registry query first, then call this so the user sees it. "
+			 "Warning: returns an error if the asset registry has no entry for that path; it highlights but does not load or open the asset."))
+		.RequiredString(TEXT("asset_path"), TEXT("Unreal object path under /Game/... e.g. /Game/Meshes/Rock.Rock"))
 		.Build());
 
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("deselect_all");
-		Tool.Description = TEXT("Clear the editor selection. Effect: nothing selected. "
+		Tool.Description = TEXT("Clear the entire editor actor selection so nothing is selected. Returns {success}. "
 			"Params: (none). "
-			"Workflow: call before select_by_class to avoid accumulating selection.");
+			"Workflow: call before utility/select_by_class or utility/select_actor when you want a clean working set instead of accumulating. "
+			"Warning: in-memory selection change only; does not modify or save any actor.");
 		Tools.Add(Tool);
 	}
 
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("invert_selection");
-		Tool.Description = TEXT("Invert current editor selection. Effect: previously-selected become deselected and vice versa. "
+		Tool.Description = TEXT("Invert the editor actor selection: every level actor that was selected becomes deselected and every other becomes selected. Returns {success, selected (new count)}. "
 			"Params: (none). "
-			"Workflow: pair with utility/select_by_class to grab the complement set in one shot.");
+			"Workflow: pair with utility/select_by_class to grab the complement set in one shot, then utility/get_selection to read it back. "
+			"Warning: operates over all editor-world actors (can select a very large set); in-memory selection only, nothing is mutated or saved.");
 		Tools.Add(Tool);
 	}
 
 	Tools.Add(FMCPToolBuilder(TEXT("select_by_class"),
-		TEXT("Select all actors of a given class. Effect: adds matches to selection (or replaces). "
-			 "Params: class_name (string, required, class name), add_to_selection (bool, optional, default false). "
-			 "Workflow: pair with utility/get_selection or get_selection_bounds to inspect the matches."))
-		.RequiredString(TEXT("class_name"), TEXT("Class name to match"))
-		.OptionalBool(TEXT("add_to_selection"), TEXT("Add to current selection instead of replacing"))
+		TEXT("Select every level actor that is an instance of (or subclass of) a given class. Returns {success, class_name, selected (count)}. "
+			 "Params: class_name (string, required, a UClass short name with no U/A prefix, e.g. 'StaticMeshActor' or 'PointLight' — resolved native-first and errors if ambiguous or not found); add_to_selection (boolean, optional, default false — true adds to the current selection, false replaces it). "
+			 "Workflow: pair with utility/get_selection or utility/get_selection_bounds to inspect the matches, or utility/group_selected to bind them. "
+			 "Warning: matches subclasses too; in-memory selection only, no mutation; errors if class_name does not resolve to a loaded UClass."))
+		.RequiredString(TEXT("class_name"), TEXT("UClass short name to match, e.g. 'StaticMeshActor' (subclasses included)"))
+		.OptionalBool(TEXT("add_to_selection"), TEXT("Add to current selection instead of replacing (default false)"))
 		.Build());
 
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("group_selected");
-		Tool.Description = TEXT("Group currently selected actors into an AGroupActor. Effect: binds them so editor operations move them together. "
+		Tool.Description = TEXT("Group the currently selected actors into an AGroupActor so editor operations move/transform them together. Returns {success, group_name (label of the new group, present only when a group was created)}. "
 			"Params: (none). "
-			"Workflow: select_by_class or select_actor first; pair with utility/ungroup to undo.");
+			"Workflow: select actors first via utility/select_actor or utility/select_by_class; reverse with utility/ungroup. "
+			"Warning: enables actor grouping in the editor as a side effect; needs at least two selected actors to form a group (group_name is omitted otherwise).");
 		Tools.Add(Tool);
 	}
 
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("ungroup");
-		Tool.Description = TEXT("Ungroup any selected AGroupActors. Effect: child actors are released and group actors destroyed. "
+		Tool.Description = TEXT("Ungroup any AGroupActors in the current selection, releasing their child actors and destroying the group actors. Returns {success}. "
 			"Params: (none). "
-			"Workflow: opposite of utility/group_selected; child actors retain their world transforms.");
+			"Workflow: the inverse of utility/group_selected; select the group (or its members) first. "
+			"Warning: child actors keep their world transforms; no-op (still success) when nothing grouped is selected.");
 		Tools.Add(Tool);
 	}
 
 	Tools.Add(FMCPToolBuilder(TEXT("begin_transaction"),
-		TEXT("Open a named undo/redo transaction. Effect: subsequent edits are grouped under 'name' for undo. "
-			 "Params: name (string, label shown in undo menu). "
-			 "Workflow: pair with end_transaction; everything between is atomic."))
-		.RequiredString(TEXT("name"), TEXT("Transaction label"))
+		TEXT("Open a named editor undo/redo transaction so subsequent edits are grouped under one undo entry. Returns {success, transaction_index, name}. "
+			 "Params: name (string, required, label shown in the editor's undo menu). "
+			 "Workflow: bracket a group of mutating tool calls with begin_transaction then utility/end_transaction; utility/undo then rewinds them as a single atomic step. "
+			 "Warning: you MUST call end_transaction to close it — leaving a transaction open can wedge later edits; transactions can nest, so balance begin/end calls."))
+		.RequiredString(TEXT("name"), TEXT("Undo-menu label for this transaction"))
 		.Build());
 
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("end_transaction");
-		Tool.Description = TEXT("Close the current undo/redo transaction. Effect: finalizes the group for undo stack. "
+		Tool.Description = TEXT("Close the current editor undo/redo transaction, finalizing everything opened since the matching begin as one undo step. Returns {success, depth_after (remaining open transaction depth)}. "
 			"Params: (none). "
-			"Workflow: must follow utility/begin_transaction; everything between becomes one undo step.");
+			"Workflow: must follow utility/begin_transaction; once depth_after reaches 0 the group is committed to the undo stack. "
+			"Warning: calling without an open transaction is a no-op; with nested transactions you must call end_transaction once per begin_transaction.");
 		Tools.Add(Tool);
 	}
 
 	Tools.Add(FMCPToolBuilder(TEXT("show_notification"),
-		TEXT("Display a toast notification in the editor. Effect: transient popup visible to the user. "
-			 "Params: message (string, required), duration (number, seconds, optional, default 4). "
-			 "Workflow: useful for surfacing scripted-step progress to the user; non-blocking."))
-		.RequiredString(TEXT("message"), TEXT("Notification text"))
-		.OptionalNumber(TEXT("duration"), TEXT("Expire time in seconds (default 4)"))
+		TEXT("Display a transient toast notification in the editor (Slate notification list) visible to the user. Returns {success, message}. "
+			 "Params: message (string, required, text to show); duration (number, seconds the toast stays visible before auto-expiring, optional, default 4). "
+			 "Workflow: use to surface scripted-step progress or completion to the user; non-blocking, returns immediately. "
+			 "Warning: purely informational with no user response; for a question that needs an answer use utility/show_dialog; nothing is shown in a headless editor."))
+		.RequiredString(TEXT("message"), TEXT("Notification text to display"))
+		.OptionalNumber(TEXT("duration"), TEXT("Seconds before the toast expires (default 4)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("show_dialog"),
-		TEXT("Display a modal dialog. Effect: blocks the editor until the user answers; returns the response string. "
-			 "Params: message (string), title (string, optional), type (enum 'ok'|'yes_no'|'ok_cancel'|'yes_no_cancel'). "
-			 "Warning: modal — use sparingly for user confirmation only."))
+		TEXT("Display a modal message dialog and block until the user picks a button. Returns {success, response} where response is one of 'ok'|'yes'|'no'|'cancel' (matching the chosen button set). "
+			 "Params: message (string, required, dialog body); title (string, optional, default 'SpecialAgent'); type (enum 'ok'|'yes_no'|'ok_cancel'|'yes_no_cancel', optional, default 'ok' — selects the button set). "
+			 "Workflow: use only when you genuinely need a human decision; for non-blocking status use utility/show_notification instead. "
+			 "Warning: modal — blocks the game thread (and therefore ALL other in-flight MCP requests) until answered; returns an error instead of opening when the editor is unattended/headless (FApp::IsUnattended or cannot render)."))
 		.RequiredString(TEXT("message"), TEXT("Dialog body text"))
-		.OptionalString(TEXT("title"), TEXT("Optional dialog title"))
+		.OptionalString(TEXT("title"), TEXT("Dialog title (default 'SpecialAgent')"))
 		.OptionalEnum(TEXT("type"), {TEXT("ok"), TEXT("yes_no"), TEXT("ok_cancel"), TEXT("yes_no_cancel")},
-			TEXT("Dialog button set (default 'ok')"))
+			TEXT("Button set: ok | yes_no | ok_cancel | yes_no_cancel (default 'ok')"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("focus_tab"),
-		TEXT("Open/focus an editor tab by its tab id. Effect: invokes the named tab in the global tab manager. "
-			 "Params: tab_id (string, e.g. 'ContentBrowserTab1', 'LevelEditor', 'OutputLog'). "
-			 "Warning: tab ids are internal FNames; use built-in ids to avoid failure."))
-		.RequiredString(TEXT("tab_id"), TEXT("Tab FName id, e.g. 'OutputLog'"))
+		TEXT("Open or focus an editor tab by its registered tab id via the global tab manager. Returns {success, tab_id}. "
+			 "Params: tab_id (string, required, the internal FName of the tab — e.g. 'OutputLog', 'LevelEditor', 'ContentBrowserTab1'). "
+			 "Workflow: use to surface a panel to the user before or after a related action (e.g. focus 'OutputLog' to show log output). "
+			 "Warning: tab ids are internal FNames, not display titles; an unregistered or unopenable id returns an error."))
+		.RequiredString(TEXT("tab_id"), TEXT("Internal tab FName, e.g. 'OutputLog' or 'LevelEditor'"))
 		.Build());
 
 	return Tools;

@@ -42,28 +42,32 @@ TArray<FMCPToolInfo> FEditorModeService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("activate"),
-        TEXT("Activate an editor mode. Deactivates the currently-active mode first. "
-             "Params: mode (enum: default, placement, landscape, foliage, mesh_paint, modeling). "
-             "Workflow: call editor_mode/get_current afterwards to verify. "
-             "Warning: 'modeling' requires the Modeling Tools plugin to be enabled."))
+        TEXT("Switch the level editor into one tool mode, deactivating all other modes first. "
+             "Returns {success, mode, mode_id, active} where active is the post-switch IsModeActive check. "
+             "Params: mode (enum, required: default, placement, landscape, foliage, mesh_paint, modeling). "
+             "Workflow: activate landscape/foliage before editor_mode/configure_brush; call editor_mode/get_current afterwards to verify. "
+             "Warning: changes the editor UI mode (side-effecting); 'modeling' silently fails to become active if the Modeling Tools Editor Mode plugin is disabled."))
         .RequiredEnum(TEXT("mode"),
             {TEXT("default"), TEXT("placement"), TEXT("landscape"), TEXT("foliage"),
              TEXT("mesh_paint"), TEXT("modeling")},
-            TEXT("Editor mode to activate."))
+            TEXT("Editor mode to activate (required)."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_current"),
-        TEXT("Return the IDs of all currently active editor modes as a string array. "
+        TEXT("Report which of the well-known editor modes are currently active. "
+             "Returns {success, active_modes:[{name, mode_id}]} where name is one of default/placement/landscape/foliage/mesh_paint/modeling. "
              "Params: (none). "
-             "Workflow: call after editor_mode/activate to confirm."))
+             "Workflow: call after editor_mode/activate to confirm the switch. "
+             "Warning: read-only; only probes the six built-in modes above, so a custom/third-party mode will not appear even when active."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("configure_brush"),
-        TEXT("Configure brush parameters for the active editing mode. "
-             "Params: radius (number, optional, world units for Landscape/Foliage); strength (number, optional, 0..1). "
-             "Effect: runs the mode's CVars / console equivalents. "
-             "Warning: only landscape and foliage modes honor the settings; returns applied=false for other modes."))
-        .OptionalNumber(TEXT("radius"), TEXT("Brush radius (world units)."))
+        TEXT("Set the sculpt/paint brush radius and/or strength by issuing the Landscape.BrushRadius and Landscape.BrushStrength console commands. "
+             "Returns {success, applied, landscape_active, foliage_active, radius?, strength?}. "
+             "Params: radius (number, optional, brush radius in cm / Unreal units); strength (number, optional, 0..1). At least one of the two is required. "
+             "Workflow: activate the landscape or foliage mode via editor_mode/activate first, then call this. "
+             "Warning: side-effecting; only takes effect when landscape or foliage mode is active (applied=false otherwise), and both values route through the Landscape.* CVars even in foliage mode."))
+        .OptionalNumber(TEXT("radius"), TEXT("Brush radius in cm / Unreal units."))
         .OptionalNumber(TEXT("strength"), TEXT("Brush strength (0..1)."))
         .Build());
 

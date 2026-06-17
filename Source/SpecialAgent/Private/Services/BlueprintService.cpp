@@ -711,95 +711,96 @@ TArray<FMCPToolInfo> FBlueprintService::GetAvailableTools() const
 	TArray<FMCPToolInfo> Tools;
 
 	Tools.Add(FMCPToolBuilder(TEXT("create"),
-		TEXT("Create a new Blueprint asset. Persists the asset to disk under the given content path.\n"
-			"Params: asset_path (string, /Game/..., content-path+name), parent_class (string, UClass name or path, e.g., Actor, /Script/Engine.Actor).\n"
-			"Workflow: create -> add_variable/add_function -> compile -> open_in_editor.\n"
-			"Warning: Overwrites any existing asset at asset_path."))
-		.RequiredString(TEXT("asset_path"), TEXT("Target Blueprint asset path, e.g., /Game/BP/MyBlueprint.MyBlueprint"))
-		.RequiredString(TEXT("parent_class"), TEXT("Parent UClass (short name like 'Actor' or path like /Script/Engine.Actor)"))
+		TEXT("Create a new Blueprint asset and save it to disk. Returns {asset_path (object path), name, parent_class}. "
+			"Params: asset_path (string, required, virtual object path /Game/Folder/Name.Name, never an OS path), "
+			"parent_class (string, required, UClass short name like 'Actor' or full path /Script/Engine.Actor). "
+			"Workflow: create -> add_variable/add_function -> compile -> open_in_editor; guard re-runs with blueprint/list_variables or an existence check first. "
+			"Warning: persists immediately (writes the .uasset). Re-running with the same asset_path recreates the Blueprint in place, discarding prior graph/variable edits; do not delete+recreate just to re-run."))
+		.RequiredString(TEXT("asset_path"), TEXT("Target Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
+		.RequiredString(TEXT("parent_class"), TEXT("Parent UClass: short name like 'Actor' or full path /Script/Engine.Actor"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("compile"),
-		TEXT("Compile a Blueprint. Produces a fresh UBlueprintGeneratedClass and refreshes the CDO.\n"
-			"Params: asset_path (string, /Game/..., blueprint to compile).\n"
-			"Workflow: add_variable/add_function -> compile -> (run in PIE).\n"
-			"Warning: Fails silently with non-zero Blueprint->Status on error — inspect the returned status."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
+		TEXT("Compile a Blueprint, rebuilding its generated class and refreshing the CDO. Returns {asset_path, status (int enum: 0=Unknown,1=Dirty,2=Error,3=UpToDate,4=BeingCreated)}. "
+			"Params: asset_path (string, required, virtual object path /Game/...). "
+			"Workflow: required after structural edits (add_variable/add_function/reparent) before the changes take effect at runtime. "
+			"Warning: never raises on a compile error -- it returns a non-zero status (2=Error) instead, so always inspect the returned status. Saving a Blueprint also recompiles, so do not double-compile then save in a tight loop."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("add_variable"),
-		TEXT("Add a member variable to a Blueprint's NewVariables list.\n"
-			"Params: asset_path (string, /Game/..., target blueprint), variable_name (string, FName-safe), "
-			"variable_type (string, one of: bool, int, int64, float, string, name, text, vector, rotator, transform, color).\n"
-			"Workflow: add_variable -> compile -> set_default_value.\n"
-			"Warning: Fails if variable_name already exists on the Blueprint."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
-		.RequiredString(TEXT("variable_name"), TEXT("Variable name (FName)"))
+		TEXT("Add a member variable to a Blueprint and save the asset. Returns {variable_name, variable_type (normalized form, e.g. 'struct:Vector')}. "
+			"Params: asset_path (string, required, virtual object path /Game/...), variable_name (string, required, FName-safe), "
+			"variable_type (string, required, one of: bool, int, int64, float, string, name, text, vector, rotator, transform, color; aliases like 'boolean', 'integer', 'double', 'fvector' accepted). Struct types map to FVector (cm), FRotator (degrees), FTransform, FLinearColor. "
+			"Workflow: add_variable -> compile -> set_default_value (set the CDO default). "
+			"Warning: returns an error if variable_name already exists on the Blueprint (duplicate). Persists immediately; the var only takes effect after compile."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
+		.RequiredString(TEXT("variable_name"), TEXT("Variable name (FName-safe)"))
 		.RequiredString(TEXT("variable_type"), TEXT("Type token: bool|int|int64|float|string|name|text|vector|rotator|transform|color"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("add_function"),
-		TEXT("Add a user function graph to a Blueprint.\n"
-			"Params: asset_path (string, /Game/..., target blueprint), function_name (string, FName-safe).\n"
-			"Workflow: add_function -> open_in_editor (wire nodes in the graph) -> compile.\n"
-			"Warning: Creates an empty graph; caller must wire nodes separately (UI or Python)."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
-		.RequiredString(TEXT("function_name"), TEXT("Function graph name (FName)"))
+		TEXT("Add an empty user function graph to a Blueprint and save the asset. Returns {function_name}. "
+			"Params: asset_path (string, required, virtual object path /Game/...), function_name (string, required, FName-safe graph name). "
+			"Workflow: add_function -> open_in_editor (wire nodes manually in the graph) -> compile. "
+			"Warning: only creates the empty graph -- it does not add nodes, so the function does nothing until wired up separately (UI or Python). Persists immediately; effective only after compile."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
+		.RequiredString(TEXT("function_name"), TEXT("Function graph name (FName-safe)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("set_default_value"),
-		TEXT("Set a default value on the Blueprint CDO via FProperty::ImportText_Direct.\n"
-			"Params: asset_path (string, /Game/..., target blueprint), property_name (string, FName on the generated class), "
-			"value (string, ImportText-compatible literal, e.g., '42', 'True', '(X=1,Y=2,Z=3)').\n"
-			"Workflow: compile -> set_default_value -> compile (to propagate to instances).\n"
-			"Warning: Value string must match UE ImportText syntax for the property's FProperty type."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
-		.RequiredString(TEXT("property_name"), TEXT("Property name on the generated class"))
-		.RequiredString(TEXT("value"), TEXT("ImportText-compatible string literal"))
+		TEXT("Set a class-default (CDO) property value on a Blueprint and save the asset. Returns {property_name, value}. "
+			"Params: asset_path (string, required, virtual object path /Game/...), property_name (string, required, snake_case FName as it appears on the generated class), "
+			"value (string, required, UE ImportText literal: '42', 'true', '(X=1,Y=2,Z=3)' for FVector in cm, '(Pitch=0,Yaw=90,Roll=0)' for FRotator in degrees, '(R=1,G=0,B=0,A=1)' for FLinearColor). "
+			"Workflow: compile first so the property exists on the generated class, then set_default_value. "
+			"Warning: writes the CDO directly and does NOT recompile; new instances pick up the value but existing placed actors may not refresh. Property must already be reflected on the generated class -- BP-added components live on the construction script, not the CDO, so their sub-properties are not reachable here."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
+		.RequiredString(TEXT("property_name"), TEXT("Property name on the generated class (snake_case FName)"))
+		.RequiredString(TEXT("value"), TEXT("UE ImportText literal matching the property type"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("list_functions"),
-		TEXT("List function graphs and UFunctions exposed by a Blueprint's generated class.\n"
-			"Params: asset_path (string, /Game/..., target blueprint).\n"
-			"Workflow: list_functions -> call_function (reflection service) or open_in_editor.\n"
-			"Warning: Includes inherited UFunctions; filter on 'kind' to distinguish user graphs."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
+		TEXT("List a Blueprint's user function graphs plus the UFunctions on its generated class. Returns {functions[{name, kind ('graph' for user graphs, 'ufunction' for reflected functions), num_params (ufunctions only)}], count}. "
+			"Params: asset_path (string, required, virtual object path /Game/...). Read-only, no side effects. "
+			"Workflow: list_functions -> open_in_editor to author, or feed a name to a reflection call. "
+			"Warning: the 'ufunction' entries include inherited parent/native functions (uses IncludeSuper), so filter on kind=='graph' to see only functions defined on this Blueprint."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("list_variables"),
-		TEXT("List member variables declared on a Blueprint (NewVariables).\n"
-			"Params: asset_path (string, /Game/..., target blueprint).\n"
-			"Workflow: list_variables -> set_default_value.\n"
-			"Warning: Does not include inherited parent-class variables."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
+		TEXT("List the member variables declared directly on a Blueprint. Returns {variables[{name, type (normalized, e.g. 'bool', 'struct:Vector', 'object:StaticMesh')}], count}. "
+			"Params: asset_path (string, required, virtual object path /Game/...). Read-only, no side effects. "
+			"Workflow: list_variables -> set_default_value to set a CDO default. "
+			"Warning: lists only variables added on this Blueprint (NewVariables); inherited parent-class properties are not included even though they are settable via set_default_value."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("open_in_editor"),
-		TEXT("Open a Blueprint in the editor via UAssetEditorSubsystem::OpenEditorForAsset.\n"
-			"Params: asset_path (string, /Game/..., target blueprint).\n"
-			"Workflow: Used for manual follow-up after create/add_function.\n"
-			"Warning: Requires editor in interactive mode; no-op in -nullrhi/commandlet contexts."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
+		TEXT("Open a Blueprint in its asset editor window (UAssetEditorSubsystem). Returns {asset_path}. "
+			"Params: asset_path (string, required, virtual object path /Game/...). "
+			"Workflow: convenience for handing a Blueprint off to a human after create/add_function/add_variable so they can wire graphs by hand. "
+			"Warning: requires a running interactive editor with GEditor available; returns an error in -nullrhi / commandlet / headless contexts. Opens a UI window -- no value to a fully automated chain."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("duplicate"),
-		TEXT("Duplicate a Blueprint asset via IAssetTools::DuplicateAsset.\n"
-			"Params: asset_path (string, /Game/..., source blueprint), new_name (string, new asset short name), "
-			"new_path (string, /Game/..., destination content folder).\n"
-			"Workflow: duplicate -> reparent (optional) -> set_default_value.\n"
-			"Warning: Fails if new_path/new_name resolves to an existing asset."))
-		.RequiredString(TEXT("asset_path"), TEXT("Source Blueprint asset path"))
-		.RequiredString(TEXT("new_name"), TEXT("Destination asset name (without path)"))
-		.RequiredString(TEXT("new_path"), TEXT("Destination content folder, e.g., /Game/BP"))
+		TEXT("Duplicate a Blueprint asset to a new location and save the copy. Returns {source_path, new_path (object path of the copy)}. "
+			"Params: asset_path (string, required, source Blueprint object path /Game/...), new_name (string, required, bare asset name with no path or extension), "
+			"new_path (string, required, destination content FOLDER /Game/... -- a package path, not an object path). "
+			"Workflow: duplicate -> reparent (optional) -> set_default_value to tweak the copy. "
+			"Warning: persists immediately. Returns an error if new_path + new_name already resolves to an existing asset, so check existence first rather than overwriting."))
+		.RequiredString(TEXT("asset_path"), TEXT("Source Blueprint object path, e.g. /Game/BP/Src.Src"))
+		.RequiredString(TEXT("new_name"), TEXT("Destination asset name, bare (no path, no extension)"))
+		.RequiredString(TEXT("new_path"), TEXT("Destination content folder (package path), e.g. /Game/BP"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(TEXT("reparent"),
-		TEXT("Reparent a Blueprint to a new UClass and recompile.\n"
-			"Params: asset_path (string, /Game/..., target blueprint), new_parent_class (string, UClass short name or path).\n"
-			"Workflow: reparent -> list_variables (check inherited props) -> set_default_value.\n"
-			"Warning: Can invalidate nodes referencing removed parent API; review Compile log after."))
-		.RequiredString(TEXT("asset_path"), TEXT("Blueprint asset path"))
-		.RequiredString(TEXT("new_parent_class"), TEXT("Destination parent UClass (short name or path)"))
+		TEXT("Reparent a Blueprint to a new base UClass; this tool refreshes nodes, recompiles, and saves for you. Returns {asset_path, new_parent_class}. "
+			"Params: asset_path (string, required, virtual object path /Game/...), new_parent_class (string, required, UClass short name like 'Pawn' or full path /Script/Engine.Pawn). "
+			"Workflow: reparent -> list_variables (check newly inherited props) -> set_default_value. No separate compile call needed -- reparent compiles internally. "
+			"Warning: switching parents can invalidate graph nodes that referenced removed parent API; the compile will flag them, so inspect the Output Log afterward. Reparenting to the same class still triggers a full recompile, so skip the call if the parent is unchanged."))
+		.RequiredString(TEXT("asset_path"), TEXT("Blueprint object path, e.g. /Game/BP/MyBlueprint.MyBlueprint"))
+		.RequiredString(TEXT("new_parent_class"), TEXT("Destination parent UClass: short name or full /Script/... path"))
 		.Build());
 
 	return Tools;

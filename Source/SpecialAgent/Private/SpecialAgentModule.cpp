@@ -11,6 +11,8 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Editor/EditorPerformanceSettings.h"
+#include "Interfaces/IPluginManager.h"
 
 #define LOCTEXT_NAMESPACE "FSpecialAgentModule"
 
@@ -21,18 +23,30 @@ void FSpecialAgentModule::StartupModule()
 	// Create the MCP server instance
 	MCPServer = MakeShared<FSpecialAgentMCPServer>();
 
-	// Get config file path - plugin configs are in Game.ini, not Engine.ini
-	FString ConfigFilePath = FPaths::ProjectConfigDir() / TEXT("DefaultGame.ini");
-	
-	// Check if auto-start is enabled in config
-	bool bAutoStart = true;  // Default to true for now
-	int32 ServerPort = 8767;  // HTTP/SSE port for MCP client connections
-	
-	// Try to read from config (may not exist yet)
+	// Server settings. Defaults are used unless overridden in config.
+	const TCHAR* SettingsSection = TEXT("/Script/SpecialAgent.SpecialAgentSettings");
+	bool bAutoStart = true;     // ServerEnabled
+	int32 ServerPort = 8767;    // HTTP/SSE port for MCP client connections
+
 	if (GConfig)
 	{
-		GConfig->GetBool(TEXT("/Script/SpecialAgent.SpecialAgentSettings"), TEXT("ServerEnabled"), bAutoStart, GGameIni);
-		GConfig->GetInt(TEXT("/Script/SpecialAgent.SpecialAgentSettings"), TEXT("ServerPort"), ServerPort, GGameIni);
+		// The plugin ships Config/DefaultSpecialAgent.ini (ServerEnabled / ServerPort).
+		// Without a UCLASS(config=SpecialAgent) settings object it is not merged
+		// into a standard config branch automatically, so load it explicitly by
+		// path — otherwise the shipped config file has no effect.
+		if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("SpecialAgent")))
+		{
+			const FString PluginIni = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Config"), TEXT("DefaultSpecialAgent.ini"));
+			if (FPaths::FileExists(PluginIni))
+			{
+				GConfig->GetBool(SettingsSection, TEXT("ServerEnabled"), bAutoStart, PluginIni);
+				GConfig->GetInt (SettingsSection, TEXT("ServerPort"),    ServerPort,  PluginIni);
+			}
+		}
+
+		// Project-level DefaultGame.ini overrides the plugin default when present.
+		GConfig->GetBool(SettingsSection, TEXT("ServerEnabled"), bAutoStart, GGameIni);
+		GConfig->GetInt (SettingsSection, TEXT("ServerPort"),    ServerPort,  GGameIni);
 	}
 	
 	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: ServerEnabled=%d, ServerPort=%d"), bAutoStart, ServerPort);
@@ -57,6 +71,25 @@ void FSpecialAgentModule::StartupModule()
 	if (!IsRunningCommandlet())
 	{
 		RegisterStatusBarWidget();
+
+		// Keep the game thread ticking when the editor is not the foreground
+		// window. The MCP transport marshals every editor operation onto the
+		// game thread via the editor Tick(); with "Use Less CPU when in
+		// Background" enabled (the editor default) that Tick is throttled to a
+		// crawl whenever the editor loses focus — which is the normal case when
+		// an external MCP client drives it. That throttling is the single
+		// biggest cause of MCP requests appearing to hang. Disable it in-memory
+		// for this session (no persisted change to the user's preferences).
+		if (UEditorPerformanceSettings* PerfSettings = GetMutableDefault<UEditorPerformanceSettings>())
+		{
+			if (PerfSettings->bThrottleCPUWhenNotForeground)
+			{
+				PerfSettings->bThrottleCPUWhenNotForeground = false;
+				PerfSettings->PostEditChange();
+				UE_LOG(LogTemp, Log,
+					TEXT("SpecialAgent: disabled 'Use Less CPU when in Background' so MCP requests are not throttled while the editor is backgrounded"));
+			}
+		}
 	}
 
 	// Touch the processor on the game thread so its FTickableEditorObject

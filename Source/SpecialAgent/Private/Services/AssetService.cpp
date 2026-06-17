@@ -1386,13 +1386,14 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("list");
-		Tool.Description = TEXT("List assets from the Asset Registry. Returns array of {name, path, class, package}. "
-			"Params: filter (object, optional) with class (string, e.g. 'StaticMesh'), path (string content root e.g. '/Game/Meshes'), max_results (integer, default 1000). "
-			"Workflow: use assets/find for name-substring, assets/search for free-text across fields; call before spawn to discover available content.");
-		
+		Tool.Description = TEXT("List assets from the Asset Registry using cached metadata (no asset load). Returns {success, assets:[{name, path (object path), class (full /Script/Module.Class), package_name}], count, total_found}. "
+			"Params: filter (object, optional) with class (string, FULL TopLevelAssetPath like /Script/Engine.StaticMesh - short names like 'StaticMesh' match nothing), path (string, content folder root like /Game/Meshes - searched recursively), max_results (integer, default 1000). "
+			"Workflow: use assets/find for a name substring or assets/search for free-text across all fields; call before world/spawn_actor to discover available content. "
+			"Warning: an empty filter enumerates the whole registry; always pass class and/or path to bound the result.");
+
 		TSharedPtr<FJsonObject> FilterParam = MakeShared<FJsonObject>();
 		FilterParam->SetStringField(TEXT("type"), TEXT("object"));
-		FilterParam->SetStringField(TEXT("description"), TEXT("Optional filter object with 'class' (asset class name), 'path' (content path), and 'max_results' (limit)"));
+		FilterParam->SetStringField(TEXT("description"), TEXT("Optional filter: 'class' (full TopLevelAssetPath, e.g. /Script/Engine.StaticMesh), 'path' (content folder, recursive, e.g. /Game/Meshes), 'max_results' (integer, default 1000)"));
 		Tool.Parameters->SetObjectField(TEXT("filter"), FilterParam);
 		
 		Tools.Add(Tool);
@@ -1402,13 +1403,14 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("find");
-		Tool.Description = TEXT("Find assets whose name contains the given substring. Returns array of {name, path, class}. "
-			"Params: name (string, case-insensitive substring of the asset's short name, required). "
-			"Workflow: narrower than assets/search (name only). Use assets/get_info or get_properties to inspect a specific match.");
-		
+		Tool.Description = TEXT("Find assets whose short name contains the given substring (case-sensitive Contains). Returns {success, assets:[{name, path (object path), class}], count}, capped at 100 matches. "
+			"Params: name (string, substring of the asset's short name, required). "
+			"Workflow: narrower than assets/search (matches name only); use assets/get_info or assets/get_properties to inspect a specific match. "
+			"Warning: scans every asset in the registry (no path bound) so it can be slow on large projects; results are silently truncated at 100.");
+
 		TSharedPtr<FJsonObject> NameParam = MakeShared<FJsonObject>();
 		NameParam->SetStringField(TEXT("type"), TEXT("string"));
-		NameParam->SetStringField(TEXT("description"), TEXT("Asset name to search for (partial match)"));
+		NameParam->SetStringField(TEXT("description"), TEXT("Substring of the asset's short name (case-sensitive Contains match)"));
 		Tool.Parameters->SetObjectField(TEXT("name"), NameParam);
 		Tool.RequiredParams.Add(TEXT("name"));
 		
@@ -1419,36 +1421,38 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_properties");
-		Tool.Description = TEXT("Load an asset and dump its reflected UProperties as JSON. Returns {asset_path, class, properties:{name:value}}. "
+		Tool.Description = TEXT("Read an asset's cached Asset Registry metadata (no asset load). Returns {success, properties:{name, path (object path), class, package_name, package_path, tags:[{key, value}]}}. "
 			"Params: asset_path (string, full object path like /Game/Foo.Foo, required). "
-			"Workflow: use for generic introspection; prefer assets/get_info for mesh-specific bounds/materials/LODs.");
-		
+			"Workflow: cheap registry-tag introspection; prefer assets/get_info for type-specific bounds/materials/LODs (which loads the asset). "
+			"Warning: 'tags' are Asset Registry tags only, not the editor metadata read/written by content_browser/get_metadata.");
+
 		TSharedPtr<FJsonObject> PathParam = MakeShared<FJsonObject>();
 		PathParam->SetStringField(TEXT("type"), TEXT("string"));
-		PathParam->SetStringField(TEXT("description"), TEXT("Full asset path (e.g., /Game/Characters/Hero.Hero)"));
+		PathParam->SetStringField(TEXT("description"), TEXT("Full object path (e.g., /Game/Characters/Hero.Hero)"));
 		Tool.Parameters->SetObjectField(TEXT("asset_path"), PathParam);
 		Tool.RequiredParams.Add(TEXT("asset_path"));
-		
+
 		Tools.Add(Tool);
 	}
-	
+
 	// search
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("search");
-		Tool.Description = TEXT("Free-text search across asset name, path, and class. Returns array of {name, path, class}. "
+		Tool.Description = TEXT("Free-text search (case-insensitive) across asset short name, object path, and class. Returns {success, assets:[{name, path (object path), class}], count, query}. "
 			"Params: query (string, required); max_results (integer, default 100). "
-			"Workflow: broader than assets/find (matches any field). Follow with assets/get_info before spawning.");
-		
+			"Workflow: broader than assets/find (matches any of name/path/class); follow with assets/get_info before world/spawn_actor. "
+			"Warning: scans the entire registry with no path bound, so it can be slow; results stop at max_results.");
+
 		TSharedPtr<FJsonObject> QueryParam = MakeShared<FJsonObject>();
 		QueryParam->SetStringField(TEXT("type"), TEXT("string"));
-		QueryParam->SetStringField(TEXT("description"), TEXT("Search query string"));
+		QueryParam->SetStringField(TEXT("description"), TEXT("Search query string, matched case-insensitively against name, path, and class"));
 		Tool.Parameters->SetObjectField(TEXT("query"), QueryParam);
 		Tool.RequiredParams.Add(TEXT("query"));
-		
+
 		TSharedPtr<FJsonObject> MaxParam = MakeShared<FJsonObject>();
-		MaxParam->SetStringField(TEXT("type"), TEXT("number"));
-		MaxParam->SetStringField(TEXT("description"), TEXT("Maximum number of results (default: 100)"));
+		MaxParam->SetStringField(TEXT("type"), TEXT("integer"));
+		MaxParam->SetStringField(TEXT("description"), TEXT("Maximum number of results (default 100)"));
 		Tool.Parameters->SetObjectField(TEXT("max_results"), MaxParam);
 		
 		Tools.Add(Tool);
@@ -1458,13 +1462,14 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_bounds");
-		Tool.Description = TEXT("Get a static mesh's local bounds and pivot offset for ground-aligned placement. Returns {size, center, min, max, bottom_z_offset} where bottom_z_offset is the Z delta to ADD at spawn so the mesh base sits on the target ground. "
-			"Params: asset_path (string, /Game/... mesh path, required). "
-			"Workflow: call BEFORE world/spawn_actor; add bottom_z_offset to the raycast-hit Z to keep the pivot honest.");
-		
+		Tool.Description = TEXT("Get a StaticMesh or SkeletalMesh local-space bounds (cm) and pivot offset for ground-aligned placement. Returns {success, asset_path, asset_class, mesh_type, bounds:{min, max, center, extent (half-size), size (full), pivot_offset (=-center), bottom_z (=-min.Z, Z delta to ADD so the base sits on the ground)}, num_lods, num_vertices/num_triangles or num_bones}. All values are cm in the mesh's local frame. "
+			"Params: asset_path (string, /Game/... object path to a StaticMesh or SkeletalMesh, required). "
+			"Workflow: call BEFORE world/spawn_actor; add bounds.bottom_z to the raycast-hit Z so the pivot lands the base on the ground. "
+			"Warning: non-mesh assets return success=false with an error; bounds are local (pre-scale), not world-space.");
+
 		TSharedPtr<FJsonObject> PathParam = MakeShared<FJsonObject>();
 		PathParam->SetStringField(TEXT("type"), TEXT("string"));
-		PathParam->SetStringField(TEXT("description"), TEXT("Full asset path (e.g., /Game/Meshes/MyMesh.MyMesh)"));
+		PathParam->SetStringField(TEXT("description"), TEXT("Full object path to a StaticMesh or SkeletalMesh (e.g., /Game/Meshes/MyMesh.MyMesh)"));
 		Tool.Parameters->SetObjectField(TEXT("asset_path"), PathParam);
 		Tool.RequiredParams.Add(TEXT("asset_path"));
 		
@@ -1475,13 +1480,14 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("get_info");
-		Tool.Description = TEXT("Inspect a specific asset based on its class. Returns meshes: {bounds, materials, collision, LODs, vertex_count}; blueprints: {parent_class, type}; textures: {width, height, format}. "
-			"Params: asset_path (string, full object path /Game/Foo.Foo or /Game/BP/Foo.Foo_C, required). "
-			"Workflow: call before world/spawn_actor to confirm you're placing the right asset; pair with assets/get_bounds for pivot info.");
+		Tool.Description = TEXT("Load an asset and return type-specific details (sizes/bounds in cm). StaticMesh: {bounds, num_lods, num_vertices, num_triangles, num_sections, materials, num_materials, collision, nanite_enabled, lightmap_resolution}. SkeletalMesh: {bounds, num_bones, materials, num_lods}. Material: {material_domain, is_two_sided}. Blueprint: {blueprint_type, parent_class, generated_class}. Texture: {width, height, num_mips}. Other types return only {type:'Other', asset_name, asset_class}. "
+			"Params: asset_path (string, full object path /Game/Foo.Foo, or /Game/BP/Foo.Foo_C for the generated class, required). "
+			"Workflow: call before world/spawn_actor to confirm the asset; pair with assets/get_bounds for the pivot/bottom-Z offset. "
+			"Warning: loads the asset (may trigger texture/shader compiles on first access); use assets/get_properties for a cheaper registry-only read.");
 
 		TSharedPtr<FJsonObject> PathParam = MakeShared<FJsonObject>();
 		PathParam->SetStringField(TEXT("type"), TEXT("string"));
-		PathParam->SetStringField(TEXT("description"), TEXT("Full asset path (e.g., /Game/Meshes/MyMesh.MyMesh, /Game/BP/MyActor.MyActor_C)"));
+		PathParam->SetStringField(TEXT("description"), TEXT("Full object path (e.g., /Game/Meshes/MyMesh.MyMesh or /Game/BP/MyActor.MyActor_C)"));
 		Tool.Parameters->SetObjectField(TEXT("asset_path"), PathParam);
 		Tool.RequiredParams.Add(TEXT("asset_path"));
 
@@ -1492,79 +1498,79 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("sync_to_browser"),
-			TEXT("Focus Content Browser on assets. Navigates and selects one or more assets in the Content Browser UI. "
-			     "Params: asset_paths (string[], full object paths e.g. /Game/Foo.Foo). "
-			     "Workflow: after find/search, call this to show the user what was matched. "
-			     "Warning: only navigates the primary Content Browser; locked browsers are skipped."))
-		.RequiredArrayOfString(TEXT("asset_paths"), TEXT("Array of full asset object paths"))
+			TEXT("Navigate and select assets in the Content Browser UI. Returns {success, synced_count, not_found:[paths]}. "
+			     "Params: asset_paths (string[], required, full object paths e.g. /Game/Foo.Foo; package paths /Game/Foo also resolve). "
+			     "Workflow: after assets/find or assets/search, call this to show the user what was matched. "
+			     "Warning: UI-only, mutates nothing; paths that do not resolve are returned in not_found rather than failing. Skip in headless/cooked runs (no Content Browser)."))
+		.RequiredArrayOfString(TEXT("asset_paths"), TEXT("Array of object paths (/Game/Foo.Foo) or package paths (/Game/Foo) to reveal"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("create_folder"),
-			TEXT("Create a Content Browser folder. Ensures the given virtual directory exists. "
-			     "Params: directory_path (string, required, e.g. /Game/MyNewFolder). "
-			     "Workflow: call before assets/move or content_browser/duplicate when targeting a new folder. "
-			     "Warning: returns success if the folder already exists (idempotent)."))
-		.RequiredString(TEXT("directory_path"), TEXT("Full content directory path, e.g. /Game/MyNewFolder"))
+			TEXT("Create a Content Browser folder (virtual /Game path, not an OS directory). Returns {success, directory_path}. "
+			     "Params: directory_path (string, required, virtual content path e.g. /Game/MyNewFolder). "
+			     "Workflow: call before assets/move, assets/duplicate, or asset_import when targeting a new folder. "
+			     "Warning: idempotent - succeeds if the folder already exists; the folder is empty until an asset is placed and saved into it."))
+		.RequiredString(TEXT("directory_path"), TEXT("Virtual content path to create, e.g. /Game/MyNewFolder"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("rename"),
-			TEXT("Rename an asset in place. Keeps the package path; changes only the asset name. Uses IAssetTools::RenameAssets to keep references intact. "
-			     "Params: asset_path (string, existing object path), new_name (string, new asset name without path). "
-			     "Workflow: pair with search/find to confirm new name is unused. "
-			     "Warning: redirectors are left behind for external references unless fixup is enforced."))
-		.RequiredString(TEXT("asset_path"), TEXT("Existing asset object path"))
-		.RequiredString(TEXT("new_name"),   TEXT("New asset name (no path, no extension)"))
+			TEXT("Rename an asset in place, keeping its folder and fixing up references. Returns {success, old_path, new_package_path, new_name}. "
+			     "Params: asset_path (string, required, existing object path /Game/Foo.Foo), new_name (string, required, bare new name with no path or extension). "
+			     "Workflow: pair with assets/search or assets/find to confirm the new name is free; to change folder instead use assets/move. "
+			     "Warning: mutates and dirties the package (save afterward); leaves a redirector at the old path until referencers are fixed up, which can block reuse of the old name."))
+		.RequiredString(TEXT("asset_path"), TEXT("Existing asset object path, e.g. /Game/Foo.Foo"))
+		.RequiredString(TEXT("new_name"),   TEXT("New bare asset name (no path, no extension)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("delete"),
-			TEXT("Delete an asset. Removes a single asset via ObjectTools::DeleteAssets. "
-			     "Params: asset_path (string), show_confirmation (bool, optional, default false — when true a UI dialog blocks). "
-			     "Workflow: run assets/get_references first to audit inbound uses. "
-			     "Warning: destructive and irreversible once package is saved; the file is deleted from disk on the next save."))
-		.RequiredString(TEXT("asset_path"),        TEXT("Asset object path to delete"))
-		.OptionalBool  (TEXT("show_confirmation"), TEXT("Show interactive confirmation dialog; default false for scripted use"))
+			TEXT("Delete a single asset (resolves object or package path). Returns {success, num_deleted, asset_path}. "
+			     "Params: asset_path (string, required, object or package path), show_confirmation (bool, optional, default false; true pops a modal dialog that blocks the game thread). "
+			     "Workflow: run asset_deps/get_referencers first to audit inbound uses; clear or fix up referencers before deleting. "
+			     "Warning: destructive; num_deleted is 0 (success=false) when the asset is referenced or locked. Deleting a referenced asset forces every referencer to recompile."))
+		.RequiredString(TEXT("asset_path"),        TEXT("Asset object path or package path to delete"))
+		.OptionalBool  (TEXT("show_confirmation"), TEXT("Show the interactive confirmation dialog; default false for scripted use"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("move"),
-			TEXT("Move an asset between folders. Cross-directory moves with reference fixup. "
-			     "Params: source_path (string, required, full object path), destination_path (string, required, full destination object path e.g. /Game/New/Foo.Foo). "
-			     "Workflow: call assets/create_folder first if the destination directory is new. "
-			     "Warning: leaves a redirector at the source unless the project fixes them up on save."))
-		.RequiredString(TEXT("source_path"),      TEXT("Existing asset object path"))
-		.RequiredString(TEXT("destination_path"), TEXT("Full destination object path (e.g. /Game/NewFolder/Foo.Foo)"))
+			TEXT("Move/rename an asset to a new folder via a full destination object path. Returns {success, source_path, destination_path}. "
+			     "Params: source_path (string, required, existing object path /Game/Foo.Foo), destination_path (string, required, FULL destination object path including the asset name, e.g. /Game/New/Foo.Foo). "
+			     "Workflow: call assets/create_folder first if the destination directory is new; to keep the folder and only change the name use assets/rename. "
+			     "Warning: mutates and dirties packages (save afterward); leaves a redirector at the source until referencers are fixed up."))
+		.RequiredString(TEXT("source_path"),      TEXT("Existing asset object path, e.g. /Game/Foo.Foo"))
+		.RequiredString(TEXT("destination_path"), TEXT("Full destination object path including the asset name, e.g. /Game/NewFolder/Foo.Foo"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("duplicate"),
-			TEXT("Duplicate an asset. Creates a copy with a new name (and optional new folder) via IAssetTools::DuplicateAsset. "
-			     "Params: source_path (string), new_name (string, no path), new_package_path (string, optional — defaults to source folder). "
-			     "Workflow: useful for variant creation on materials or blueprints. "
-			     "Warning: the copy is an unsaved asset; call save afterward."))
-		.RequiredString(TEXT("source_path"),      TEXT("Source asset object path"))
-		.RequiredString(TEXT("new_name"),         TEXT("New asset name (no path)"))
-		.OptionalString(TEXT("new_package_path"), TEXT("Optional destination folder; defaults to source folder"))
+			TEXT("Duplicate an asset under a new name (and optional new folder). Returns {success, source_path, new_asset_path}. "
+			     "Params: source_path (string, required, object path), new_name (string, required, bare name no path), new_package_path (string, optional, destination folder; defaults to the source folder). "
+			     "Workflow: handy for material/blueprint variants; call assets/save (or content_browser/save) afterward to persist. "
+			     "Warning: the copy is created unsaved (in-memory only) until you save it; duplicating a large material then editing it recompiles all its shader expressions - prefer editing the parent."))
+		.RequiredString(TEXT("source_path"),      TEXT("Source asset object path, e.g. /Game/Foo.Foo"))
+		.RequiredString(TEXT("new_name"),         TEXT("New bare asset name (no path)"))
+		.OptionalString(TEXT("new_package_path"), TEXT("Optional destination folder; defaults to the source folder"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("save"),
-			TEXT("Save an asset. Persists a modified asset to its package on disk. "
-			     "Params: asset_path (string, required), only_if_dirty (bool, optional, default true — skip when clean). "
-			     "Workflow: call after set_metadata, duplicate, or any reflection-driven edit. "
-			     "Warning: skips source-control checkout prompts; ensure the file is writable."))
+			TEXT("Persist an asset's package to disk. Returns {success, asset_path, only_if_dirty}. "
+			     "Params: asset_path (string, required, object path), only_if_dirty (bool, optional, default true; pass false to force a write even when clean). "
+			     "Workflow: call once after assets/set_metadata, assets/duplicate, or any edit; do not loop saves. "
+			     "Warning: saving a Material/MaterialInstance or Blueprint recompiles it (can take seconds-minutes); keep only_if_dirty=true so unchanged assets are skipped."))
 		.RequiredString(TEXT("asset_path"),    TEXT("Asset object path to save"))
 		.OptionalBool  (TEXT("only_if_dirty"), TEXT("Only save when the asset has unsaved changes; default true"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("set_metadata"),
-			TEXT("Set package metadata. Stores a string key/value on the asset's FMetaData (package-owned map). "
-			     "Params: asset_path (string), key (string), value (string). "
-			     "Workflow: pair with save to persist; call get_metadata to verify. "
-			     "Warning: only available with WITH_METADATA; stripped from cooked builds."))
+			TEXT("Store a string key/value on the asset's editor metadata (package FMetaData map) and mark the package dirty. Returns {success, asset_path, key, value}. "
+			     "Params: asset_path (string, required, object path), key (string, required, FName-compatible), value (string, required). "
+			     "Workflow: call assets/save afterward to persist; read it back with assets/get_metadata. "
+			     "Warning: requires WITH_METADATA (editor builds only; stripped from cooked builds where it returns success=false). Does not auto-save."))
 		.RequiredString(TEXT("asset_path"), TEXT("Asset object path"))
 		.RequiredString(TEXT("key"),        TEXT("Metadata key (FName)"))
 		.RequiredString(TEXT("value"),      TEXT("Metadata value (string)"))
@@ -1572,20 +1578,20 @@ TArray<FMCPToolInfo> FAssetService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_metadata"),
-			TEXT("Read package metadata. Returns a single key's value (when key is supplied) or the full key/value map for the asset. "
-			     "Params: asset_path (string), key (string, optional — when omitted, returns every entry). "
-			     "Workflow: pair with set_metadata to audit or migrate tags. "
-			     "Warning: missing keys return the empty string, not an error."))
+			TEXT("Read editor metadata from an asset's package FMetaData map. Returns {success, asset_path, key, value} for a single key, or {success, asset_path, metadata:{key:value}} when key is omitted. "
+			     "Params: asset_path (string, required, object path), key (string, optional; omit to dump every entry). "
+			     "Workflow: pair with assets/set_metadata to audit or migrate tags. "
+			     "Warning: a missing key returns the empty string, not an error; requires WITH_METADATA (editor builds only)."))
 		.RequiredString(TEXT("asset_path"), TEXT("Asset object path"))
 		.OptionalString(TEXT("key"),        TEXT("Optional metadata key; omit to dump the full map"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("validate"),
-			TEXT("Validate assets. Runs a lightweight load + IsValidLowLevel check on each path. "
-			     "Params: asset_path (string, single) OR asset_paths (string[], array). "
-			     "Workflow: call during pre-submit to catch missing/broken references. "
-			     "Warning: DataValidation module is not linked in this plugin; rich validator output (errors, warnings per validator) is NOT produced — only load-time validity."))
+			TEXT("Run a lightweight load + IsValidLowLevel check on one or more assets. Returns {success, valid_count, invalid_count, results:[{asset_path, result:'Valid'|'Invalid', error?, errors:[], warnings:[]}], method}. "
+			     "Params: asset_path (string, single) OR asset_paths (string[], batch) - provide exactly one. "
+			     "Workflow: use in a pre-submit pass to catch assets that fail to load. "
+			     "Warning: the DataValidation module is not linked, so the per-validator errors/warnings arrays are always empty - this only confirms the asset loads, not data-correctness."))
 		.OptionalString       (TEXT("asset_path"),  TEXT("Single asset object path"))
 		.OptionalArrayOfString(TEXT("asset_paths"), TEXT("Batch of asset object paths"))
 		.Build());

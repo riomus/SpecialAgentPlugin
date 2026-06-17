@@ -408,75 +408,81 @@ TArray<FMCPToolInfo> FContentBrowserService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("sync_to_folder"),
-        TEXT("Focus the Content Browser on a folder. UI-level sync, no data mutation.\n"
-             "Params: folder_path (string, /Game/... content path).\n"
-             "Workflow: After create_folder, call this to reveal the new folder."))
-        .RequiredString(TEXT("folder_path"), TEXT("Content-browser folder (e.g. /Game/MyStuff)"))
+        TEXT("Navigate and focus the Content Browser on a folder. Returns {success, folder_path}. "
+             "Params: folder_path (string, required, virtual content path /Game/...). "
+             "Workflow: after content_browser/create_folder, call this to reveal the new folder. "
+             "Warning: UI-only, mutates nothing; no-op effect in headless/cooked runs with no Content Browser."))
+        .RequiredString(TEXT("folder_path"), TEXT("Virtual content folder, e.g. /Game/MyStuff"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("create_folder"),
-        TEXT("Create a new folder in the content browser and focus it.\n"
-             "Params: folder_path (string, /Game/... path to create).\n"
-             "Workflow: Follow with asset_import/import_fbx targeting this folder.\n"
-             "Warning: Parent path must exist (creates one level)."))
-        .RequiredString(TEXT("folder_path"), TEXT("Folder path to create (e.g. /Game/NewFolder)"))
+        TEXT("Create a folder (virtual /Game path) and focus it in the Content Browser. Returns {success, folder_path}. "
+             "Params: folder_path (string, required, virtual content path to create, e.g. /Game/NewFolder). "
+             "Workflow: follow with asset_import or content_browser/duplicate targeting this folder. "
+             "Warning: idempotent - succeeds if the folder already exists; creates intermediate parent folders as needed. The folder is empty until an asset is saved into it."))
+        .RequiredString(TEXT("folder_path"), TEXT("Virtual content path to create, e.g. /Game/NewFolder"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("rename"),
-        TEXT("Rename (or move) an asset by full object path, then focus the new location.\n"
-             "Params: source_path (string, current asset path), destination_path (string, new asset path).\n"
-             "Workflow: Differs from 'move' only in semantic intent; both use RenameAsset."))
-        .RequiredString(TEXT("source_path"), TEXT("Existing asset path (e.g. /Game/Foo.Foo)"))
-        .RequiredString(TEXT("destination_path"), TEXT("New asset path (e.g. /Game/Bar.Bar)"))
+        TEXT("Rename or move an asset to a new full object path, then focus it. Returns {success, source_path, destination_path}. "
+             "Params: source_path (string, required, current object path /Game/Foo.Foo), destination_path (string, required, new FULL object path including the asset name /Game/Bar.Bar). "
+             "Workflow: identical behavior to content_browser/move (both rename the asset); pick the name that reads best - changing the folder, the name, or both is all supported here. "
+             "Warning: mutates and dirties the package (call content_browser/save afterward) and leaves a redirector at the old path until referencers are fixed up."))
+        .RequiredString(TEXT("source_path"), TEXT("Existing asset object path, e.g. /Game/Foo.Foo"))
+        .RequiredString(TEXT("destination_path"), TEXT("New full object path including the asset name, e.g. /Game/Bar.Bar"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("delete"),
-        TEXT("Force-delete an asset (no reference check). Skips the UI confirmation dialog.\n"
-             "Params: asset_path (string, /Game/... asset path).\n"
-             "Warning: Destructive. Closes any open asset editor for this asset."))
-        .RequiredString(TEXT("asset_path"), TEXT("Asset path to delete (e.g. /Game/Old.Old)"))
+        TEXT("Force-delete an asset by object path with NO reference check and no confirmation dialog. Returns {success, asset_path}. "
+             "Params: asset_path (string, required, object path /Game/Old.Old). "
+             "Workflow: run asset_deps/get_referencers first; use assets/delete instead when you want the safe reference-checked path that refuses referenced assets. "
+             "Warning: destructive and irreversible; deleting a referenced asset breaks its referencers (they get null references) and closes any open editor for the asset."))
+        .RequiredString(TEXT("asset_path"), TEXT("Asset object path to delete, e.g. /Game/Old.Old"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("move"),
-        TEXT("Move an asset to a new path and focus its new location.\n"
-             "Params: source_path (string), destination_path (string).\n"
-             "Workflow: Equivalent to rename but intended for path changes that preserve the asset name."))
-        .RequiredString(TEXT("source_path"), TEXT("Existing asset path"))
-        .RequiredString(TEXT("destination_path"), TEXT("New asset path"))
+        TEXT("Move an asset to a new full object path and focus it. Returns {success, source_path, destination_path}. "
+             "Params: source_path (string, required, existing object path), destination_path (string, required, FULL destination object path including the asset name, e.g. /Game/New/Foo.Foo). "
+             "Workflow: call content_browser/create_folder first if the target folder is new; behaves identically to content_browser/rename (both call the same rename). "
+             "Warning: mutates and dirties packages (save afterward); leaves a redirector at the source until referencers are fixed up."))
+        .RequiredString(TEXT("source_path"), TEXT("Existing asset object path"))
+        .RequiredString(TEXT("destination_path"), TEXT("Full destination object path including the asset name"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("duplicate"),
-        TEXT("Duplicate an asset to a new path and focus the duplicate in the content browser.\n"
-             "Params: source_path (string, required, full object path), destination_path (string, required, target object path).\n"
-             "Workflow: pair with assets/create_folder if the target directory is new; content_browser/save afterwards.\n"
-             "Warning: editing the duplicate triggers a recompile if it's a material; prefer modifying the parent."))
-        .RequiredString(TEXT("source_path"), TEXT("Source asset path"))
-        .RequiredString(TEXT("destination_path"), TEXT("New asset path for the duplicate"))
+        TEXT("Duplicate an asset to a new full object path and focus the copy. Returns {success, source_path, destination_path}. "
+             "Params: source_path (string, required, object path), destination_path (string, required, FULL target object path including the new asset name, e.g. /Game/New/Foo.Foo). "
+             "Workflow: call content_browser/create_folder first if the target folder is new, then content_browser/save to persist the copy. "
+             "Warning: the copy starts unsaved; editing a duplicated material recompiles all its shader expressions - prefer modifying the parent over duplicating."))
+        .RequiredString(TEXT("source_path"), TEXT("Source asset object path"))
+        .RequiredString(TEXT("destination_path"), TEXT("Full target object path for the duplicate, e.g. /Game/New/Foo.Foo"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("save"),
-        TEXT("Save the asset's package to disk and focus it in the content browser.\n"
-             "Params: asset_path (string), only_if_dirty (bool, default true).\n"
-             "Workflow: Call after set_metadata or any set_* that doesn't auto-save."))
-        .RequiredString(TEXT("asset_path"), TEXT("Asset path to save"))
-        .OptionalBool(TEXT("only_if_dirty"), TEXT("Skip save if asset is not dirty (default: true)"))
+        TEXT("Save an asset's package to disk and focus it in the Content Browser. Returns {success, asset_path}. "
+             "Params: asset_path (string, required, object path), only_if_dirty (bool, optional, default true; pass false to force a write when clean). "
+             "Workflow: call once after content_browser/set_metadata or any edit that does not auto-save. "
+             "Warning: saving a Material/MaterialInstance or Blueprint recompiles it (can take seconds-minutes); keep only_if_dirty=true so unchanged assets are skipped."))
+        .RequiredString(TEXT("asset_path"), TEXT("Asset object path to save"))
+        .OptionalBool(TEXT("only_if_dirty"), TEXT("Skip save when the asset is not dirty (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_metadata"),
-        TEXT("Set a key/value metadata tag on a loaded asset. Tags are stored in the package.\n"
-             "Params: asset_path (string), tag (string, FName-compatible), value (string).\n"
-             "Workflow: Follow with content_browser/save to persist. Use get_metadata to verify.\n"
-             "Warning: Tags are NOT the same as Asset Registry tags (which are read-only from code)."))
-        .RequiredString(TEXT("asset_path"), TEXT("Asset path"))
+        TEXT("Set a string metadata tag on a loaded asset via EditorAssetSubsystem and mark the package dirty. Returns {success, asset_path, tag, value}. "
+             "Params: asset_path (string, required, object path), tag (string, required, FName-compatible key), value (string, required). "
+             "Workflow: call content_browser/save afterward to persist; read it back with content_browser/get_metadata. "
+             "Warning: these are editor metadata tags, distinct from cooked Asset Registry tags (which are populated from code and read-only). Does not auto-save."))
+        .RequiredString(TEXT("asset_path"), TEXT("Asset object path"))
         .RequiredString(TEXT("tag"), TEXT("Metadata key (FName)"))
         .RequiredString(TEXT("value"), TEXT("Metadata value (string)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_metadata"),
-        TEXT("Read a metadata tag from a loaded asset. Returns empty string if absent.\n"
-             "Params: asset_path (string, required), tag (string, required, FName-compatible).\n"
-             "Workflow: pair with content_browser/set_metadata to verify a write."))
-        .RequiredString(TEXT("asset_path"), TEXT("Asset path"))
+        TEXT("Read a metadata tag from a loaded asset via EditorAssetSubsystem. Returns {success, asset_path, tag, value}. "
+             "Params: asset_path (string, required, object path), tag (string, required, FName-compatible key). "
+             "Workflow: pair with content_browser/set_metadata to verify a write. "
+             "Warning: an absent tag returns the empty string, not an error; loads the asset to read it."))
+        .RequiredString(TEXT("asset_path"), TEXT("Asset object path"))
         .RequiredString(TEXT("tag"), TEXT("Metadata key"))
         .Build());
 

@@ -65,8 +65,10 @@ bool FSpecialAgentMCPServer::ParseRequest(const FString& JsonString, FMCPRequest
 		return false;
 	}
 
-	OutRequest.JsonRpc = JsonObject->GetStringField(TEXT("jsonrpc"));
-	OutRequest.Method  = JsonObject->GetStringField(TEXT("method"));
+	// Use Try accessors — these come straight off the wire and may be missing;
+	// the non-Try variants assert/log-spam on absent fields.
+	JsonObject->TryGetStringField(TEXT("jsonrpc"), OutRequest.JsonRpc);
+	JsonObject->TryGetStringField(TEXT("method"), OutRequest.Method);
 
 	const TSharedPtr<FJsonObject>* ParamsObj;
 	if (JsonObject->TryGetObjectField(TEXT("params"), ParamsObj))

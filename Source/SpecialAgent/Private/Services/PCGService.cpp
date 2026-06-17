@@ -11,6 +11,7 @@
 #include "AssetRegistry/ARFilter.h"
 #include "Editor.h"
 #include "Engine/World.h"
+#include "ScopedTransaction.h"
 
 #include "PCGGraph.h"
 #include "PCGComponent.h"
@@ -122,6 +123,9 @@ FMCPResponse FPCGService::HandleExecuteGraph(const FMCPRequest& Request)
             return FMCPJson::MakeError(FString::Printf(TEXT("PCG graph not found: %s"), *GraphPath));
         }
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: execute PCG graph")));
+        Actor->Modify();
+
         UPCGComponent* PCGComp = Actor->FindComponentByClass<UPCGComponent>();
         if (!PCGComp)
         {
@@ -136,6 +140,7 @@ FMCPResponse FPCGService::HandleExecuteGraph(const FMCPRequest& Request)
 
         PCGComp->SetGraph(Graph);
         PCGComp->GenerateLocal(bForce);
+        Actor->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> Out = FMCPJson::MakeSuccess();
         Out->SetStringField(TEXT("actor_name"), Actor->GetActorLabel());
@@ -181,6 +186,8 @@ FMCPResponse FPCGService::HandleSpawnPCGActor(const FMCPRequest& Request)
             return FMCPJson::MakeError(FString::Printf(TEXT("PCG graph not found: %s"), *GraphPath));
         }
 
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: spawn PCG actor")));
+
         FActorSpawnParameters SpawnParams;
         APCGVolume* Volume =
             World->SpawnActor<APCGVolume>(APCGVolume::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
@@ -197,8 +204,13 @@ FMCPResponse FPCGService::HandleSpawnPCGActor(const FMCPRequest& Request)
             PCGComp->GenerateLocal(true);
         }
 
+        Volume->MarkPackageDirty();
+
         TSharedPtr<FJsonObject> Out = FMCPJson::MakeSuccess();
-        FMCPJson::WriteActor(Out, Volume);
+        // Nest the actor under "actor" for consistency with every other spawn tool.
+        TSharedPtr<FJsonObject> ActorObj = MakeShared<FJsonObject>();
+        FMCPJson::WriteActor(ActorObj, Volume);
+        Out->SetObjectField(TEXT("actor"), ActorObj);
         Out->SetStringField(TEXT("graph_path"), GraphPath);
 
         UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Spawned APCGVolume '%s' with graph %s"),
@@ -217,33 +229,38 @@ TArray<FMCPToolInfo> FPCGService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("list_graphs"),
-            TEXT("List PCG graph assets. Queries the asset registry for UPCGGraph. "
-                 "Params: path (string, optional content path like /Game/PCG, filter). "
-                 "Workflow: call first to discover graphs before execute_graph / spawn_pcg_actor. "
-                 "Warning: returns cached asset registry; rescan the project if a new graph was just imported."))
-        .OptionalString(TEXT("path"), TEXT("Optional content path prefix (e.g. /Game/PCG) to restrict the search"))
+            TEXT("Discover PCG (Procedural Content Generation) graph assets via the asset registry. "
+                 "Returns {success, count, graphs:[{name, path (object path Pkg.Asset), package (package name)}]}. "
+                 "Params: path (string, optional virtual content folder like /Game/PCG; recursive; omit to search the whole project). "
+                 "Workflow: call first to find a graph_path, then feed it to pcg/execute_graph or pcg/spawn_pcg_actor. "
+                 "Warning: reads cached registry metadata (no asset load); a graph imported this session may be missing until the registry rescans."))
+        .OptionalString(TEXT("path"), TEXT("Virtual content folder to restrict the search, e.g. /Game/PCG (recursive). Omit to search everything. Not an OS path."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("execute_graph"),
-            TEXT("Execute a PCG graph on an existing actor. Attaches UPCGComponent if missing, sets the graph, and triggers GenerateLocal. "
-                 "Params: graph_path (string, /Game/... path), actor_name (string, actor label), force (bool, regenerate even if up-to-date). "
-                 "Workflow: pair with pcg/list_graphs to discover graphs. "
-                 "Warning: generation is async; poll the target actor to observe completion."))
-        .RequiredString(TEXT("graph_path"), TEXT("Full asset path of the PCG graph, e.g. /Game/PCG/MyGraph.MyGraph"))
-        .RequiredString(TEXT("actor_name"), TEXT("Label of the target actor hosting (or receiving) the UPCGComponent"))
-        .OptionalBool  (TEXT("force"),      TEXT("Force regeneration even if the PCG component is clean (default true)"))
+            TEXT("Run a PCG graph on an existing scene actor: finds (or adds) a PCGComponent on the actor, assigns the graph, and calls GenerateLocal. "
+                 "Returns {success, actor_name (label), graph_path, generating (bool, true while still producing points/spawning)}. "
+                 "Params: graph_path (string, virtual object path like /Game/PCG/MyGraph.MyGraph; from pcg/list_graphs), "
+                 "actor_name (string, target actor label, resolved by label), force (bool, default true; regenerate even if the component is clean). "
+                 "Workflow: pcg/list_graphs to get graph_path; ensure actor_name exists; for a brand-new procedural volume use pcg/spawn_pcg_actor instead. "
+                 "Warning: generation runs on the game thread and may spawn many instances; the PCGComponent is added as a non-transient instance component but the change persists only if you save the level."))
+        .RequiredString(TEXT("graph_path"), TEXT("Virtual object path of the PCG graph, e.g. /Game/PCG/MyGraph.MyGraph (not an OS path)"))
+        .RequiredString(TEXT("actor_name"), TEXT("Label of the target actor that hosts (or will receive) the PCGComponent"))
+        .OptionalBool  (TEXT("force"),      TEXT("Regenerate even if the PCG component is up-to-date (default true)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("spawn_pcg_actor"),
-            TEXT("Spawn an APCGVolume at a location, assign a PCG graph, and generate. "
-                 "Params: graph_path (string, /Game/... path), location ([X,Y,Z] cm world), scale ([X,Y,Z] default [10,10,10]). "
-                 "Workflow: use pcg/list_graphs to discover the graph first. "
-                 "Warning: the spawned volume is a full AVolume with brush geometry; adjust brush bounds after spawn if needed."))
-        .RequiredString(TEXT("graph_path"), TEXT("Full asset path of the PCG graph to attach"))
-        .RequiredVec3  (TEXT("location"),   TEXT("World-space spawn location [X,Y,Z] in cm"))
-        .OptionalVec3  (TEXT("scale"),      TEXT("Volume scale [X,Y,Z]; default [10,10,10]"))
+            TEXT("Spawn a new APCGVolume at a world location, assign a PCG graph to its built-in PCGComponent, and generate immediately. "
+                 "Returns {success, actor:{actor_label, path, class, location, rotation, scale, tags}, graph_path}. Use this for a fresh procedural volume; to drive an existing actor use pcg/execute_graph. "
+                 "Params: graph_path (string, virtual object path like /Game/PCG/MyGraph.MyGraph), location (array [X,Y,Z], world-space cm, +X forward +Y right +Z up), "
+                 "scale (array [X,Y,Z], unitless, default [10,10,10]; the volume's bounds = base extent * scale and define the generation region). "
+                 "Workflow: pcg/list_graphs to get graph_path; enlarge scale to cover the area you want populated; the spawned volume auto-selects in the level. "
+                 "Warning: spawns into the editor world and generates on the game thread (can produce many instances); the actor is not saved to disk until you save the level."))
+        .RequiredString(TEXT("graph_path"), TEXT("Virtual object path of the PCG graph to attach, e.g. /Game/PCG/MyGraph.MyGraph"))
+        .RequiredVec3  (TEXT("location"),   TEXT("World-space spawn location [X,Y,Z] in cm (+X forward, +Y right, +Z up)"))
+        .OptionalVec3  (TEXT("scale"),      TEXT("Volume scale [X,Y,Z], unitless; controls the generation bounds. Default [10,10,10]"))
         .Build());
 
     return Tools;

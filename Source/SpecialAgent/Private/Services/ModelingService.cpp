@@ -304,43 +304,49 @@ TArray<FMCPToolInfo> FModelingService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("boolean_union"),
-            TEXT("Boolean union two static mesh actors. Writes the merged result back to the target's StaticMesh asset. "
-                 "Params: target_actor (string, actor label, mesh that is modified), tool_actor (string, actor label, mesh consumed into target). "
-                 "Workflow: both actors must be AStaticMeshActor (or expose a UStaticMeshComponent). "
-                 "Warning: the target's source StaticMesh asset is overwritten in place; check out / back up before running."))
-        .RequiredString(TEXT("target_actor"), TEXT("Actor label whose StaticMesh asset receives the result"))
-        .RequiredString(TEXT("tool_actor"),   TEXT("Actor label providing the tool mesh (unchanged)"))
+            TEXT("Boolean-union two static mesh actors via GeometryScript (UDynamicMesh), merging the tool mesh into the target. "
+                 "Returns {success, target (label), tool (label), target_asset (object path of the overwritten StaticMesh)}. "
+                 "Params: target_actor (string, label of the actor whose StaticMesh asset is modified), tool_actor (string, label of the actor whose mesh is added). "
+                 "Workflow: both actors must be AStaticMeshActor or expose a UStaticMeshComponent; world transforms are respected so position them as they should combine. "
+                 "Warning: overwrites the target actor's shared source StaticMesh asset in place (every instance of that mesh changes); irreversible, so duplicate the asset first if reuse matters."))
+        .RequiredString(TEXT("target_actor"), TEXT("Label of the actor whose StaticMesh asset is overwritten with the merged result"))
+        .RequiredString(TEXT("tool_actor"),   TEXT("Label of the actor whose mesh is merged in (its own asset is left unchanged)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("boolean_subtract"),
-            TEXT("Boolean subtract a tool mesh from a target mesh. Writes the carved result back to the target's StaticMesh asset. "
-                 "Params: target_actor (string), tool_actor (string). "
-                 "Workflow: position actors so the intended carved volume overlaps the target before calling. "
-                 "Warning: the target's source StaticMesh asset is overwritten in place; check out / back up first."))
-        .RequiredString(TEXT("target_actor"), TEXT("Actor label whose StaticMesh asset receives the carved result"))
-        .RequiredString(TEXT("tool_actor"),   TEXT("Actor label providing the subtracted volume"))
+            TEXT("Boolean-subtract a tool mesh from a target mesh via GeometryScript (UDynamicMesh), carving the tool's volume out of the target. "
+                 "Returns {success, target (label), tool (label), target_asset (object path of the overwritten StaticMesh)}. "
+                 "Params: target_actor (string, label of the actor whose StaticMesh asset is carved), tool_actor (string, label of the actor whose volume is removed). "
+                 "Workflow: both actors need a UStaticMeshComponent; world transforms are used, so overlap the tool actor with the target where you want material removed. "
+                 "Warning: overwrites the target actor's shared source StaticMesh asset in place (affects every instance); irreversible, so duplicate the asset first if it is reused elsewhere."))
+        .RequiredString(TEXT("target_actor"), TEXT("Label of the actor whose StaticMesh asset is overwritten with the carved result"))
+        .RequiredString(TEXT("tool_actor"),   TEXT("Label of the actor whose overlapping volume is subtracted (its own asset is left unchanged)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("extrude"),
-            TEXT("Linear-extrude all faces of a static mesh actor along a direction. "
-                 "Params: target_actor (string, actor label), distance (number, cm, default 100), direction ([X,Y,Z], default [0,0,1]). "
-                 "Workflow: use modeling/simplify after extrude to clean up redundant triangles. "
-                 "Warning: applies to the entire mesh (empty selection); for face-specific extrudes use the editor Modeling Mode."))
-        .RequiredString(TEXT("target_actor"), TEXT("Actor label of the static mesh to extrude"))
+            TEXT("Linear-extrude every face of a static mesh actor a fixed distance along one direction via GeometryScript (UDynamicMesh). "
+                 "Returns {success, target (label), distance (cm), direction (the normalized [X,Y,Z] used)}. "
+                 "Params: target_actor (string, label of the static mesh actor), distance (number, cm, default 100), "
+                 "direction (array [X,Y,Z], mesh-local axes, normalized internally, default [0,0,1] = +Z up). "
+                 "Workflow: run modeling/simplify afterward to drop redundant coplanar triangles the extrude introduces. "
+                 "Warning: extrudes the WHOLE mesh (selection is empty) and overwrites the target's shared source StaticMesh asset in place (affects every instance); for picking specific faces use the editor Modeling Mode."))
+        .RequiredString(TEXT("target_actor"), TEXT("Label of the static mesh actor to extrude"))
         .OptionalNumber(TEXT("distance"),     TEXT("Extrude distance in cm (default 100)"))
-        .OptionalVec3  (TEXT("direction"),    TEXT("Extrude direction vector [X,Y,Z]; normalized internally (default [0,0,1])"))
+        .OptionalVec3  (TEXT("direction"),    TEXT("Extrude direction [X,Y,Z] in mesh-local axes; normalized internally. Default [0,0,1] (+Z up)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("simplify"),
-            TEXT("Simplify a static mesh actor's triangle count. "
-                 "Params: target_actor (string, actor label), target_triangle_count (integer, >0 uses QEM to this target; 0 or missing runs planar simplify only). "
-                 "Workflow: pair with assets/get_info to check post-simplify triangle count. "
-                 "Warning: overwrites the target's source StaticMesh asset; simplify is destructive."))
-        .RequiredString (TEXT("target_actor"),          TEXT("Actor label of the static mesh to simplify"))
-        .OptionalInteger(TEXT("target_triangle_count"), TEXT("Target triangle count; >0 triggers QEM simplify. Omit or 0 for planar-simplify only."))
+            TEXT("Reduce a static mesh actor's triangle count via GeometryScript (UDynamicMesh). "
+                 "Returns {success, target (label), target_triangle_count (the requested target, 0 when planar mode ran)}. "
+                 "Params: target_actor (string, label of the static mesh actor), "
+                 "target_triangle_count (integer, optional; >0 simplifies down toward that triangle budget; omit or 0 runs planar simplify only, which merges coplanar triangles without altering the shape). "
+                 "Workflow: call assets/get_info before and after to confirm the new triangle count. "
+                 "Warning: overwrites the target's shared source StaticMesh asset in place (affects every instance) and is irreversible; duplicate the asset first if it is reused elsewhere."))
+        .RequiredString (TEXT("target_actor"),          TEXT("Label of the static mesh actor to simplify"))
+        .OptionalInteger(TEXT("target_triangle_count"), TEXT("Target triangle budget; >0 simplifies toward it. Omit or 0 for planar simplify only (coplanar merge, shape-preserving)."))
         .Build());
 
     return Tools;

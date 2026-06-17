@@ -11,6 +11,7 @@
 #include "Editor.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "ScopedTransaction.h"
 
 #include "Landscape.h"
 #include "LandscapeProxy.h"
@@ -182,6 +183,9 @@ FMCPResponse FLandscapeService::HandleSculptHeight(const FMCPRequest& Request)
 		const int32 Num = Width * Height;
 		if (Num <= 0) return FMCPJson::MakeError(TEXT("Empty rect"));
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: sculpt landscape height")));
+		Landscape->Modify();
+
 		TArray<uint16> Data;
 		Data.SetNumZeroed(Num);
 
@@ -200,6 +204,7 @@ FMCPResponse FLandscapeService::HandleSculptHeight(const FMCPRequest& Request)
 		}
 
 		EditInterface.SetHeightData(X1, Y1, X2, Y2, Data.GetData(), Width, /*InCalcNormals=*/ true);
+		Landscape->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetNumberField(TEXT("samples"), Num);
@@ -256,11 +261,15 @@ FMCPResponse FLandscapeService::HandleFlattenArea(const FMCPRequest& Request)
 		const double LocalZCm = (TargetZCm - LocalToWorld.GetLocation().Z) / LocalToWorld.GetScale3D().Z;
 		const uint16 Raw = HeightCmToRaw(LocalZCm);
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: flatten landscape area")));
+		Landscape->Modify();
+
 		TArray<uint16> Data;
 		Data.Init(Raw, Num);
 
 		FLandscapeEditDataInterface EditInterface(Info);
 		EditInterface.SetHeightData(X1, Y1, X2, Y2, Data.GetData(), Width, /*InCalcNormals=*/ true);
+		Landscape->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetNumberField(TEXT("samples"), Num);
@@ -314,6 +323,9 @@ FMCPResponse FLandscapeService::HandleSmoothArea(const FMCPRequest& Request, con
 			return FMCPJson::MakeError(TEXT("Rect must be at least 3x3 for smoothing"));
 		}
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: smooth landscape area")));
+		Landscape->Modify();
+
 		TArray<uint16> Data;
 		Data.SetNumZeroed(Num);
 
@@ -357,6 +369,7 @@ FMCPResponse FLandscapeService::HandleSmoothArea(const FMCPRequest& Request, con
 		}
 
 		EditInterface.SetHeightData(X1, Y1, X2, Y2, Data.GetData(), Width, /*InCalcNormals=*/ true);
+		Landscape->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetNumberField(TEXT("samples"), Num);
@@ -422,8 +435,12 @@ FMCPResponse FLandscapeService::HandlePaintLayer(const FMCPRequest& Request)
 		TArray<uint8> Data;
 		Data.Init(AlphaByte, Num);
 
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: paint landscape layer")));
+		Landscape->Modify();
+
 		FLandscapeEditDataInterface EditInterface(Info);
 		EditInterface.SetAlphaData(LayerInfo, X1, Y1, X2, Y2, Data.GetData(), Width);
+		Landscape->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
 		Result->SetStringField(TEXT("layer_name"), LayerName);
@@ -493,69 +510,85 @@ TArray<FMCPToolInfo> FLandscapeService::GetAvailableTools() const
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("get_info"),
-			TEXT("Report landscape dimensions, component counts, and material.\n"
+			TEXT("Report the first ALandscape's quad extents, component layout, and material so you can pick valid edit rectangles. "
+			     "Returns {success, actor_name, component_size_quads, subsection_size_quads, num_subsections, "
+			     "min_x, min_y, max_x, max_y (inclusive quad bounds), size_x_quads, size_y_quads, component_count, material_path (present only if a material is assigned)}.\n"
 			     "Params: (none).\n"
-			     "Returns: {actor_name, component_size_quads, subsection_size_quads, num_subsections, min_x, min_y, max_x, max_y, size_x_quads, size_y_quads, component_count, material_path}.\n"
-			     "Workflow: call first to discover valid quad extents before sculpt_height / flatten_area / paint_layer."))
+			     "Workflow: read-only; call first to discover the valid min_x/min_y..max_x/max_y quad range, then clamp the x1,y1,x2,y2 you pass to sculpt_height / flatten_area / smooth_area / paint_layer.\n"
+			     "Warning: errors if no ALandscape exists in the editor world. Coordinates are landscape QUAD indices (one quad = 100 cm at the default 100,100,100 scale), not world centimetres."))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("sculpt_height"),
-			TEXT("Raise or lower landscape heights across a rectangular region by a constant delta (cm).\n"
-			     "Params: x1,y1,x2,y2 (int, landscape quad coordinates), delta_cm (number, positive = raise).\n"
-			     "Workflow: Call landscape/get_info first to see valid min/max quad extents.\n"
-			     "Warning: Only sculpts the active edit layer. Runtime regeneration may delay visible change."))
-		.RequiredInteger(TEXT("x1"),       TEXT("Min X in landscape quad coords"))
-		.RequiredInteger(TEXT("y1"),       TEXT("Min Y in landscape quad coords"))
-		.RequiredInteger(TEXT("x2"),       TEXT("Max X in landscape quad coords"))
-		.RequiredInteger(TEXT("y2"),       TEXT("Max Y in landscape quad coords"))
-		.RequiredNumber (TEXT("delta_cm"), TEXT("Height delta in cm (positive to raise)"))
+			TEXT("Raise or lower every height sample in a rectangular quad region by the same delta, relative to its current height. "
+			     "delta_cm is in world centimetres and is converted to raw heightmap units before being added. "
+			     "Returns {success, samples (int sample count = (x2-x1+1)*(y2-y1+1)), delta_cm}.\n"
+			     "Params: x1,y1,x2,y2 (int, inclusive landscape QUAD indices; min/max are auto-swapped if out of order, required), "
+			     "delta_cm (number, world cm, positive raises and negative lowers, required).\n"
+			     "Workflow: call landscape/get_info first to read the valid min_x/min_y..max_x/max_y range and keep the rect inside it. Use flatten_area to set an absolute height instead of a relative delta.\n"
+			     "Warning: edits the landscape's active Edit Layer (sculpt/heightmap), not a destructive overwrite of the whole terrain. Heights are clamped to the 16-bit range. In-memory change; save the level to persist."))
+		.RequiredInteger(TEXT("x1"),       TEXT("First X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y1"),       TEXT("First Y quad index (inclusive)"))
+		.RequiredInteger(TEXT("x2"),       TEXT("Second X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y2"),       TEXT("Second Y quad index (inclusive)"))
+		.RequiredNumber (TEXT("delta_cm"), TEXT("Height delta in world cm (positive raises, negative lowers)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("flatten_area"),
-			TEXT("Flatten a rectangular landscape region to a target world-Z height (cm).\n"
-			     "Params: x1,y1,x2,y2 (int quad coords, required), target_z_cm (number, world cm, required).\n"
-			     "Workflow: pair with landscape/get_info to find valid quad extents.\n"
-			     "Warning: only mutates the active edit layer; runtime regeneration may delay visible change."))
-		.RequiredInteger(TEXT("x1"),          TEXT("Min X in quad coords"))
-		.RequiredInteger(TEXT("y1"),          TEXT("Min Y in quad coords"))
-		.RequiredInteger(TEXT("x2"),          TEXT("Max X in quad coords"))
-		.RequiredInteger(TEXT("y2"),          TEXT("Max Y in quad coords"))
-		.RequiredNumber (TEXT("target_z_cm"), TEXT("World-space Z height in cm"))
+			TEXT("Set every height sample in a rectangular quad region to one absolute world-space Z height (a level plateau). "
+			     "target_z_cm is a world Z in centimetres; it is converted through the landscape actor's transform (so its location/scale Z are accounted for) before writing. "
+			     "Returns {success, samples (int sample count), target_z_cm}.\n"
+			     "Params: x1,y1,x2,y2 (int, inclusive landscape QUAD indices; auto-swapped if out of order, required), "
+			     "target_z_cm (number, absolute world-space Z in cm, required).\n"
+			     "Workflow: call landscape/get_info first for valid quad extents. Use sculpt_height instead to apply a relative delta rather than an absolute height.\n"
+			     "Warning: edits the landscape's active Edit Layer (sculpt/heightmap); the result is uniformly flat, not blended into surrounding terrain. In-memory change; save the level to persist."))
+		.RequiredInteger(TEXT("x1"),          TEXT("First X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y1"),          TEXT("First Y quad index (inclusive)"))
+		.RequiredInteger(TEXT("x2"),          TEXT("Second X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y2"),          TEXT("Second Y quad index (inclusive)"))
+		.RequiredNumber (TEXT("target_z_cm"), TEXT("Absolute world-space Z height in cm"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("smooth_area"),
-			TEXT("Smooth landscape heights in a rectangular region using a 3x3 box-average filter.\n"
-			     "Params: x1,y1,x2,y2 (int quad coords), iterations (int, default 1, max 16).\n"
-			     "Warning: Rect must be at least 3x3."))
-		.RequiredInteger(TEXT("x1"),         TEXT("Min X in quad coords"))
-		.RequiredInteger(TEXT("y1"),         TEXT("Min Y in quad coords"))
-		.RequiredInteger(TEXT("x2"),         TEXT("Max X in quad coords"))
-		.RequiredInteger(TEXT("y2"),         TEXT("Max Y in quad coords"))
-		.OptionalInteger(TEXT("iterations"), TEXT("Number of smoothing passes (default 1)"))
+			TEXT("Soften height noise in a rectangular quad region by applying a 3x3 box-average (blur) filter one or more passes; edge samples are kept unchanged each pass. "
+			     "Returns {success, samples (int sample count), iterations (int, after clamping)}.\n"
+			     "Params: x1,y1,x2,y2 (int, inclusive landscape QUAD indices; auto-swapped if out of order, required), "
+			     "iterations (int, smoothing passes, optional, default 1, clamped to 1..16 -- more passes = smoother).\n"
+			     "Workflow: call landscape/get_info first for valid quad extents; often run after sculpt_height to remove the hard plateau edges it leaves.\n"
+			     "Warning: the rect must be at least 3x3 quads (smaller errors). Edits the landscape's active Edit Layer (sculpt/heightmap). In-memory change; save the level to persist."))
+		.RequiredInteger(TEXT("x1"),         TEXT("First X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y1"),         TEXT("First Y quad index (inclusive)"))
+		.RequiredInteger(TEXT("x2"),         TEXT("Second X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y2"),         TEXT("Second Y quad index (inclusive)"))
+		.OptionalInteger(TEXT("iterations"), TEXT("Number of smoothing passes (default 1, clamped 1..16)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("paint_layer"),
-			TEXT("Paint a weightmap layer uniformly across a rectangular region.\n"
-			     "Params: x1,y1,x2,y2 (int quad coords), layer_name (string, landscape layer name), alpha (number 0-1, default 1).\n"
-			     "Workflow: Call landscape/list_layers to discover valid layer_name values."))
-		.RequiredInteger(TEXT("x1"),         TEXT("Min X in quad coords"))
-		.RequiredInteger(TEXT("y1"),         TEXT("Min Y in quad coords"))
-		.RequiredInteger(TEXT("x2"),         TEXT("Max X in quad coords"))
-		.RequiredInteger(TEXT("y2"),         TEXT("Max Y in quad coords"))
-		.RequiredString (TEXT("layer_name"), TEXT("Landscape layer name"))
-		.OptionalNumber (TEXT("alpha"),      TEXT("Layer alpha 0-1 (default 1)"))
+			TEXT("Paint a single weightmap (Paint mode) layer to a uniform alpha across a rectangular quad region. "
+			     "alpha 0..1 is written as an 8-bit weight (0=none, 1=full). This sets the layer's weight, not terrain height -- use sculpt_height/flatten_area for height. "
+			     "Returns {success, layer_name, alpha (clamped), samples (int sample count)}.\n"
+			     "Params: x1,y1,x2,y2 (int, inclusive landscape QUAD indices; auto-swapped if out of order, required), "
+			     "layer_name (string, name of an existing landscape paint layer, required), alpha (number, 0..1, optional, default 1, clamped).\n"
+			     "Workflow: the layer MUST already exist with a bound Layer Info Object -- call landscape/list_layers first and pick a layer_name whose has_info is true; the call errors if the layer (or its LayerInfo) is missing.\n"
+			     "Warning: edits the active Edit Layer's paint/weight alpha (independent from the height/sculpt alpha). Weights of overlapping layers are normalized by the landscape. In-memory change; save the level to persist."))
+		.RequiredInteger(TEXT("x1"),         TEXT("First X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y1"),         TEXT("First Y quad index (inclusive)"))
+		.RequiredInteger(TEXT("x2"),         TEXT("Second X quad index (inclusive)"))
+		.RequiredInteger(TEXT("y2"),         TEXT("Second Y quad index (inclusive)"))
+		.RequiredString (TEXT("layer_name"), TEXT("Name of an existing landscape paint layer (must have a Layer Info Object)"))
+		.OptionalNumber (TEXT("alpha"),      TEXT("Layer weight 0..1 (default 1, clamped)"))
 		.Build());
 
 	Tools.Add(FMCPToolBuilder(
 			TEXT("list_layers"),
-			TEXT("Enumerate landscape weightmap layers (and their LayerInfo assets) on the current ALandscape.\n"
+			TEXT("List the landscape's paint (weightmap) layers and whether each has a bound Layer Info Object. "
+			     "Returns {success, count (int), layers: [{layer_name (feed to paint_layer), has_info (bool), asset_path (LayerInfo virtual path, present only when has_info is true)}]}.\n"
 			     "Params: (none).\n"
-			     "Returns: {layers: [{layer_name, asset_path?, has_info}]}.\n"
-			     "Workflow: call before paint_layer to confirm a valid layer_name."))
+			     "Workflow: read-only; call before paint_layer and choose a layer whose has_info is true -- painting a layer with has_info=false is rejected because it has no Layer Info Object.\n"
+			     "Warning: errors if no ALandscape exists in the editor world. A layer listed here with has_info=false is defined on the material but not yet paintable."))
 		.Build());
 
 	return Tools;

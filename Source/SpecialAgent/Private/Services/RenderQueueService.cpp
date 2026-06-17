@@ -36,47 +36,40 @@ TArray<FMCPToolInfo> FRenderQueueService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("queue_sequence"),
-        TEXT("Add a Level Sequence as a new render job in the Movie Pipeline Queue. Returns the job index. "
-             "Params: sequence_path (string, /Game/... ULevelSequence), job_name (string, optional), "
-             "config_path (string, optional asset path to a UMoviePipelinePrimaryConfig or UMovieGraphConfig). "
-             "Workflow: queue_sequence -> set_output (classic configs only) -> (render via UI or executor). "
-             "Warning: does not start the render; use the Movie Render Queue UI or an executor. "
-             "When config_path points at a UMovieGraphConfig the graph preset is applied via SetGraphPreset "
-             "and set_output is not applicable (edit the graph's Output node instead)."))
-        .RequiredString(TEXT("sequence_path"), TEXT("Asset path to ULevelSequence"))
-        .OptionalString(TEXT("job_name"), TEXT("Human-readable job name shown in the queue"))
-        .OptionalString(TEXT("config_path"), TEXT("Asset path to UMoviePipelinePrimaryConfig or UMovieGraphConfig (graph preset)"))
+        TEXT("Add a Level Sequence as a new job in the Movie Pipeline Queue. Returns {success, job_index, job_name, sequence_path, config_kind:'classic'|'graph', config_path?}; pass job_index to render_queue/set_output, get_status, and start_render. "
+             "Params: sequence_path (string, /Game virtual path to a ULevelSequence, required); job_name (string, optional, defaults to the sequence's asset name); config_path (string, optional /Game path to a UMoviePipelinePrimaryConfig or UMovieGraphConfig). "
+             "Workflow: queue_sequence -> render_queue/set_output (classic configs only) -> render_queue/start_render; for graph configs edit the graph's Output node instead of set_output. "
+             "Warning: does NOT start rendering (use render_queue/start_render or the Movie Render Queue UI). A classic config auto-seeds a default Output setting so set_output works; a UMovieGraphConfig is applied via SetGraphPreset and set_output is not applicable. Returns an error if sequence_path or config_path fails to load or config_path is neither config type."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game virtual path to a ULevelSequence asset"))
+        .OptionalString(TEXT("job_name"), TEXT("Human-readable job name shown in the queue (defaults to the sequence asset name)"))
+        .OptionalString(TEXT("config_path"), TEXT("/Game path to a UMoviePipelinePrimaryConfig (classic) or UMovieGraphConfig (graph preset)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("set_output"),
-        TEXT("Configure the output setting of a queued job: directory, resolution, file-name format. "
-             "Params: job_index (integer, 0-based), output_directory (string, absolute/abs or {project_dir}/...), "
-             "resolution_x (integer, pixels), resolution_y (integer, pixels), filename_format (string, optional). "
-             "Workflow: queue_sequence -> set_output. "
-             "Warning: only graph-config-less jobs; for graph jobs, use the graph's Output node."))
-        .RequiredInteger(TEXT("job_index"), TEXT("Zero-based index in the queue"))
-        .OptionalString(TEXT("output_directory"), TEXT("Output directory (absolute or project-relative tokens allowed)"))
+        TEXT("Configure the Output setting of a queued classic-config job (directory, resolution, file-name format). Returns {success, job_index, output_directory, resolution_x, resolution_y, filename_format} reflecting the post-edit values. "
+             "Params: job_index (integer, 0-based index from queue_sequence, required); output_directory (string, optional; absolute path or MRQ tokens like {project_dir}); resolution_x (integer px, optional); resolution_y (integer px, optional); filename_format (string, optional, e.g. {sequence_name}.{frame_number}). "
+             "Workflow: render_queue/queue_sequence -> set_output -> render_queue/start_render; only fields you pass are changed. "
+             "Warning: you must supply at least one of output_directory/resolution_x/resolution_y/filename_format or the call errors. Only works on classic-config jobs -- a graph-config job has no primary configuration and returns an error (edit the graph's Output node instead). Errors on an out-of-range job_index."))
+        .RequiredInteger(TEXT("job_index"), TEXT("Zero-based job index from queue_sequence"))
+        .OptionalString(TEXT("output_directory"), TEXT("Output directory: absolute path or MRQ tokens (e.g. {project_dir})"))
         .OptionalInteger(TEXT("resolution_x"), TEXT("Output width in pixels"))
         .OptionalInteger(TEXT("resolution_y"), TEXT("Output height in pixels"))
         .OptionalString(TEXT("filename_format"), TEXT("File-name format string, e.g. {sequence_name}.{frame_number}"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_status"),
-        TEXT("Report the state of the Movie Pipeline Queue: queued/running/complete counts and per-job status. "
-             "Params: none. "
-             "Workflow: call after queue_sequence / during render to monitor progress. "
-             "Warning: 'complete' here means is_consumed==true; fresh jobs show 'queued'."))
+        TEXT("Report the Movie Pipeline Queue state. Returns {success, is_rendering, total, queued, running, complete, jobs:[{job_index, job_name, sequence_path, status:'queued'|'complete', status_message, progress (0..1), config_kind:'classic'|'graph'}]}. "
+             "Params: (none). "
+             "Workflow: call after render_queue/queue_sequence to confirm jobs landed, and during render_queue/start_render to poll progress. "
+             "Warning: read-only. A job's status is 'complete' only once it has been consumed by a render -- freshly queued jobs always read 'queued', so this does not by itself prove a render succeeded."))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("start_render"),
-        TEXT("Start rendering the current Movie Render Queue using the in-process executor. "
-             "Returns {success, frames_rendered?}. Emits notifications/progress every 500 ms based on "
-             "UMoviePipelineExecutorBase::GetStatusProgress(). "
+        TEXT("Render the current Movie Render Queue with the in-process executor and block until it finishes. Returns {success, timed_out}. "
+             "Polls progress every 500 ms from UMoviePipelineExecutorBase::GetStatusProgress() and emits notifications/progress (0..1) over the session's SSE stream. "
              "Params: (none). "
-             "Workflow: queue_sequence -> set_output -> start_render. "
-             "Warning: blocks the handler until rendering finishes — can take minutes to hours. "
-             "Emits notifications/progress over the session's SSE stream, so call from a client with "
-             "Accept: text/event-stream if you want live progress."))
+             "Workflow: render_queue/queue_sequence -> render_queue/set_output -> start_render; poll render_queue/get_status separately if you are not consuming the SSE stream. "
+             "Warning: blocks the handler until the render completes -- can take minutes to hours; there is a 6-hour hard timeout (timed_out=true if hit). Errors if a render is already running or the queue is empty. For live progress, call from a client sending Accept: text/event-stream."))
         .Build());
 
     return Tools;

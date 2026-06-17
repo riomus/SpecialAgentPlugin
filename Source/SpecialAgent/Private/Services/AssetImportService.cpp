@@ -381,55 +381,58 @@ TArray<FMCPToolInfo> FAssetImportService::GetAvailableTools() const
     TArray<FMCPToolInfo> Tools;
 
     Tools.Add(FMCPToolBuilder(TEXT("import_fbx"),
-        TEXT("Import an FBX file as a StaticMesh / SkeletalMesh / Animation. Blocking, overwrites existing.\n"
-             "Params: filename (string, absolute OS path), destination_path (string, /Game/... content path).\n"
-             "Workflow: Inspect the result's imported_paths, then assets/get_info or assets/get_bounds.\n"
-             "Warning: Destination path must start with /Game/. Triggered the Phase 0 crash before FMCPGameThreadProcessor fix."))
+        TEXT("Import an FBX file as a StaticMesh / SkeletalMesh / Animation. Returns {success, imported_count, imported_paths:[object paths], source_file, destination_path}. "
+             "Params: filename (string, required, absolute OS path to a .fbx), destination_path (string, required, virtual content path starting with /Game/, e.g. /Game/Imported/Meshes). "
+             "Workflow: inspect imported_paths, then call assets/get_info or assets/get_bounds on a returned path. "
+             "Warning: blocking on the game thread; re-import (replace_existing=true) overwrites the existing asset and triggers shader/texture compiles, so re-running is idempotent but expensive. destination_path must be a /Game/ content path, not an OS folder."))
         .RequiredString(TEXT("filename"), TEXT("Absolute OS path to the .fbx file"))
-        .RequiredString(TEXT("destination_path"), TEXT("Content-browser destination (e.g. /Game/Imported/Meshes)"))
+        .RequiredString(TEXT("destination_path"), TEXT("Virtual content destination, e.g. /Game/Imported/Meshes"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("import_texture"),
-        TEXT("Import a texture file (.png/.jpg/.tga/.exr/...) as a UTexture2D. Blocking, overwrites existing.\n"
-             "Params: filename (string, absolute OS path), destination_path (string, /Game/... content path).\n"
-             "Workflow: After import, material/set_texture_parameter can reference the asset_path."))
-        .RequiredString(TEXT("filename"), TEXT("Absolute OS path to the texture file"))
-        .RequiredString(TEXT("destination_path"), TEXT("Content-browser destination (e.g. /Game/Imported/Textures)"))
+        TEXT("Import an image file (.png/.jpg/.tga/.exr/...) as a UTexture2D. Returns {success, imported_count, imported_paths:[object paths], source_file, destination_path}. "
+             "Params: filename (string, required, absolute OS path to the image), destination_path (string, required, virtual content path /Game/...). "
+             "Workflow: after import, load the returned object path and pass the loaded texture to material/set_texture_parameter (a path string alone will not bind). "
+             "Warning: blocking; replace_existing=true overwrites and re-runs are idempotent but recompress/recompile. Check the texture's compression_settings/srgb when choosing a sampler type downstream."))
+        .RequiredString(TEXT("filename"), TEXT("Absolute OS path to the image file"))
+        .RequiredString(TEXT("destination_path"), TEXT("Virtual content destination, e.g. /Game/Imported/Textures"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("import_sound"),
-        TEXT("Import a sound file (.wav/.ogg/.flac) as a USoundWave. Blocking, overwrites existing.\n"
-             "Params: filename (string, absolute OS path), destination_path (string, /Game/... content path).\n"
-             "Workflow: Pair with sound/play_2d or sound/play_at_location to verify."))
+        TEXT("Import a sound file (.wav/.ogg/.flac) as a USoundWave. Returns {success, imported_count, imported_paths:[object paths], source_file, destination_path}. "
+             "Params: filename (string, required, absolute OS path to the audio), destination_path (string, required, virtual content path /Game/...). "
+             "Workflow: pair with sound/play_2d or sound/play_at_location (passing the imported object path) to verify. "
+             "Warning: blocking on the game thread; replace_existing=true overwrites an existing asset of the same name."))
         .RequiredString(TEXT("filename"), TEXT("Absolute OS path to the sound file"))
-        .RequiredString(TEXT("destination_path"), TEXT("Content-browser destination (e.g. /Game/Imported/Sounds)"))
+        .RequiredString(TEXT("destination_path"), TEXT("Virtual content destination, e.g. /Game/Imported/Sounds"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("import_folder"),
-        TEXT("Import every file in a folder. Extension dictates importer via AssetTools auto-routing.\n"
-             "Params: source_folder (string, absolute OS path), destination_path (string, /Game/... path), recursive (bool, optional).\n"
-             "Workflow: Returns aggregate imported_paths. Follow with assets/list to confirm.\n"
-             "Warning: Large folders are slow and block the game thread for the duration of the import."))
+        TEXT("Import every file in an OS folder, one at a time, auto-routing each by extension. Returns {success, files_processed, imported_count, failed_count, imported_paths, failed_files, source_folder, destination_path}; emits per-file progress. "
+             "Params: source_folder (string, required, absolute OS path), destination_path (string, required, virtual content path /Game/...), recursive (bool, optional, default false; true also imports sub-folders). "
+             "Workflow: follow with assets/list on destination_path to confirm. "
+             "Warning: blocking on the game thread for the whole batch (slow for large folders); replace_existing=true overwrites same-named assets and triggers compiles. Files an importer cannot handle land in failed_files, not an error."))
         .RequiredString(TEXT("source_folder"), TEXT("Absolute OS path to a folder on disk"))
-        .RequiredString(TEXT("destination_path"), TEXT("Content-browser destination (e.g. /Game/Imported/Batch)"))
-        .OptionalBool(TEXT("recursive"), TEXT("Include files in sub-folders (default: false)"))
+        .RequiredString(TEXT("destination_path"), TEXT("Virtual content destination, e.g. /Game/Imported/Batch"))
+        .OptionalBool(TEXT("recursive"), TEXT("Include files in sub-folders (default false)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("create_data_table_from_csv"),
-        TEXT("Create a new UDataTable asset populated from a CSV file on disk.\n"
-             "Params: csv_path (string, absolute OS path), destination_path (string, /Game/... path), asset_name (string), row_struct_path (string, /Script/Module.StructName).\n"
-             "Workflow: Use data_table/list_rows / get_row to verify. Problems array lists parse issues per row.\n"
-             "Warning: row_struct_path must point to an existing UScriptStruct whose fields match CSV columns."))
+        TEXT("Create a new UDataTable asset and populate it from a CSV file on disk. Returns {success, asset_path, row_count, problems:[per-row parse messages]}. "
+             "Params: csv_path (string, required, absolute OS path to a .csv), destination_path (string, required, virtual content path /Game/...), asset_name (string, required, bare name no extension), row_struct_path (string, required, /Script/Module.StructName of the row struct). "
+             "Workflow: inspect problems for rows that failed to parse, then read back with data_table tools. "
+             "Warning: row_struct_path must be an existing UScriptStruct whose property/export names match the CSV column headers, or rows silently fail (listed in problems). Creating the asset dirties its package; save to persist."))
         .RequiredString(TEXT("csv_path"), TEXT("Absolute OS path to the .csv file"))
-        .RequiredString(TEXT("destination_path"), TEXT("Content-browser destination (e.g. /Game/Data)"))
-        .RequiredString(TEXT("asset_name"), TEXT("Name of the new DataTable asset (without extension)"))
-        .RequiredString(TEXT("row_struct_path"), TEXT("Path to UScriptStruct (e.g. /Script/MyGame.MyRowStruct)"))
+        .RequiredString(TEXT("destination_path"), TEXT("Virtual content destination, e.g. /Game/Data"))
+        .RequiredString(TEXT("asset_name"), TEXT("Bare name of the new DataTable asset (no extension)"))
+        .RequiredString(TEXT("row_struct_path"), TEXT("Path to the row UScriptStruct, e.g. /Script/MyGame.MyRowStruct"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("get_import_settings_template"),
-        TEXT("Return a JSON example of parameter shapes for all asset_import tools. No side effects.\n"
-             "Params: (none).\n"
-             "Workflow: Call once, copy the relevant block, substitute real paths, then call the target import tool."))
+        TEXT("Return JSON examples of the parameter shapes for every asset_import tool. Returns {success, import_fbx, import_texture, import_sound, import_folder, create_data_table_from_csv, notes}. Read-only, no side effects. "
+             "Params: (none). "
+             "Workflow: call once, copy the relevant block, substitute real paths, then call the target import tool. "
+             "Warning: examples use placeholder paths - replace them before importing."))
         .Build());
 
     return Tools;

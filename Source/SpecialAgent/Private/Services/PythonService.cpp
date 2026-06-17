@@ -133,11 +133,10 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("execute");
-		Tool.Description = TEXT("Execute arbitrary Python code via IPythonScriptPlugin in the game thread with full UE5 API. Returns {success, stdout, stderr, execution_time}. "
-			"Params: code (string, Python source; 'unreal' module is auto-imported, required); timeout (number seconds, default 30). "
-			"Workflow: use as an escape hatch when no direct tool exists — prefer world/*, assets/*, blueprint/* etc. for supported operations. "
-			"IMPORTANT: if your script writes viewport camera data (e.g. UnrealEditorSubsystem.set_level_viewport_camera_info) or any other viewport-client state, the pixels are NOT yet repainted when this tool returns — call viewport/force_redraw afterwards before screenshot/capture or screenshot/save, otherwise the capture still shows the previous frame. "
-			"Warning: runs on the game thread and can crash the editor; side-effects are not inside an undo transaction unless you wrap them with utility/begin_transaction.");
+		Tool.Description = TEXT("Run arbitrary Python via IPythonScriptPlugin synchronously on the game thread with full UE5 API access; the primary escape hatch when no purpose-built tool fits. Returns {success, stdout, stderr (traceback on error), execution_time (seconds)}. "
+			"Params: code (string, required, Python source; the 'unreal' module is auto-imported, your code is captured and exec'd so use print() to surface values); timeout (number, seconds, default 30 — NOTE: currently advisory only, NOT enforced; a blocking call still freezes Slate until it returns). "
+			"Workflow: prefer the dedicated reflection/*, utility/*, log/* and other domain tools for supported operations; before running a draft, scan it with python/diff_against_deprecated and resolve symbols with python/help, python/search_symbol, python/get_function_signature. "
+			"Warning: runs on the game thread and can crash or hang the editor; side-effects are NOT wrapped in an undo transaction unless you bracket them with utility/begin_transaction and utility/end_transaction. Camera/viewport state written here is not repainted until the next editor tick, but screenshot/capture and screenshot/save already auto-redraw before capturing, so no manual force_redraw is needed there.");
 		
 		TSharedPtr<FJsonObject> CodeParam = MakeShared<FJsonObject>();
 		CodeParam->SetStringField(TEXT("type"), TEXT("string"));
@@ -146,7 +145,7 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 		
 		TSharedPtr<FJsonObject> TimeoutParam = MakeShared<FJsonObject>();
 		TimeoutParam->SetStringField(TEXT("type"), TEXT("number"));
-		TimeoutParam->SetStringField(TEXT("description"), TEXT("Execution timeout in seconds (default: 30.0)"));
+		TimeoutParam->SetStringField(TEXT("description"), TEXT("Advisory timeout in seconds (default 30.0); currently NOT enforced — execution runs synchronously to completion."));
 		Tool.Parameters->SetObjectField(TEXT("timeout"), TimeoutParam);
 		
 		Tool.RequiredParams.Add(TEXT("code"));
@@ -157,14 +156,14 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("execute_file");
-		Tool.Description = TEXT("Execute a Python script file on disk via IPythonScriptPlugin. Returns {success, stdout, stderr, execution_time}. "
-			"Params: file_path (string, path relative to Content/Python/ or absolute, required). "
-			"Workflow: use for reusable multi-line scripts; pair with python/list_modules to discover available scripts. "
-			"Warning: no arg passing — all inputs must be embedded in the script file.");
+		Tool.Description = TEXT("Read a Python script file off disk and execute it via IPythonScriptPlugin on the game thread (Private execution scope). Returns {success, stdout, stderr, execution_time (seconds), file_path}. "
+			"Params: file_path (string, required, an OS filesystem path the editor process can read — absolute is safest; a relative path is resolved against the editor's working directory, NOT automatically against Content/Python/). "
+			"Workflow: use for reusable multi-line scripts kept on disk; for inline one-offs use python/execute instead. "
+			"Warning: no argument passing — every input must be baked into the script file; on a read failure returns success=false with the reason in stderr; runs on the game thread so a blocking script freezes the editor.");
 		
 		TSharedPtr<FJsonObject> FilePathParam = MakeShared<FJsonObject>();
 		FilePathParam->SetStringField(TEXT("type"), TEXT("string"));
-		FilePathParam->SetStringField(TEXT("description"), TEXT("Path to Python file relative to Content/Python/"));
+		FilePathParam->SetStringField(TEXT("description"), TEXT("OS filesystem path to a Python file the editor can read; absolute path recommended (relative resolves against the editor working dir, not Content/Python/)."));
 		Tool.Parameters->SetObjectField(TEXT("file_path"), FilePathParam);
 		
 		Tool.RequiredParams.Add(TEXT("file_path"));
@@ -175,10 +174,10 @@ TArray<FMCPToolInfo> FPythonService::GetAvailableTools() const
 	{
 		FMCPToolInfo Tool;
 		Tool.Name = TEXT("list_modules");
-		Tool.Description = TEXT("List Python scripts found under the project's Content/Python/ directory. Returns {files:[relative_path], count}. "
+		Tool.Description = TEXT("List the Python modules currently loaded into the embedded interpreter (sorted sys.modules keys, excluding names beginning with '_'). Returns {success, modules:[module_name]}. "
 			"Params: (none). "
-			"Workflow: call before python/execute_file to discover candidate script paths. "
-			"Warning: does not recurse into subdirectories.");
+			"Workflow: use to confirm which helper/site modules are already imported before reaching for them in python/execute; this does NOT enumerate script files on disk (it inspects loaded modules, not Content/Python/). "
+			"Warning: result is capped at the first 100 module names and reflects interpreter state at call time, so it grows as more code is run.");
 		Tools.Add(Tool);
 	}
 

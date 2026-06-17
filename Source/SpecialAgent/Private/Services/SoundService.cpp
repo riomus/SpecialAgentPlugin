@@ -259,50 +259,68 @@ TArray<FMCPToolInfo> FSoundService::GetAvailableTools() const
 
     Tools.Add(FMCPToolBuilder(
             TEXT("play_2d"),
-            TEXT("Play a sound non-spatialized (UI-style) via UGameplayStatics::PlaySound2D. Fire-and-forget. "
-                 "Params: sound (string, asset path to USoundBase), volume_multiplier (number, default 1.0), pitch_multiplier (number, default 1.0), start_time (number, seconds, default 0). "
-                 "Workflow: use sound/play_at_location for spatialized 3D playback. "
-                 "Warning: only plays in editor preview while the editor world is active; no persistence."))
-        .RequiredString(TEXT("sound"),             TEXT("Asset path to USoundBase (e.g. /Game/Sounds/UI/Click.Click)"))
-        .OptionalNumber(TEXT("volume_multiplier"), TEXT("Linear volume scalar (default 1.0)"))
-        .OptionalNumber(TEXT("pitch_multiplier"),  TEXT("Linear pitch scalar (default 1.0)"))
+            TEXT("Play a sound non-spatialized (UI-style, no 3D attenuation) via PlaySound2D. Fire-and-forget; returns "
+                 "{sound, volume_multiplier, pitch_multiplier, start_time}. "
+                 "Params: sound (string, required, /Game/... object path to a USoundBase - SoundWave, SoundCue, or MetaSound), "
+                 "volume_multiplier (number, optional, linear, 1.0 nominal, default 1.0), "
+                 "pitch_multiplier (number, optional, linear, 1.0 nominal, default 1.0), "
+                 "start_time (number, optional, seconds offset into the sound, default 0). "
+                 "Workflow: use play_at_location for spatialized 3D playback. "
+                 "Warning: fire-and-forget - no handle is returned, so it cannot be stopped, faded, or re-parameterized; "
+                 "for runtime control spawn a controllable AudioComponent (e.g. spawn_ambient_actor) or use MetaSound parameters. "
+                 "Editor-preview playback works only while the editor world is active and is not persisted."))
+        .RequiredString(TEXT("sound"),             TEXT("/Game/... object path to a USoundBase (Wave/Cue/MetaSound), e.g. /Game/Sounds/UI/Click.Click"))
+        .OptionalNumber(TEXT("volume_multiplier"), TEXT("Linear volume scalar, 1.0 nominal (default 1.0)"))
+        .OptionalNumber(TEXT("pitch_multiplier"),  TEXT("Linear pitch scalar, 1.0 nominal (default 1.0)"))
         .OptionalNumber(TEXT("start_time"),        TEXT("Offset into the sound in seconds (default 0)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("play_at_location"),
-            TEXT("Play a spatialized sound at a world location via UGameplayStatics::PlaySoundAtLocation. Fire-and-forget. "
-                 "Params: sound (string, asset path), location ([X,Y,Z] cm world), rotation (optional [Pitch,Yaw,Roll] deg), volume_multiplier/pitch_multiplier/start_time (numbers). "
-                 "Workflow: use assets/get_bounds + viewport/trace_from_screen to find placement points. "
-                 "Warning: does not travel with any actor — the sound is a one-shot at the given transform."))
-        .RequiredString(TEXT("sound"),             TEXT("Asset path to USoundBase"))
+            TEXT("Play a spatialized (3D, attenuated) sound at a fixed world location via PlaySoundAtLocation. Fire-and-forget; "
+                 "returns {sound, location, rotation, volume_multiplier, pitch_multiplier, start_time}. "
+                 "Params: sound (string, required, /Game/... object path to a USoundBase), "
+                 "location (array [X,Y,Z], required, world cm), rotation (array [Pitch,Yaw,Roll], optional, degrees), "
+                 "volume_multiplier (number, optional, linear, default 1.0), pitch_multiplier (number, optional, linear, default 1.0), "
+                 "start_time (number, optional, seconds, default 0). "
+                 "Workflow: use play_2d for non-spatialized UI sounds; use spawn_ambient_actor for a placed, controllable, looping source. "
+                 "Warning: fire-and-forget one-shot pinned to the given transform - it does NOT follow any actor and cannot be "
+                 "stopped, faded, or re-parameterized after it starts. Editor-preview playback works only while the editor world is active."))
+        .RequiredString(TEXT("sound"),             TEXT("/Game/... object path to a USoundBase (Wave/Cue/MetaSound)"))
         .RequiredVec3  (TEXT("location"),          TEXT("World location [X, Y, Z] in cm"))
         .OptionalVec3  (TEXT("rotation"),          TEXT("World rotation [Pitch, Yaw, Roll] in degrees"))
-        .OptionalNumber(TEXT("volume_multiplier"), TEXT("Linear volume scalar (default 1.0)"))
-        .OptionalNumber(TEXT("pitch_multiplier"),  TEXT("Linear pitch scalar (default 1.0)"))
+        .OptionalNumber(TEXT("volume_multiplier"), TEXT("Linear volume scalar, 1.0 nominal (default 1.0)"))
+        .OptionalNumber(TEXT("pitch_multiplier"),  TEXT("Linear pitch scalar, 1.0 nominal (default 1.0)"))
         .OptionalNumber(TEXT("start_time"),        TEXT("Offset into the sound in seconds (default 0)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("spawn_ambient_actor"),
-            TEXT("Spawn an AAmbientSound actor, assign its sound, and optionally set its volume multiplier. "
-                 "Params: sound (string, asset path), location ([X,Y,Z] cm world), rotation (optional), volume_multiplier (number, default 1.0). "
-                 "Workflow: use sound/set_volume_multiplier afterwards to adjust without respawning. "
-                 "Warning: ambient actors are placed persistently in the level and should be cleaned up via world/delete_actor."))
-        .RequiredString(TEXT("sound"),             TEXT("Asset path to USoundBase (a looping SoundCue / SoundWave is typical)"))
+            TEXT("Spawn an AAmbientSound actor at a world location, assign its sound, and optionally set its initial volume. "
+                 "Unlike the fire-and-forget play tools this gives a placed, persistent, controllable source. "
+                 "Returns {actor (label/path/transform), sound, volume_multiplier}. "
+                 "Params: sound (string, required, /Game/... object path to a USoundBase; a looping Cue/Wave/MetaSound is typical), "
+                 "location (array [X,Y,Z], required, world cm), rotation (array [Pitch,Yaw,Roll], optional, degrees), "
+                 "volume_multiplier (number, optional, linear, default 1.0; only applied when not 1.0). "
+                 "Workflow: spawn_ambient_actor -> set_volume_multiplier to adjust later without respawning. "
+                 "Warning: the actor is placed persistently in the level (save the level to keep it); remove it with the "
+                 "world delete-actor tool. AAmbientSound auto-plays its sound when the world is active."))
+        .RequiredString(TEXT("sound"),             TEXT("/Game/... object path to a USoundBase (looping Cue/Wave/MetaSound typical)"))
         .RequiredVec3  (TEXT("location"),          TEXT("World location [X, Y, Z] in cm"))
         .OptionalVec3  (TEXT("rotation"),          TEXT("World rotation [Pitch, Yaw, Roll] in degrees"))
-        .OptionalNumber(TEXT("volume_multiplier"), TEXT("Initial volume multiplier on the AudioComponent (default 1.0)"))
+        .OptionalNumber(TEXT("volume_multiplier"), TEXT("Initial linear volume on the AudioComponent (default 1.0, applied only when != 1.0)"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(
             TEXT("set_volume_multiplier"),
-            TEXT("Set the volume multiplier on an existing AAmbientSound actor's AudioComponent. "
-                 "Params: actor_name (string, AAmbientSound label), volume_multiplier (number, 0=silent, 1=nominal). "
-                 "Workflow: call sound/spawn_ambient_actor first to create the target. "
-                 "Warning: targets AAmbientSound only; use UAudioComponent::SetVolumeMultiplier directly from Python for generic actors."))
-        .RequiredString(TEXT("actor_name"),        TEXT("Actor label of the AAmbientSound to adjust"))
-        .RequiredNumber(TEXT("volume_multiplier"), TEXT("New linear volume multiplier (0 = silent, 1 = nominal)"))
+            TEXT("Set the volume multiplier on an existing AAmbientSound actor's AudioComponent. Returns {actor (label), volume_multiplier}. "
+                 "Params: actor_name (string, required, editor label of the AAmbientSound), "
+                 "volume_multiplier (number, required, linear; 0 = silent, 1.0 = nominal). "
+                 "Workflow: call spawn_ambient_actor first to create the target, then adjust here without respawning. "
+                 "Warning: targets AAmbientSound actors only - errors if the label resolves to a different actor type or has no "
+                 "AudioComponent. For a generic actor, set the AudioComponent volume directly from Python instead."))
+        .RequiredString(TEXT("actor_name"),        TEXT("Editor label of the AAmbientSound to adjust"))
+        .RequiredNumber(TEXT("volume_multiplier"), TEXT("New linear volume multiplier (0 = silent, 1.0 = nominal)"))
         .Build());
 
     return Tools;
