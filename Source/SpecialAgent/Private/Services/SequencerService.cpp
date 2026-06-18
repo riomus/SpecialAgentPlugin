@@ -16,8 +16,17 @@
 #include "MovieSceneSequencePlayer.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Sections/MovieScene3DTransformSection.h"
+#include "Tracks/MovieSceneCameraCutTrack.h"
+#include "Sections/MovieSceneCameraCutSection.h"
+#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
+#include "Sections/MovieSceneSkeletalAnimationSection.h"
+#include "Tracks/MovieSceneAudioTrack.h"
+#include "Sections/MovieSceneAudioSection.h"
+#include "MovieSceneObjectBindingID.h"
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Channels/MovieSceneDoubleChannel.h"
+#include "Animation/AnimSequence.h"
+#include "Sound/SoundBase.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -34,6 +43,9 @@ FMCPResponse FSequencerService::HandleRequest(const FMCPRequest& Request, const 
     if (MethodName == TEXT("create")) return HandleCreate(Request);
     if (MethodName == TEXT("add_actor_binding")) return HandleAddActorBinding(Request);
     if (MethodName == TEXT("add_transform_track")) return HandleAddTransformTrack(Request);
+    if (MethodName == TEXT("add_camera_cut")) return HandleAddCameraCut(Request);
+    if (MethodName == TEXT("add_skeletal_animation_track")) return HandleAddSkeletalAnimationTrack(Request);
+    if (MethodName == TEXT("add_audio_track")) return HandleAddAudioTrack(Request);
     if (MethodName == TEXT("add_keyframe")) return HandleAddKeyframe(Request);
     if (MethodName == TEXT("set_playback_range")) return HandleSetPlaybackRange(Request);
     if (MethodName == TEXT("play")) return HandlePlay(Request);
@@ -79,6 +91,59 @@ TArray<FMCPToolInfo> FSequencerService::GetAvailableTools() const
              "Marks the package dirty (in-memory); save to persist."))
         .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
         .RequiredString(TEXT("binding_guid"), TEXT("GUID returned by add_actor_binding"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("add_camera_cut"),
+        TEXT("Add a camera cut section to a Level Sequence so the cinematic looks through a bound camera actor over a "
+             "frame range. Gets or creates the single per-sequence camera cut track, then adds a section covering "
+             "[start_frame, end_frame) (Display Rate) whose camera binding points at the supplied binding_guid. "
+             "Returns {track_created (bool; false if the camera cut track already existed), section_added (bool)}. "
+             "Params: sequence_path (string, required, /Game/... object path of the ULevelSequence), "
+             "binding_guid (string, required, GUID of the CAMERA actor's binding returned by add_actor_binding - bind a "
+             "CineCameraActor/CameraActor first), start_frame (integer, required, Display Rate, inclusive), "
+             "end_frame (integer, required, Display Rate, exclusive, must be > start_frame). "
+             "Workflow: add_actor_binding (on the camera) -> add_camera_cut -> set_playback_range -> play. "
+             "Warning: there is exactly one camera cut track per sequence; re-calling reuses it and appends another "
+             "section. Marks the package dirty (in-memory); save the asset to persist."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
+        .RequiredString(TEXT("binding_guid"), TEXT("GUID of the camera actor's binding from add_actor_binding"))
+        .RequiredInteger(TEXT("start_frame"), TEXT("Start frame, Display Rate, inclusive"))
+        .RequiredInteger(TEXT("end_frame"), TEXT("End frame, Display Rate, exclusive (must be > start_frame)"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("add_skeletal_animation_track"),
+        TEXT("Add a skeletal animation track to an actor binding and place one UAnimSequence section at a frame so a "
+             "SkeletalMeshActor plays an animation clip in the sequence. Adds a UMovieSceneSkeletalAnimationTrack on "
+             "the binding, creates a section whose Params.Animation is the loaded UAnimSequence, positioned starting at "
+             "start_frame (Display Rate) with its length derived from the clip. "
+             "Returns {track_created (bool; false if the animation track already existed), section_added (bool)}. "
+             "Params: sequence_path (string, required, /Game/... object path of the ULevelSequence), "
+             "binding_guid (string, required, GUID of the SkeletalMeshActor binding from add_actor_binding), "
+             "animation_path (string, required, /Game/... object path of a UAnimSequence), "
+             "start_frame (integer, required, Display Rate). "
+             "Workflow: add_actor_binding (on the skeletal mesh actor) -> add_skeletal_animation_track -> set_playback_range -> play. "
+             "Warning: animation_path must resolve to a UAnimSequence compatible with the actor's skeleton; fails if it "
+             "does not load. Marks the package dirty (in-memory); save the asset to persist."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
+        .RequiredString(TEXT("binding_guid"), TEXT("GUID of the skeletal mesh actor binding from add_actor_binding"))
+        .RequiredString(TEXT("animation_path"), TEXT("/Game/... object path of a UAnimSequence"))
+        .RequiredInteger(TEXT("start_frame"), TEXT("Start frame, Display Rate"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("add_audio_track"),
+        TEXT("Add a master (unbound) audio track to a Level Sequence and place one sound section at a frame so the "
+             "cinematic plays a USoundBase. Adds a UMovieSceneAudioTrack (no binding) if one does not exist, creates a "
+             "UMovieSceneAudioSection, calls SetSound with the loaded sound, and positions it starting at start_frame "
+             "(Display Rate). Returns {track_created (bool; false if an audio track already existed)}. "
+             "Params: sequence_path (string, required, /Game/... object path of the ULevelSequence), "
+             "sound_path (string, required, /Game/... object path of a USoundBase, e.g. a Sound Wave or Sound Cue), "
+             "start_frame (integer, required, Display Rate). "
+             "Workflow: create -> add_audio_track -> set_playback_range -> play. "
+             "Warning: this is a master/root audio track, not bound to any actor; sound_path must resolve to a "
+             "USoundBase or the call fails. Marks the package dirty (in-memory); save the asset to persist."))
+        .RequiredString(TEXT("sequence_path"), TEXT("/Game/... object path of the ULevelSequence"))
+        .RequiredString(TEXT("sound_path"), TEXT("/Game/... object path of a USoundBase (Sound Wave or Sound Cue)"))
+        .RequiredInteger(TEXT("start_frame"), TEXT("Start frame, Display Rate"))
         .Build());
 
     Tools.Add(FMCPToolBuilder(TEXT("add_keyframe"),
@@ -313,6 +378,304 @@ FMCPResponse FSequencerService::HandleAddTransformTrack(const FMCPRequest& Reque
         TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
         Result->SetBoolField(TEXT("created"), bCreated);
         Result->SetStringField(TEXT("binding_guid"), BindingGuidString);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FSequencerService::HandleAddCameraCut(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString SequencePath, BindingGuidString;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("sequence_path"), SequencePath))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'sequence_path'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("binding_guid"), BindingGuidString))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'binding_guid'"));
+    }
+
+    int32 StartDisplay = 0, EndDisplay = 0;
+    if (!FMCPJson::ReadInteger(Request.Params, TEXT("start_frame"), StartDisplay))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'start_frame'"));
+    }
+    if (!FMCPJson::ReadInteger(Request.Params, TEXT("end_frame"), EndDisplay))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'end_frame'"));
+    }
+    if (EndDisplay <= StartDisplay)
+    {
+        return InvalidParams(Request.Id, TEXT("'end_frame' must be greater than 'start_frame'"));
+    }
+
+    auto Task = [SequencePath, BindingGuidString, StartDisplay, EndDisplay]() -> TSharedPtr<FJsonObject>
+    {
+        ULevelSequence* Sequence = LoadObject<ULevelSequence>(nullptr, *SequencePath);
+        if (!Sequence)
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load sequence: %s"), *SequencePath));
+        }
+
+        FGuid CameraGuid;
+        if (!FGuid::Parse(BindingGuidString, CameraGuid))
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Invalid binding_guid: %s"), *BindingGuidString));
+        }
+
+        UMovieScene* MovieScene = Sequence->GetMovieScene();
+        if (!MovieScene)
+        {
+            return FMCPJson::MakeError(TEXT("Sequence has no MovieScene"));
+        }
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add sequencer camera cut")));
+        MovieScene->Modify();
+
+        // There is exactly one camera cut track per movie scene. Reuse it if present.
+        UMovieSceneCameraCutTrack* CutTrack = Cast<UMovieSceneCameraCutTrack>(MovieScene->GetCameraCutTrack());
+        bool bTrackCreated = false;
+        if (!CutTrack)
+        {
+            CutTrack = Cast<UMovieSceneCameraCutTrack>(
+                MovieScene->AddCameraCutTrack(UMovieSceneCameraCutTrack::StaticClass()));
+            bTrackCreated = (CutTrack != nullptr);
+        }
+        if (!CutTrack)
+        {
+            return FMCPJson::MakeError(TEXT("Failed to get or create UMovieSceneCameraCutTrack"));
+        }
+
+        // Convert display frames to tick resolution for the section range.
+        const FFrameRate DisplayRate    = MovieScene->GetDisplayRate();
+        const FFrameRate TickResolution = MovieScene->GetTickResolution();
+        const FFrameNumber StartTick = FFrameRate::TransformTime(
+            FFrameTime(FFrameNumber(StartDisplay)), DisplayRate, TickResolution).GetFrame();
+        const FFrameNumber EndTick = FFrameRate::TransformTime(
+            FFrameTime(FFrameNumber(EndDisplay)), DisplayRate, TickResolution).GetFrame();
+
+        UMovieSceneCameraCutSection* Section =
+            Cast<UMovieSceneCameraCutSection>(CutTrack->CreateNewSection());
+        bool bSectionAdded = false;
+        if (Section)
+        {
+            Section->SetRange(TRange<FFrameNumber>(StartTick, EndTick));
+            Section->SetCameraBindingID(UE::MovieScene::FRelativeObjectBindingID(CameraGuid));
+            CutTrack->AddSection(*Section);
+            bSectionAdded = true;
+        }
+
+        Sequence->MarkPackageDirty();
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetBoolField(TEXT("track_created"), bTrackCreated);
+        Result->SetBoolField(TEXT("section_added"), bSectionAdded);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FSequencerService::HandleAddSkeletalAnimationTrack(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString SequencePath, BindingGuidString, AnimationPath;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("sequence_path"), SequencePath))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'sequence_path'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("binding_guid"), BindingGuidString))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'binding_guid'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("animation_path"), AnimationPath))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'animation_path'"));
+    }
+
+    int32 StartDisplay = 0;
+    if (!FMCPJson::ReadInteger(Request.Params, TEXT("start_frame"), StartDisplay))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'start_frame'"));
+    }
+
+    auto Task = [SequencePath, BindingGuidString, AnimationPath, StartDisplay]() -> TSharedPtr<FJsonObject>
+    {
+        ULevelSequence* Sequence = LoadObject<ULevelSequence>(nullptr, *SequencePath);
+        if (!Sequence)
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load sequence: %s"), *SequencePath));
+        }
+
+        FGuid BindingGuid;
+        if (!FGuid::Parse(BindingGuidString, BindingGuid))
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Invalid binding_guid: %s"), *BindingGuidString));
+        }
+
+        UMovieScene* MovieScene = Sequence->GetMovieScene();
+        if (!MovieScene)
+        {
+            return FMCPJson::MakeError(TEXT("Sequence has no MovieScene"));
+        }
+
+        UAnimSequence* Animation = LoadObject<UAnimSequence>(nullptr, *AnimationPath);
+        if (!Animation)
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load animation: %s"), *AnimationPath));
+        }
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add sequencer skeletal animation track")));
+        MovieScene->Modify();
+
+        // Idempotent — reuse the existing animation track on this binding if any.
+        UMovieSceneSkeletalAnimationTrack* Track =
+            MovieScene->FindTrack<UMovieSceneSkeletalAnimationTrack>(BindingGuid);
+        bool bTrackCreated = false;
+        if (!Track)
+        {
+            Track = MovieScene->AddTrack<UMovieSceneSkeletalAnimationTrack>(BindingGuid);
+            bTrackCreated = (Track != nullptr);
+        }
+        if (!Track)
+        {
+            return FMCPJson::MakeError(TEXT("Failed to add UMovieSceneSkeletalAnimationTrack"));
+        }
+
+        // Convert the display-rate start frame to tick resolution and size the section to the clip length.
+        const FFrameRate DisplayRate    = MovieScene->GetDisplayRate();
+        const FFrameRate TickResolution = MovieScene->GetTickResolution();
+        const FFrameNumber StartTick = FFrameRate::TransformTime(
+            FFrameTime(FFrameNumber(StartDisplay)), DisplayRate, TickResolution).GetFrame();
+        float SequenceLengthSeconds = Animation->GetPlayLength();
+        if (!(SequenceLengthSeconds > 0.f))
+        {
+            SequenceLengthSeconds = 1.f;
+        }
+        const FFrameNumber DurationTicks = (SequenceLengthSeconds * TickResolution).RoundToFrame();
+        const FFrameNumber EndTick = StartTick + DurationTicks;
+
+        UMovieSceneSkeletalAnimationSection* Section =
+            Cast<UMovieSceneSkeletalAnimationSection>(Track->CreateNewSection());
+        bool bSectionAdded = false;
+        if (Section)
+        {
+            Section->Params.Animation = Animation;
+            Section->SetRange(TRange<FFrameNumber>(StartTick, EndTick));
+            Track->AddSection(*Section);
+            bSectionAdded = true;
+        }
+
+        Sequence->MarkPackageDirty();
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetBoolField(TEXT("track_created"), bTrackCreated);
+        Result->SetBoolField(TEXT("section_added"), bSectionAdded);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FSequencerService::HandleAddAudioTrack(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString SequencePath, SoundPath;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("sequence_path"), SequencePath))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'sequence_path'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("sound_path"), SoundPath))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'sound_path'"));
+    }
+
+    int32 StartDisplay = 0;
+    if (!FMCPJson::ReadInteger(Request.Params, TEXT("start_frame"), StartDisplay))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'start_frame'"));
+    }
+
+    auto Task = [SequencePath, SoundPath, StartDisplay]() -> TSharedPtr<FJsonObject>
+    {
+        ULevelSequence* Sequence = LoadObject<ULevelSequence>(nullptr, *SequencePath);
+        if (!Sequence)
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load sequence: %s"), *SequencePath));
+        }
+
+        UMovieScene* MovieScene = Sequence->GetMovieScene();
+        if (!MovieScene)
+        {
+            return FMCPJson::MakeError(TEXT("Sequence has no MovieScene"));
+        }
+
+        USoundBase* Sound = LoadObject<USoundBase>(nullptr, *SoundPath);
+        if (!Sound)
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load sound: %s"), *SoundPath));
+        }
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add sequencer audio track")));
+        MovieScene->Modify();
+
+        // Idempotent — reuse the existing master (unbound) audio track if any.
+        UMovieSceneAudioTrack* Track = MovieScene->FindTrack<UMovieSceneAudioTrack>();
+        bool bTrackCreated = false;
+        if (!Track)
+        {
+            Track = MovieScene->AddTrack<UMovieSceneAudioTrack>();
+            bTrackCreated = (Track != nullptr);
+        }
+        if (!Track)
+        {
+            return FMCPJson::MakeError(TEXT("Failed to add UMovieSceneAudioTrack"));
+        }
+
+        // Convert the display-rate start frame to tick resolution and size the section to the sound duration.
+        const FFrameRate DisplayRate    = MovieScene->GetDisplayRate();
+        const FFrameRate TickResolution = MovieScene->GetTickResolution();
+        const FFrameNumber StartTick = FFrameRate::TransformTime(
+            FFrameTime(FFrameNumber(StartDisplay)), DisplayRate, TickResolution).GetFrame();
+        // Looping sounds report a sentinel duration (INDEFINITELY_LOOPING_DURATION == 10000s);
+        // fall back to a 1s section in that case so the section stays bounded.
+        float SoundDurationSeconds = Sound->GetDuration();
+        if (!(SoundDurationSeconds > 0.f) || SoundDurationSeconds >= 10000.f)
+        {
+            SoundDurationSeconds = 1.f;
+        }
+        const FFrameNumber DurationTicks = (SoundDurationSeconds * TickResolution).RoundToFrame();
+        const FFrameNumber EndTick = StartTick + DurationTicks;
+
+        UMovieSceneAudioSection* Section = Cast<UMovieSceneAudioSection>(Track->CreateNewSection());
+        if (Section)
+        {
+            Section->SetSound(Sound);
+            Section->SetRange(TRange<FFrameNumber>(StartTick, EndTick));
+            Track->AddSection(*Section);
+        }
+
+        Sequence->MarkPackageDirty();
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetBoolField(TEXT("track_created"), bTrackCreated);
         return Result;
     };
 

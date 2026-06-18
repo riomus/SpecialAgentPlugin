@@ -28,6 +28,12 @@
 #include "Components/SkyLightComponent.h"
 #include "Components/LocalLightComponent.h"
 
+#include "Engine/SphereReflectionCapture.h"
+#include "Engine/BoxReflectionCapture.h"
+#include "Engine/PlaneReflectionCapture.h"
+#include "Components/ReflectionCaptureComponent.h"
+#include "Components/SphereReflectionCaptureComponent.h"
+
 #include "EditorBuildUtils.h"
 #include "ScopedTransaction.h"
 
@@ -48,6 +54,8 @@ FMCPResponse FLightingService::HandleRequest(const FMCPRequest& Request, const F
 	if (MethodName == TEXT("set_light_attenuation")) return HandleSetLightAttenuation(Request);
 	if (MethodName == TEXT("set_light_cast_shadows")) return HandleSetLightCastShadows(Request);
 	if (MethodName == TEXT("build_lighting")) return HandleBuildLighting(Request);
+	if (MethodName == TEXT("spawn_reflection_capture")) return HandleSpawnReflectionCapture(Request);
+	if (MethodName == TEXT("recapture")) return HandleRecapture(Request);
 
 	return MethodNotFound(Request.Id, TEXT("lighting"), MethodName);
 }
@@ -497,6 +505,161 @@ FMCPResponse FLightingService::HandleBuildLighting(const FMCPRequest& Request)
 }
 
 // -----------------------------------------------------------------------------
+// spawn_reflection_capture
+//   shape sphere -> ASphereReflectionCapture, box -> ABoxReflectionCapture,
+//   plane -> APlaneReflectionCapture. influence_radius applies to sphere only
+//   (USphereReflectionCaptureComponent::InfluenceRadius); brightness applies to
+//   any capture (UReflectionCaptureComponent::Brightness).
+// -----------------------------------------------------------------------------
+
+FMCPResponse FLightingService::HandleSpawnReflectionCapture(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid())
+	{
+		return InvalidParams(Request.Id, TEXT("Missing params object"));
+	}
+
+	FString Shape;
+	if (!FMCPJson::ReadString(Request.Params, TEXT("shape"), Shape))
+	{
+		return InvalidParams(Request.Id, TEXT("Missing 'shape' (sphere|box|plane)"));
+	}
+	Shape = Shape.ToLower();
+
+	FVector Location(0, 0, 0);
+	if (!FMCPJson::ReadVec3(Request.Params, TEXT("location"), Location))
+	{
+		return InvalidParams(Request.Id, TEXT("Missing or invalid 'location' [X, Y, Z]"));
+	}
+
+	double InfluenceRadius = 0.0;
+	const bool bHasInfluenceRadius = FMCPJson::ReadNumber(Request.Params, TEXT("influence_radius"), InfluenceRadius);
+	double Brightness = 0.0;
+	const bool bHasBrightness = FMCPJson::ReadNumber(Request.Params, TEXT("brightness"), Brightness);
+
+	auto Task = [Shape, Location, bHasInfluenceRadius, InfluenceRadius, bHasBrightness, Brightness]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World)
+		{
+			return FMCPJson::MakeError(TEXT("No editor world"));
+		}
+
+		UClass* SpawnClass = nullptr;
+		if      (Shape == TEXT("sphere")) SpawnClass = ASphereReflectionCapture::StaticClass();
+		else if (Shape == TEXT("box"))    SpawnClass = ABoxReflectionCapture::StaticClass();
+		else if (Shape == TEXT("plane"))  SpawnClass = APlaneReflectionCapture::StaticClass();
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: spawn_reflection_capture unknown shape '%s'"), *Shape);
+			return FMCPJson::MakeError(FString::Printf(TEXT("Unknown shape: %s (expected sphere|box|plane)"), *Shape));
+		}
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: spawn reflection capture")));
+
+		FActorSpawnParameters SpawnParams;
+		AActor* NewActor = World->SpawnActor<AActor>(SpawnClass, Location, FRotator::ZeroRotator, SpawnParams);
+		if (!NewActor)
+		{
+			// APlaneReflectionCapture is declared 'abstract' in the engine and cannot be instantiated.
+			UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: spawn_reflection_capture SpawnActor returned null for shape '%s'"), *Shape);
+			return FMCPJson::MakeError(FString::Printf(TEXT("Failed to spawn reflection capture (shape '%s'); the plane capture class is abstract and cannot be spawned"), *Shape));
+		}
+
+		if (AReflectionCapture* Capture = Cast<AReflectionCapture>(NewActor))
+		{
+			if (UReflectionCaptureComponent* Comp = Capture->GetCaptureComponent())
+			{
+				bool bModified = false;
+				if (bHasInfluenceRadius)
+				{
+					if (USphereReflectionCaptureComponent* SphereComp = Cast<USphereReflectionCaptureComponent>(Comp))
+					{
+						const float NewRadius = static_cast<float>(InfluenceRadius);
+						if (SphereComp->InfluenceRadius != NewRadius)
+						{
+							SphereComp->Modify();
+							SphereComp->InfluenceRadius = NewRadius;
+							bModified = true;
+						}
+					}
+					else
+					{
+						UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: spawn_reflection_capture 'influence_radius' ignored for non-sphere shape '%s'"), *Shape);
+					}
+				}
+				if (bHasBrightness)
+				{
+					const float NewBrightness = static_cast<float>(Brightness);
+					if (Comp->Brightness != NewBrightness)
+					{
+						Comp->Modify();
+						Comp->Brightness = NewBrightness;
+						bModified = true;
+					}
+				}
+				if (bModified)
+				{
+					Comp->MarkDirtyForRecapture();
+				}
+			}
+		}
+
+		NewActor->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("shape"), Shape);
+		TSharedPtr<FJsonObject> ActorData = MakeShared<FJsonObject>();
+		FMCPJson::WriteActor(ActorData, NewActor);
+		Result->SetObjectField(TEXT("actor"), ActorData);
+
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Spawned %s reflection capture '%s' at (%.1f, %.1f, %.1f)"),
+			*Shape, *NewActor->GetActorLabel(), Location.X, Location.Y, Location.Z);
+		return Result;
+	};
+
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+// -----------------------------------------------------------------------------
+// recapture
+//   Rebuilds the reflection-capture cubemaps for the editor world so capture
+//   edits (new captures, brightness/radius changes) become visible. Uses the
+//   engine's static UReflectionCaptureComponent::UpdateReflectionCaptureContents
+//   (the same path GEditor->BuildReflectionCaptures dispatches to). GPU-heavy.
+// -----------------------------------------------------------------------------
+
+FMCPResponse FLightingService::HandleRecapture(const FMCPRequest& Request)
+{
+	auto Task = []() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World)
+		{
+			return FMCPJson::MakeError(TEXT("No editor world"));
+		}
+
+		UReflectionCaptureComponent::UpdateReflectionCaptureContents(
+			World,
+			TEXT("SpecialAgent: recapture"),
+			/*bVerifyOnlyCapturing=*/ false,
+			/*bCapturingForMobile=*/ false);
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("note"), TEXT("Reflection capture contents updated for the editor world; GPU-heavy operation that re-renders cubemaps for every reflection capture in the level."));
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: recapture updated reflection capture contents"));
+		return Result;
+	};
+
+	// Recapturing re-renders a cubemap per reflection capture on the GPU and runs
+	// on the game thread; allow up to 30 minutes before treating the wait as a
+	// wedge so a heavy level is not turned into a false timeout error.
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task, 1800.0);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+// -----------------------------------------------------------------------------
 // Tool catalog
 // -----------------------------------------------------------------------------
 
@@ -580,6 +743,30 @@ TArray<FMCPToolInfo> FLightingService::GetAvailableTools() const
 			     "Params: (none). "
 			     "Workflow: only useful for Static/Stationary lights with baked lightmaps; spawn/configure lights via lighting/spawn_light and the lighting/set_* tools first. "
 			     "Warning: heavy, blocking game-thread Lightmass bake that FREEZES the editor and can take many minutes on large levels (this call waits up to 30 minutes before reporting a timeout). With Lumen (the UE5.7 default GI) enabled this is a NO-OP for diffuse global illumination. GPU Lightmass needs DX12/DXR and is unavailable on macOS/Metal. Do not run while PIE is active."))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(
+			TEXT("spawn_reflection_capture"),
+			TEXT("Spawn a reflection-capture actor (sphere/box/plane) into the editor world to provide localized cubemap reflections, and apply optional influence radius (sphere) and brightness. "
+			     "Returns {success, shape, actor:{actor_label, ...}}; pass the returned actor_label onward and call lighting/recapture to make the new capture visible. "
+			     "Params: shape (enum sphere|box|plane, required), location (world-space cm [X,Y,Z], required), "
+			     "influence_radius (number, cm, optional, SPHERE ONLY; radius of the area that receives reflections from this capture, default = class default ~3000), "
+			     "brightness (number, optional; scales the captured scene's reflection intensity, UI range ~0.5-4, default = class default 1). "
+			     "Workflow: spawn the capture here, then call lighting/recapture to render its cubemap (newly spawned captures show no reflections until recaptured). "
+			     "Warning: spawns into the in-memory level only (not saved to disk); influence_radius is ignored on box/plane; the engine plane-capture class is declared abstract and currently fails to spawn (use sphere or box); reflections do not update until you call lighting/recapture."))
+		.RequiredEnum  (TEXT("shape"),            {TEXT("sphere"), TEXT("box"), TEXT("plane")}, TEXT("Reflection capture actor shape to spawn"))
+		.RequiredVec3  (TEXT("location"),         TEXT("World-space spawn location [X, Y, Z] in cm"))
+		.OptionalNumber(TEXT("influence_radius"), TEXT("Sphere capture influence radius in cm (sphere only); default = class default"))
+		.OptionalNumber(TEXT("brightness"),       TEXT("Reflection brightness multiplier (UI range ~0.5-4); default = class default 1"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(
+			TEXT("recapture"),
+			TEXT("Rebuild (recapture) the reflection-capture cubemap contents for the current editor world so capture edits become visible (newly spawned captures, brightness/influence_radius changes). "
+			     "Returns {success, note}. Calls the engine's UpdateReflectionCaptureContents path (the same one the editor's Build Reflection Captures uses) on the editor world. "
+			     "Params: (none). "
+			     "Workflow: spawn or edit captures via lighting/spawn_reflection_capture (and any reflection-capture property tools) first, then call this once to render their cubemaps; a single recapture refreshes every dirty capture in the level. "
+			     "Warning: GPU-heavy, blocking game-thread operation that re-renders a cubemap for every queued reflection capture and can take many minutes on large levels (this call waits up to 30 minutes before reporting a timeout). Do not run while PIE is active."))
 		.Build());
 
 	return Tools;

@@ -22,4 +22,9 @@ private:
     FMCPResponse HandleDeactivate(const FMCPRequest& Request);
     FMCPResponse HandleSetUserFloat(const FMCPRequest& Request);
     FMCPResponse HandleSetUserVec3(const FMCPRequest& Request);
+    FMCPResponse HandleListUserParams(const FMCPRequest& Request);
+    FMCPResponse HandleSetUserInt(const FMCPRequest& Request);
+    FMCPResponse HandleSetUserBool(const FMCPRequest& Request);
+    FMCPResponse HandleSetUserColor(const FMCPRequest& Request);
+    FMCPResponse HandleSetUserObject(const FMCPRequest& Request);
 };

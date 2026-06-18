@@ -8,6 +8,7 @@
 
 import unreal
 import os
+import json
 
 # Curated high-value classes, grouped. Add to taste.
 GROUPS = [
@@ -73,6 +74,15 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "ue5_python_api_reference.md")
 
+    # Web-researched UE5.7 best-practice notes (keyed by class name), woven in
+    # next to each class's raw __doc__. Edit Content/Python/api_reference_notes.json.
+    notes = {}
+    notes_file = os.path.join(os.path.dirname(out_dir), "Content", "Python", "api_reference_notes.json")
+    try:
+        notes = json.load(open(notes_file, encoding="utf-8")).get("notes", {})
+    except Exception as e:
+        unreal.log_warning(f"SpecialAgent: api_reference_notes.json not loaded ({e}) — reference will lack best-practice notes")
+
     ver = unreal.SystemLibrary.get_engine_version()
     lines = [
         "# UE5 Python API Reference (this build)",
@@ -98,6 +108,10 @@ def main():
             doc = class_doc(name)
             lines.append(f"## unreal.{name}")
             lines.append("")
+            note = notes.get(name)
+            if note:
+                lines.append(f"**Best practices:** {note}")
+                lines.append("")
             if doc is None:
                 lines.append("_(not available on this build)_")
                 missing.append(name)

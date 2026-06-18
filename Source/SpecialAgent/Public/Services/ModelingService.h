@@ -23,4 +23,6 @@ private:
     FMCPResponse HandleSimplify(const FMCPRequest& Request);
     FMCPResponse HandleAddSimpleCollision(const FMCPRequest& Request);
     FMCPResponse HandleSetNanite(const FMCPRequest& Request);
+    FMCPResponse HandleGenerateLods(const FMCPRequest& Request);
+    FMCPResponse HandleManageSockets(const FMCPRequest& Request);
 };

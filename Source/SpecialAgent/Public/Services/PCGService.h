@@ -7,7 +7,7 @@
  * PCG Service.
  *
  * Procedural Content Generation graph execution.
- * Methods: list_graphs, execute_graph, spawn_pcg_actor.
+ * Methods: list_graphs, execute_graph, spawn_pcg_actor, set_graph_parameter.
  */
 class SPECIALAGENT_API FPCGService : public IMCPService
 {
@@ -20,4 +20,5 @@ private:
     FMCPResponse HandleListGraphs(const FMCPRequest& Request);
     FMCPResponse HandleExecuteGraph(const FMCPRequest& Request);
     FMCPResponse HandleSpawnPCGActor(const FMCPRequest& Request);
+    FMCPResponse HandleSetGraphParameter(const FMCPRequest& Request);
 };

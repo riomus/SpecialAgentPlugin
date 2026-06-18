@@ -79,6 +79,7 @@ private:
 	FMCPResponse HandleRandomizeTransforms(const FMCPRequest& Request);
 	FMCPResponse HandleSetActorMesh(const FMCPRequest& Request);
 	FMCPResponse HandleSetWorldSettings(const FMCPRequest& Request);
+	FMCPResponse HandleSpawnCineCamera(const FMCPRequest& Request);
 
 	// Helper method for executing Python scripts
 	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);

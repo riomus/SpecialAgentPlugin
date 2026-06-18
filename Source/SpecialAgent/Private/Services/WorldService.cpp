@@ -21,6 +21,8 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Blueprint.h"
+#include "CineCameraActor.h"
+#include "CineCameraComponent.h"
 #include "Selection.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -205,6 +207,7 @@ FMCPResponse FWorldService::HandleRequest(const FMCPRequest& Request, const FStr
 	if (MethodName == TEXT("randomize_transforms")) return HandleRandomizeTransforms(Request);
 	if (MethodName == TEXT("set_actor_mesh")) return HandleSetActorMesh(Request);
 	if (MethodName == TEXT("set_world_settings")) return HandleSetWorldSettings(Request);
+	if (MethodName == TEXT("spawn_cine_camera")) return HandleSpawnCineCamera(Request);
 
 	return MethodNotFound(Request.Id, TEXT("world"), MethodName);
 }
@@ -2038,6 +2041,102 @@ FMCPResponse FWorldService::HandleSetWorldSettings(const FMCPRequest& Request)
 	return FMCPResponse::Success(Request.Id, Result);
 }
 
+FMCPResponse FWorldService::HandleSpawnCineCamera(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+
+	FVector Location;
+	if (!FMCPJson::ReadVec3(Request.Params, TEXT("location"), Location))
+		return InvalidParams(Request.Id, TEXT("Missing or invalid 'location'"));
+
+	FRotator Rotation(0, 0, 0);
+	FMCPJson::ReadRotator(Request.Params, TEXT("rotation"), Rotation);
+
+	FString Label;
+	const bool bHasLabel = Request.Params->TryGetStringField(TEXT("label"), Label) && !Label.IsEmpty();
+
+	double FocalLength = 0.0;
+	const bool bHasFocal = Request.Params->TryGetNumberField(TEXT("focal_length"), FocalLength);
+	double Aperture = 0.0;
+	const bool bHasAperture = Request.Params->TryGetNumberField(TEXT("aperture"), Aperture);
+	FString FilmbackPreset;
+	const bool bHasFilmback = Request.Params->TryGetStringField(TEXT("filmback_preset"), FilmbackPreset) && !FilmbackPreset.IsEmpty();
+	FString FocusMethod;
+	const bool bHasFocusMethod = Request.Params->TryGetStringField(TEXT("focus_method"), FocusMethod) && !FocusMethod.IsEmpty();
+	double ManualFocusDistance = 0.0;
+	const bool bHasManualFocus = Request.Params->TryGetNumberField(TEXT("manual_focus_distance"), ManualFocusDistance);
+
+	if (bHasFocusMethod)
+	{
+		const FString Lower = FocusMethod.ToLower();
+		if (Lower != TEXT("manual") && Lower != TEXT("tracking") && Lower != TEXT("disabled"))
+			return InvalidParams(Request.Id, TEXT("'focus_method' must be one of: manual, tracking, disabled"));
+	}
+
+	auto Task = [Location, Rotation, bHasLabel, Label, bHasFocal, FocalLength, bHasAperture, Aperture,
+	             bHasFilmback, FilmbackPreset, bHasFocusMethod, FocusMethod, bHasManualFocus, ManualFocusDistance]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: spawn cine camera")));
+
+		FActorSpawnParameters SpawnParams;
+		ACineCameraActor* Camera = World->SpawnActor<ACineCameraActor>(
+			ACineCameraActor::StaticClass(), Location, Rotation, SpawnParams);
+		if (!Camera) return FMCPJson::MakeError(TEXT("Failed to spawn ACineCameraActor"));
+
+		Camera->Modify();
+		if (bHasLabel) Camera->SetActorLabel(Label);
+
+		UCineCameraComponent* Cam = Camera->GetCineCameraComponent();
+		if (!Cam)
+		{
+			World->DestroyActor(Camera);
+			return FMCPJson::MakeError(TEXT("CineCameraActor has no CineCameraComponent"));
+		}
+		Cam->Modify();
+
+		// Filmback first: it can shift focal length / aperture clamping, so apply before reading them back.
+		if (bHasFilmback)
+			Cam->SetFilmbackPresetByName(FilmbackPreset);
+
+		// Idempotency: only call the setter when the target value differs from the current one.
+		if (bHasFocal && !FMath::IsNearlyEqual(Cam->CurrentFocalLength, static_cast<float>(FocalLength)))
+			Cam->SetCurrentFocalLength(static_cast<float>(FocalLength));
+
+		if (bHasAperture && !FMath::IsNearlyEqual(Cam->CurrentAperture, static_cast<float>(Aperture)))
+			Cam->SetCurrentAperture(static_cast<float>(Aperture));
+
+		if (bHasFocusMethod)
+		{
+			const FString Lower = FocusMethod.ToLower();
+			ECameraFocusMethod Method = ECameraFocusMethod::Manual;
+			if (Lower == TEXT("tracking")) Method = ECameraFocusMethod::Tracking;
+			else if (Lower == TEXT("disabled")) Method = ECameraFocusMethod::Disable;
+			Cam->FocusSettings.FocusMethod = Method;
+		}
+
+		if (bHasManualFocus)
+			Cam->FocusSettings.ManualFocusDistance = static_cast<float>(ManualFocusDistance);
+
+		Camera->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> ActorObj = MakeShared<FJsonObject>();
+		FMCPJson::WriteActor(ActorObj, Camera);
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetObjectField(TEXT("actor"), ActorObj);
+		Result->SetNumberField(TEXT("focal_length"), Cam->CurrentFocalLength);
+		Result->SetNumberField(TEXT("aperture"), Cam->CurrentAperture);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Spawned CineCamera %s (focal=%.1f aperture=%.2f)"),
+			*Camera->GetActorLabel(), Cam->CurrentFocalLength, Cam->CurrentAperture);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
 // ============================================================================
 // Tool schemas
 // ============================================================================
@@ -2619,6 +2718,26 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 		Tool.Parameters->SetObjectField(TEXT("game_mode"), GMParam);
 		Tools.Add(Tool);
 	}
+
+	Tools.Add(FMCPToolBuilder(TEXT("spawn_cine_camera"),
+		TEXT("Spawn an ACineCameraActor (cinematic camera) into the current editor level and optionally configure its lens, filmback, and focus on the UCineCameraComponent. "
+			 "Returns {actor:{name,class,location,rotation,scale,tags}, focal_length (mm), aperture (f-stop)} reading back the component's effective values after any preset/clamping. "
+			 "Params: location (array [X,Y,Z] world-space cm, required), rotation (array [Pitch,Yaw,Roll] degrees, optional default [0,0,0]), label (string, optional outliner name), "
+			 "focal_length (number mm, optional -> SetCurrentFocalLength), aperture (number f-stop, optional -> SetCurrentAperture, e.g. 2.8 for f/2.8), "
+			 "filmback_preset (string, optional named preset like \"16:9 Digital Film\" -> SetFilmbackPresetByName, applied before focal/aperture since it can reclamp them), "
+			 "focus_method (enum manual|tracking|disabled, optional -> FocusSettings.FocusMethod), manual_focus_distance (number cm, optional -> FocusSettings.ManualFocusDistance, used in manual focus mode). "
+			 "Workflow: spawn the camera, then point it with set_actor_rotation/set_actor_transform; use list_actors to find it later by its label. "
+			 "Warning: in-memory only (save the level to persist); filmback presets may reclamp focal_length/aperture, so trust the returned focal_length/aperture over the requested values."))
+		.RequiredVec3(TEXT("location"), TEXT("World-space spawn location [X, Y, Z] in cm"))
+		.OptionalVec3(TEXT("rotation"), TEXT("Rotation [Pitch, Yaw, Roll] in degrees (default [0,0,0])"))
+		.OptionalString(TEXT("label"), TEXT("Outliner label for the spawned camera (default: auto-generated)"))
+		.OptionalNumber(TEXT("focal_length"), TEXT("Current focal length in mm (controls FoV/zoom)"))
+		.OptionalNumber(TEXT("aperture"), TEXT("Current aperture as f-stop (e.g. 2.8 for f/2.8)"))
+		.OptionalString(TEXT("filmback_preset"), TEXT("Named filmback preset, e.g. \"16:9 Digital Film\" (applied before focal/aperture)"))
+		.OptionalEnum(TEXT("focus_method"), {TEXT("manual"), TEXT("tracking"), TEXT("disabled")},
+			TEXT("Focus method: manual (exact distance), tracking (lock to object), or disabled (no depth of field)"))
+		.OptionalNumber(TEXT("manual_focus_distance"), TEXT("Manual focus distance in cm (used when focus_method=manual)"))
+		.Build());
 
 	return Tools;
 }

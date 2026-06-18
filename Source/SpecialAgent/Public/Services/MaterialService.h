@@ -26,4 +26,10 @@ private:
 	FMCPResponse HandleSetStaticSwitch(const FMCPRequest& Request);
 	FMCPResponse HandleListParameters(const FMCPRequest& Request);
 	FMCPResponse HandleGetParameters(const FMCPRequest& Request);
+
+	// Material-graph authoring on a base UMaterial (UMaterialEditingLibrary).
+	FMCPResponse HandleAddExpression(const FMCPRequest& Request);
+	FMCPResponse HandleConnectExpression(const FMCPRequest& Request);
+	FMCPResponse HandleSetBaseProperties(const FMCPRequest& Request);
+	FMCPResponse HandleRecompile(const FMCPRequest& Request);
 };

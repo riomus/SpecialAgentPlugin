@@ -90,6 +90,8 @@ public class SpecialAgent : ModuleRules
 				"DataValidation",
 				"MessageLog",
 				"StaticMeshEditor",
+				"MaterialEditor",
+				"CinematicCamera",
 			}
 		);
 		

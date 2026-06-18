@@ -12,10 +12,13 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
 #include "NiagaraTypes.h"
+#include "NiagaraParameterStore.h"
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "Materials/MaterialInterface.h"
+#include "ScopedTransaction.h"
 
 FString FNiagaraService::GetServiceDescription() const
 {
@@ -30,6 +33,11 @@ FMCPResponse FNiagaraService::HandleRequest(const FMCPRequest& Request, const FS
     if (MethodName == TEXT("deactivate"))      return HandleDeactivate(Request);
     if (MethodName == TEXT("set_user_float"))  return HandleSetUserFloat(Request);
     if (MethodName == TEXT("set_user_vec3"))   return HandleSetUserVec3(Request);
+    if (MethodName == TEXT("list_user_params"))return HandleListUserParams(Request);
+    if (MethodName == TEXT("set_user_int"))    return HandleSetUserInt(Request);
+    if (MethodName == TEXT("set_user_bool"))   return HandleSetUserBool(Request);
+    if (MethodName == TEXT("set_user_color"))  return HandleSetUserColor(Request);
+    if (MethodName == TEXT("set_user_object")) return HandleSetUserObject(Request);
 
     return MethodNotFound(Request.Id, TEXT("niagara"), MethodName);
 }
@@ -116,6 +124,85 @@ TArray<FMCPToolInfo> FNiagaraService::GetAvailableTools() const
         .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
         .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
         .RequiredVec3(TEXT("value"), TEXT("Vector value [X, Y, Z]"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("list_user_params"),
+        TEXT("List the User. namespace exposure variables on a spawned Niagara component. Read-only: reads the "
+             "component's override parameter store (GetOverrideParameters). "
+             "Returns {actor_name, params: [{name, type}]} where name is the bare variable name (no 'User.' prefix) "
+             "and type is the Niagara type (e.g. float, int32, bool, LinearColor, Vector, Object). "
+             "Params: actor_name (string, required, actor label from spawn_emitter). "
+             "Workflow: spawn_emitter -> list_user_params to discover settable names/types, then set_user_float / "
+             "set_user_int / set_user_bool / set_user_color / set_user_vec3 / set_user_object with the right name. "
+             "Warning: lists only variables the system actually exposes in the User. namespace; pass the bare names "
+             "shown here (without 'User.') to the set_user_* tools."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .ReadOnly()
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("set_user_int"),
+        TEXT("Set a User. namespace int (int32) exposure variable on a spawned Niagara component via SetVariableInt. "
+             "Returns {actor_name, name, value}. Give the bare name without the 'User.' prefix (it is added internally). "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "name (string, required, variable name WITHOUT the 'User.' prefix), value (integer, required). "
+             "Workflow: spawn_emitter -> set_user_int; set before activate(reset=true) so it applies on this run. "
+             "Warning: only affects User. exposure variables declared as int32 and exposed by the system. "
+             "The name is verified against the component override parameters first, so an unexposed or "
+             "wrong-typed name returns an error instead of a silent no-op. Idempotent: skips the write when the "
+             "value already matches."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
+        .RequiredInteger(TEXT("value"), TEXT("Integer value to assign"))
+        .Idempotent()
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("set_user_bool"),
+        TEXT("Set a User. namespace bool exposure variable on a spawned Niagara component via SetVariableBool. "
+             "Returns {actor_name, name, value}. Give the bare name without the 'User.' prefix (it is added internally). "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "name (string, required, variable name WITHOUT the 'User.' prefix), value (bool, required). "
+             "Workflow: spawn_emitter -> set_user_bool; set before activate(reset=true) so it applies on this run. "
+             "Warning: only affects User. exposure variables declared as bool and exposed by the system. "
+             "The name is verified against the component override parameters first, so an unexposed or "
+             "wrong-typed name returns an error instead of a silent no-op. Idempotent: skips the write when the "
+             "value already matches."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
+        .RequiredBool(TEXT("value"), TEXT("Boolean value to assign"))
+        .Idempotent()
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("set_user_color"),
+        TEXT("Set a User. namespace LinearColor exposure variable on a spawned Niagara component via "
+             "SetVariableLinearColor. Returns {actor_name, name, value [R,G,B,A]}. Give the bare name without the "
+             "'User.' prefix (it is added internally). "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "name (string, required, variable name WITHOUT the 'User.' prefix), "
+             "value (array [R,G,B,A], required, linear 0..1 floats; A defaults to 1 if omitted). "
+             "Workflow: spawn_emitter -> set_user_color; set before activate(reset=true) so it applies on this run. "
+             "Warning: only affects User. exposure variables declared as LinearColor and exposed by the system; the "
+             "name+type is verified first so an unexposed or wrong-typed name returns an error instead of a silent "
+             "no-op. Values are LINEAR (not sRGB)."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
+        .RequiredColor(TEXT("value"), TEXT("Linear color [R, G, B, A] in 0..1"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("set_user_object"),
+        TEXT("Set a User. namespace UObject/Material exposure variable on a spawned Niagara component. Loads the asset "
+             "at object_path and assigns it via SetVariableMaterial (Material types) or SetVariableObject (generic UObject). "
+             "Returns {actor_name, name, object_path, as_material (bool)}. Give the bare name without the 'User.' prefix "
+             "(it is added internally). "
+             "Params: actor_name (string, required, actor label from spawn_emitter), "
+             "name (string, required, variable name WITHOUT the 'User.' prefix), "
+             "object_path (string, required, /Game/... object path of the asset to assign). "
+             "Workflow: spawn_emitter -> set_user_object; set before activate(reset=true) so it applies on this run. "
+             "Warning: the param must be exposed in the User. namespace; if it is declared as a Material the asset must "
+             "be a UMaterialInterface. Verified first so a missing param or unloadable asset returns an error instead of "
+             "a silent no-op."))
+        .RequiredString(TEXT("actor_name"), TEXT("Actor label of the Niagara actor from spawn_emitter"))
+        .RequiredString(TEXT("name"), TEXT("User variable name, WITHOUT the 'User.' prefix"))
+        .RequiredString(TEXT("object_path"), TEXT("/Game/... object path of the asset to assign"))
         .Build());
 
     return Tools;
@@ -469,6 +556,347 @@ FMCPResponse FNiagaraService::HandleSetUserVec3(const FMCPRequest& Request)
         Result->SetStringField(TEXT("actor_name"), ActorName);
         Result->SetStringField(TEXT("name"), VarName);
         FMCPJson::WriteVec3(Result, TEXT("value"), Value);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FNiagaraService::HandleListUserParams(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString ActorName;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("actor_name"), ActorName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+    }
+
+    auto Task = [ActorName]() -> TSharedPtr<FJsonObject>
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        FString Err;
+        UNiagaraComponent* Comp = ResolveNiagaraComponent(World, ActorName, Err);
+        if (!Comp)
+        {
+            return FMCPJson::MakeError(Err);
+        }
+
+        // GetUserParameters() returns the bare (User.-less) display names of the variables the
+        // system exposes in the User. namespace. Pair each with its Niagara type name.
+        FNiagaraUserRedirectionParameterStore& Store = Comp->GetOverrideParameters();
+        TArray<FNiagaraVariable> UserParams;
+        Store.GetUserParameters(UserParams);
+
+        TArray<TSharedPtr<FJsonValue>> ParamArray;
+        for (const FNiagaraVariable& Var : UserParams)
+        {
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("name"), Var.GetName().ToString());
+            Entry->SetStringField(TEXT("type"), Var.GetType().GetName());
+            ParamArray.Add(MakeShared<FJsonValueObject>(Entry));
+        }
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetStringField(TEXT("actor_name"), ActorName);
+        Result->SetArrayField(TEXT("params"), ParamArray);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FNiagaraService::HandleSetUserInt(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString ActorName, VarName;
+    int32 Value = 0;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("actor_name"), ActorName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("name"), VarName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'name'"));
+    }
+    if (!FMCPJson::ReadInteger(Request.Params, TEXT("value"), Value))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'value'"));
+    }
+
+    auto Task = [ActorName, VarName, Value]() -> TSharedPtr<FJsonObject>
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        FString Err;
+        UNiagaraComponent* Comp = ResolveNiagaraComponent(World, ActorName, Err);
+        if (!Comp)
+        {
+            return FMCPJson::MakeError(Err);
+        }
+
+        const FName VarFName(*VarName);
+        if (!NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetIntDef()))
+        {
+            return FMCPJson::MakeError(FString::Printf(
+                TEXT("User int parameter 'User.%s' is not exposed as an int32 on actor '%s'. "
+                     "SetVariableInt would silently no-op. Give the bare name (no 'User.' prefix) "
+                     "and confirm the system exposes it as an int user parameter."),
+                *VarName, *ActorName));
+        }
+
+        // Idempotency: skip the write (and the downstream system rebind) when the value already matches.
+        FNiagaraUserRedirectionParameterStore& Store = Comp->GetOverrideParameters();
+        const FNiagaraVariableBase ReadVar(FNiagaraTypeDefinition::GetIntDef(), VarFName);
+        const int32 Current = Store.GetParameterValue<int32>(ReadVar);
+        bool bChanged = false;
+        if (Current != Value)
+        {
+            const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Niagara User Int")));
+            Comp->Modify();
+            Comp->SetVariableInt(VarFName, Value);
+            Comp->MarkPackageDirty();
+            bChanged = true;
+        }
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetStringField(TEXT("actor_name"), ActorName);
+        Result->SetStringField(TEXT("name"), VarName);
+        Result->SetNumberField(TEXT("value"), Value);
+        Result->SetBoolField(TEXT("changed"), bChanged);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FNiagaraService::HandleSetUserBool(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString ActorName, VarName;
+    bool bValue = false;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("actor_name"), ActorName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("name"), VarName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'name'"));
+    }
+    if (!FMCPJson::ReadBool(Request.Params, TEXT("value"), bValue))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'value'"));
+    }
+
+    auto Task = [ActorName, VarName, bValue]() -> TSharedPtr<FJsonObject>
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        FString Err;
+        UNiagaraComponent* Comp = ResolveNiagaraComponent(World, ActorName, Err);
+        if (!Comp)
+        {
+            return FMCPJson::MakeError(Err);
+        }
+
+        const FName VarFName(*VarName);
+        if (!NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetBoolDef()))
+        {
+            return FMCPJson::MakeError(FString::Printf(
+                TEXT("User bool parameter 'User.%s' is not exposed as a bool on actor '%s'. "
+                     "SetVariableBool would silently no-op. Give the bare name (no 'User.' prefix) "
+                     "and confirm the system exposes it as a bool user parameter."),
+                *VarName, *ActorName));
+        }
+
+        // Niagara stores bool as FNiagaraBool (32-bit). Read via the typed accessor and compare
+        // logical truthiness so re-setting the same value skips the rebind.
+        FNiagaraUserRedirectionParameterStore& Store = Comp->GetOverrideParameters();
+        const FNiagaraVariableBase ReadVar(FNiagaraTypeDefinition::GetBoolDef(), VarFName);
+        const FNiagaraBool Current = Store.GetParameterValue<FNiagaraBool>(ReadVar);
+        bool bChanged = false;
+        if (Current.GetValue() != bValue)
+        {
+            const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Niagara User Bool")));
+            Comp->Modify();
+            Comp->SetVariableBool(VarFName, bValue);
+            Comp->MarkPackageDirty();
+            bChanged = true;
+        }
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetStringField(TEXT("actor_name"), ActorName);
+        Result->SetStringField(TEXT("name"), VarName);
+        Result->SetBoolField(TEXT("value"), bValue);
+        Result->SetBoolField(TEXT("changed"), bChanged);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FNiagaraService::HandleSetUserColor(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString ActorName, VarName;
+    FLinearColor Value;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("actor_name"), ActorName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("name"), VarName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'name'"));
+    }
+    if (!FMCPJson::ReadColor(Request.Params, TEXT("value"), Value))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing or invalid 'value'"));
+    }
+
+    auto Task = [ActorName, VarName, Value]() -> TSharedPtr<FJsonObject>
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        FString Err;
+        UNiagaraComponent* Comp = ResolveNiagaraComponent(World, ActorName, Err);
+        if (!Comp)
+        {
+            return FMCPJson::MakeError(Err);
+        }
+
+        const FName VarFName(*VarName);
+        if (!NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetColorDef()))
+        {
+            return FMCPJson::MakeError(FString::Printf(
+                TEXT("User color parameter 'User.%s' is not exposed as a LinearColor on actor '%s'. "
+                     "SetVariableLinearColor would silently no-op. Give the bare name (no 'User.' prefix) "
+                     "and confirm the system exposes it as a LinearColor user parameter."),
+                *VarName, *ActorName));
+        }
+
+        FNiagaraUserRedirectionParameterStore& Store = Comp->GetOverrideParameters();
+        const FNiagaraVariableBase ReadVar(FNiagaraTypeDefinition::GetColorDef(), VarFName);
+        const FLinearColor Current = Store.GetParameterValue<FLinearColor>(ReadVar);
+        bool bChanged = false;
+        if (!Current.Equals(Value))
+        {
+            const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Niagara User Color")));
+            Comp->Modify();
+            Comp->SetVariableLinearColor(VarFName, Value);
+            Comp->MarkPackageDirty();
+            bChanged = true;
+        }
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetStringField(TEXT("actor_name"), ActorName);
+        Result->SetStringField(TEXT("name"), VarName);
+        FMCPJson::WriteColor(Result, TEXT("value"), Value);
+        Result->SetBoolField(TEXT("changed"), bChanged);
+        return Result;
+    };
+
+    TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FNiagaraService::HandleSetUserObject(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+    {
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+    }
+
+    FString ActorName, VarName, ObjectPath;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("actor_name"), ActorName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("name"), VarName))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'name'"));
+    }
+    if (!FMCPJson::ReadString(Request.Params, TEXT("object_path"), ObjectPath))
+    {
+        return InvalidParams(Request.Id, TEXT("Missing 'object_path'"));
+    }
+
+    auto Task = [ActorName, VarName, ObjectPath]() -> TSharedPtr<FJsonObject>
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        FString Err;
+        UNiagaraComponent* Comp = ResolveNiagaraComponent(World, ActorName, Err);
+        if (!Comp)
+        {
+            return FMCPJson::MakeError(Err);
+        }
+
+        UObject* Asset = LoadObject<UObject>(nullptr, *ObjectPath);
+        if (!Asset)
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("Failed to load asset: %s"), *ObjectPath));
+        }
+
+        // A Material-typed user param needs a UMaterialInterface and the dedicated material setter;
+        // anything else goes through the generic UObject setter. Validate the param is exposed with
+        // the matching type before writing so a mismatched name/type errors instead of silently
+        // adding a stray override.
+        const FName VarFName(*VarName);
+        UMaterialInterface* AsMaterial = Cast<UMaterialInterface>(Asset);
+        const bool bMaterialParam = NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetUMaterialDef());
+        const bool bObjectParam = NiagaraParamExists(Comp, VarFName, FNiagaraTypeDefinition::GetUObjectDef());
+
+        if (bMaterialParam)
+        {
+            if (!AsMaterial)
+            {
+                return FMCPJson::MakeError(FString::Printf(
+                    TEXT("User parameter 'User.%s' on actor '%s' is a Material, but asset '%s' is not a "
+                         "UMaterialInterface. Provide a material asset path."),
+                    *VarName, *ActorName, *ObjectPath));
+            }
+        }
+        else if (!bObjectParam)
+        {
+            return FMCPJson::MakeError(FString::Printf(
+                TEXT("User object parameter 'User.%s' is not exposed as a Material or UObject on actor '%s'. "
+                     "SetVariableObject/SetVariableMaterial would silently no-op. Give the bare name "
+                     "(no 'User.' prefix) and confirm the system exposes it as an object/material user parameter."),
+                *VarName, *ActorName));
+        }
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Niagara User Object")));
+        Comp->Modify();
+        if (bMaterialParam)
+        {
+            Comp->SetVariableMaterial(VarFName, AsMaterial);
+        }
+        else
+        {
+            Comp->SetVariableObject(VarFName, Asset);
+        }
+        Comp->MarkPackageDirty();
+
+        TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+        Result->SetStringField(TEXT("actor_name"), ActorName);
+        Result->SetStringField(TEXT("name"), VarName);
+        Result->SetStringField(TEXT("object_path"), ObjectPath);
+        Result->SetBoolField(TEXT("as_material"), bMaterialParam);
         return Result;
     };
 

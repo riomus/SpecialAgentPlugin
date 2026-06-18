@@ -14,6 +14,17 @@
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstance.h"
+#include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionAdd.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "MaterialEditingLibrary.h"
+#include "SceneTypes.h"
+#include "Engine/EngineTypes.h"
 #include "StaticParameterSet.h"
 #include "Engine/Texture.h"
 #include "Modules/ModuleManager.h"
@@ -34,6 +45,10 @@ FMCPResponse FMaterialService::HandleRequest(const FMCPRequest& Request, const F
 	if (MethodName == TEXT("set_static_switch")) return HandleSetStaticSwitch(Request);
 	if (MethodName == TEXT("list_parameters")) return HandleListParameters(Request);
 	if (MethodName == TEXT("get_parameters")) return HandleGetParameters(Request);
+	if (MethodName == TEXT("add_expression")) return HandleAddExpression(Request);
+	if (MethodName == TEXT("connect_expression")) return HandleConnectExpression(Request);
+	if (MethodName == TEXT("set_base_properties")) return HandleSetBaseProperties(Request);
+	if (MethodName == TEXT("recompile")) return HandleRecompile(Request);
 
 	return MethodNotFound(Request.Id, TEXT("material"), MethodName);
 }
@@ -446,6 +461,305 @@ FMCPResponse FMaterialService::HandleGetParameters(const FMCPRequest& Request)
 		FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task));
 }
 
+// Map an expression class short name to its UClass*. Returns nullptr if not one
+// of the supported authoring expression types.
+static UClass* ResolveMaterialExpressionClass(const FString& Name)
+{
+	if (Name == TEXT("MaterialExpressionTextureSample"))     return UMaterialExpressionTextureSample::StaticClass();
+	if (Name == TEXT("MaterialExpressionScalarParameter"))   return UMaterialExpressionScalarParameter::StaticClass();
+	if (Name == TEXT("MaterialExpressionVectorParameter"))   return UMaterialExpressionVectorParameter::StaticClass();
+	if (Name == TEXT("MaterialExpressionConstant"))          return UMaterialExpressionConstant::StaticClass();
+	if (Name == TEXT("MaterialExpressionMultiply"))          return UMaterialExpressionMultiply::StaticClass();
+	if (Name == TEXT("MaterialExpressionAdd"))               return UMaterialExpressionAdd::StaticClass();
+	if (Name == TEXT("MaterialExpressionTextureCoordinate")) return UMaterialExpressionTextureCoordinate::StaticClass();
+	return nullptr;
+}
+
+// Map a friendly material property name to EMaterialProperty. Returns true and
+// fills Out on success. MP_WorldPositionOffset is intentionally NOT exposed.
+static bool ResolveMaterialProperty(const FString& Name, EMaterialProperty& Out)
+{
+	if (Name == TEXT("BaseColor"))         { Out = MP_BaseColor;        return true; }
+	if (Name == TEXT("Metallic"))          { Out = MP_Metallic;         return true; }
+	if (Name == TEXT("Specular"))          { Out = MP_Specular;         return true; }
+	if (Name == TEXT("Roughness"))         { Out = MP_Roughness;        return true; }
+	if (Name == TEXT("Normal"))            { Out = MP_Normal;           return true; }
+	if (Name == TEXT("EmissiveColor"))     { Out = MP_EmissiveColor;    return true; }
+	if (Name == TEXT("Opacity"))           { Out = MP_Opacity;          return true; }
+	if (Name == TEXT("OpacityMask"))       { Out = MP_OpacityMask;      return true; }
+	if (Name == TEXT("AmbientOcclusion"))  { Out = MP_AmbientOcclusion; return true; }
+	return false;
+}
+
+static bool ResolveBlendMode(const FString& Name, EBlendMode& Out)
+{
+	if (Name == TEXT("Opaque"))         { Out = BLEND_Opaque;         return true; }
+	if (Name == TEXT("Masked"))         { Out = BLEND_Masked;         return true; }
+	if (Name == TEXT("Translucent"))    { Out = BLEND_Translucent;    return true; }
+	if (Name == TEXT("Additive"))       { Out = BLEND_Additive;       return true; }
+	if (Name == TEXT("Modulate"))       { Out = BLEND_Modulate;       return true; }
+	if (Name == TEXT("AlphaComposite")) { Out = BLEND_AlphaComposite; return true; }
+	if (Name == TEXT("AlphaHoldout"))   { Out = BLEND_AlphaHoldout;   return true; }
+	return false;
+}
+
+static bool ResolveShadingModel(const FString& Name, EMaterialShadingModel& Out)
+{
+	if (Name == TEXT("Unlit"))             { Out = MSM_Unlit;             return true; }
+	if (Name == TEXT("DefaultLit"))        { Out = MSM_DefaultLit;        return true; }
+	if (Name == TEXT("Subsurface"))        { Out = MSM_Subsurface;        return true; }
+	if (Name == TEXT("PreintegratedSkin")) { Out = MSM_PreintegratedSkin; return true; }
+	if (Name == TEXT("ClearCoat"))         { Out = MSM_ClearCoat;         return true; }
+	if (Name == TEXT("SubsurfaceProfile")) { Out = MSM_SubsurfaceProfile; return true; }
+	if (Name == TEXT("TwoSidedFoliage"))   { Out = MSM_TwoSidedFoliage;   return true; }
+	if (Name == TEXT("Hair"))              { Out = MSM_Hair;              return true; }
+	if (Name == TEXT("Cloth"))             { Out = MSM_Cloth;             return true; }
+	if (Name == TEXT("Eye"))               { Out = MSM_Eye;               return true; }
+	if (Name == TEXT("SingleLayerWater"))  { Out = MSM_SingleLayerWater;  return true; }
+	if (Name == TEXT("ThinTranslucent"))   { Out = MSM_ThinTranslucent;   return true; }
+	return false;
+}
+
+// Re-find a material expression by its GetName() on a base UMaterial. Handles
+// do not persist across MCP calls, so callers always pass names.
+static UMaterialExpression* FindExpressionByName(UMaterial* Material, const FString& Name)
+{
+	for (const TObjectPtr<UMaterialExpression>& Expr : Material->GetExpressions())
+	{
+		if (Expr && Expr->GetName() == Name)
+		{
+			return Expr.Get();
+		}
+	}
+	return nullptr;
+}
+
+FMCPResponse FMaterialService::HandleAddExpression(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+
+	FString MaterialPath, ExpressionClass;
+	int32 NodePosX = 0, NodePosY = 0;
+	if (!FMCPJson::ReadString(Request.Params, TEXT("material_path"), MaterialPath))
+		return InvalidParams(Request.Id, TEXT("Missing 'material_path' (base UMaterial object path)"));
+	if (!FMCPJson::ReadString(Request.Params, TEXT("expression_class"), ExpressionClass))
+		return InvalidParams(Request.Id, TEXT("Missing 'expression_class' (e.g. MaterialExpressionScalarParameter)"));
+	FMCPJson::ReadInteger(Request.Params, TEXT("node_pos_x"), NodePosX);
+	FMCPJson::ReadInteger(Request.Params, TEXT("node_pos_y"), NodePosY);
+
+	auto Task = [MaterialPath, ExpressionClass, NodePosX, NodePosY]() -> TSharedPtr<FJsonObject>
+	{
+		UMaterial* Mat = LoadObject<UMaterial>(nullptr, *MaterialPath);
+		if (!Mat) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load base UMaterial: %s"), *MaterialPath));
+
+		UClass* Class = ResolveMaterialExpressionClass(ExpressionClass);
+		if (!Class)
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Unsupported expression_class '%s' (supported: MaterialExpression TextureSample/ScalarParameter/VectorParameter/Constant/Multiply/Add/TextureCoordinate)"),
+				*ExpressionClass));
+		}
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Add Material Expression")));
+		Mat->Modify();
+
+		UMaterialExpression* NewExpr = UMaterialEditingLibrary::CreateMaterialExpression(Mat, Class, NodePosX, NodePosY);
+		if (!NewExpr)
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("CreateMaterialExpression returned null for class %s on %s"), *ExpressionClass, *MaterialPath));
+		}
+
+		Mat->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("material_path"), MaterialPath);
+		Result->SetStringField(TEXT("expression_name"), NewExpr->GetName());
+		Result->SetStringField(TEXT("expression_class"), ExpressionClass);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: material/add_expression %s -> %s (%s)"),
+			*MaterialPath, *NewExpr->GetName(), *ExpressionClass);
+		return Result;
+	};
+
+	return FMCPResponse::Success(Request.Id,
+		FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task));
+}
+
+FMCPResponse FMaterialService::HandleConnectExpression(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+
+	FString MaterialPath, FromName, FromOutput, ToName, ToInput, ToProperty;
+	if (!FMCPJson::ReadString(Request.Params, TEXT("material_path"), MaterialPath))
+		return InvalidParams(Request.Id, TEXT("Missing 'material_path' (base UMaterial object path)"));
+	if (!FMCPJson::ReadString(Request.Params, TEXT("from_expression"), FromName))
+		return InvalidParams(Request.Id, TEXT("Missing 'from_expression' (source expression name)"));
+	FMCPJson::ReadString(Request.Params, TEXT("from_output"), FromOutput);
+	FMCPJson::ReadString(Request.Params, TEXT("to_expression"), ToName);
+	FMCPJson::ReadString(Request.Params, TEXT("to_input"), ToInput);
+	const bool bHasProperty = FMCPJson::ReadString(Request.Params, TEXT("to_property"), ToProperty);
+
+	if (!bHasProperty && ToName.IsEmpty())
+	{
+		return InvalidParams(Request.Id, TEXT("Provide either 'to_property' (material input) or 'to_expression' (target node name)"));
+	}
+
+	auto Task = [MaterialPath, FromName, FromOutput, ToName, ToInput, ToProperty, bHasProperty]() -> TSharedPtr<FJsonObject>
+	{
+		UMaterial* Mat = LoadObject<UMaterial>(nullptr, *MaterialPath);
+		if (!Mat) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load base UMaterial: %s"), *MaterialPath));
+
+		UMaterialExpression* From = FindExpressionByName(Mat, FromName);
+		if (!From) return FMCPJson::MakeError(FString::Printf(TEXT("from_expression '%s' not found on %s"), *FromName, *MaterialPath));
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Connect Material Expression")));
+		Mat->Modify();
+
+		bool bConnected = false;
+		if (bHasProperty)
+		{
+			EMaterialProperty Property = MP_BaseColor;
+			if (!ResolveMaterialProperty(ToProperty, Property))
+			{
+				return FMCPJson::MakeError(FString::Printf(
+					TEXT("Unsupported to_property '%s' (supported: BaseColor/Metallic/Specular/Roughness/Normal/EmissiveColor/Opacity/OpacityMask/AmbientOcclusion; WorldPositionOffset is hidden and rejected)"),
+					*ToProperty));
+			}
+			bConnected = UMaterialEditingLibrary::ConnectMaterialProperty(From, FromOutput, Property);
+		}
+		else
+		{
+			UMaterialExpression* To = FindExpressionByName(Mat, ToName);
+			if (!To) return FMCPJson::MakeError(FString::Printf(TEXT("to_expression '%s' not found on %s"), *ToName, *MaterialPath));
+			bConnected = UMaterialEditingLibrary::ConnectMaterialExpressions(From, FromOutput, To, ToInput);
+		}
+
+		Mat->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("material_path"), MaterialPath);
+		Result->SetStringField(TEXT("from_expression"), FromName);
+		if (bHasProperty) Result->SetStringField(TEXT("to_property"), ToProperty);
+		else              Result->SetStringField(TEXT("to_expression"), ToName);
+		Result->SetBoolField(TEXT("connected"), bConnected);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: material/connect_expression %s.%s -> %s (connected=%s)"),
+			*MaterialPath, *FromName, bHasProperty ? *ToProperty : *ToName, bConnected ? TEXT("true") : TEXT("false"));
+		return Result;
+	};
+
+	return FMCPResponse::Success(Request.Id,
+		FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task));
+}
+
+FMCPResponse FMaterialService::HandleSetBaseProperties(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+
+	FString MaterialPath, BlendModeStr, ShadingModelStr;
+	bool TwoSided = false;
+	double ClipValue = 0.0;
+	if (!FMCPJson::ReadString(Request.Params, TEXT("material_path"), MaterialPath))
+		return InvalidParams(Request.Id, TEXT("Missing 'material_path' (base UMaterial object path)"));
+	const bool bHasBlendMode    = FMCPJson::ReadString(Request.Params, TEXT("blend_mode"), BlendModeStr);
+	const bool bHasShadingModel = FMCPJson::ReadString(Request.Params, TEXT("shading_model"), ShadingModelStr);
+	const bool bHasTwoSided     = FMCPJson::ReadBool(Request.Params, TEXT("two_sided"), TwoSided);
+	const bool bHasClipValue    = FMCPJson::ReadNumber(Request.Params, TEXT("opacity_mask_clip_value"), ClipValue);
+
+	if (!bHasBlendMode && !bHasShadingModel && !bHasTwoSided && !bHasClipValue)
+	{
+		return InvalidParams(Request.Id, TEXT("Provide at least one of: blend_mode, shading_model, two_sided, opacity_mask_clip_value"));
+	}
+
+	// Resolve enum strings up front so an invalid value fails before touching the asset.
+	EBlendMode NewBlendMode = BLEND_Opaque;
+	if (bHasBlendMode && !ResolveBlendMode(BlendModeStr, NewBlendMode))
+	{
+		return InvalidParams(Request.Id, FString::Printf(
+			TEXT("Unsupported blend_mode '%s' (Opaque/Masked/Translucent/Additive/Modulate/AlphaComposite/AlphaHoldout)"), *BlendModeStr));
+	}
+	EMaterialShadingModel NewShadingModel = MSM_DefaultLit;
+	if (bHasShadingModel && !ResolveShadingModel(ShadingModelStr, NewShadingModel))
+	{
+		return InvalidParams(Request.Id, FString::Printf(
+			TEXT("Unsupported shading_model '%s' (Unlit/DefaultLit/Subsurface/PreintegratedSkin/ClearCoat/SubsurfaceProfile/TwoSidedFoliage/Hair/Cloth/Eye/SingleLayerWater/ThinTranslucent)"), *ShadingModelStr));
+	}
+
+	auto Task = [MaterialPath, bHasBlendMode, NewBlendMode, bHasShadingModel, NewShadingModel,
+		bHasTwoSided, TwoSided, bHasClipValue, ClipValue]() -> TSharedPtr<FJsonObject>
+	{
+		UMaterial* Mat = LoadObject<UMaterial>(nullptr, *MaterialPath);
+		if (!Mat) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load base UMaterial: %s"), *MaterialPath));
+
+		// Idempotency: only mutate fields whose target differs from the current value.
+		bool bChanged = false;
+		if (bHasBlendMode && Mat->BlendMode != NewBlendMode) bChanged = true;
+		if (bHasShadingModel && !Mat->GetShadingModels().HasShadingModel(NewShadingModel)) bChanged = true;
+		if (bHasTwoSided && (Mat->TwoSided != 0) != TwoSided) bChanged = true;
+		if (bHasClipValue && Mat->OpacityMaskClipValue != static_cast<float>(ClipValue)) bChanged = true;
+
+		if (bChanged)
+		{
+			const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Set Material Base Properties")));
+			Mat->Modify();
+
+			if (bHasBlendMode)    Mat->BlendMode = NewBlendMode;
+			if (bHasShadingModel) Mat->SetShadingModel(NewShadingModel);
+			if (bHasTwoSided)     Mat->TwoSided = TwoSided ? 1 : 0;
+			if (bHasClipValue)    Mat->OpacityMaskClipValue = static_cast<float>(ClipValue);
+
+			Mat->PostEditChange();
+			Mat->MarkPackageDirty();
+		}
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("material_path"), MaterialPath);
+		Result->SetBoolField(TEXT("changed"), bChanged);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: material/set_base_properties %s (changed=%s)"),
+			*MaterialPath, bChanged ? TEXT("true") : TEXT("false"));
+		return Result;
+	};
+
+	return FMCPResponse::Success(Request.Id,
+		FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task));
+}
+
+FMCPResponse FMaterialService::HandleRecompile(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+
+	FString MaterialPath;
+	bool bLayout = false;
+	if (!FMCPJson::ReadString(Request.Params, TEXT("material_path"), MaterialPath))
+		return InvalidParams(Request.Id, TEXT("Missing 'material_path' (base UMaterial object path)"));
+	FMCPJson::ReadBool(Request.Params, TEXT("layout_expressions"), bLayout);
+
+	auto Task = [MaterialPath, bLayout]() -> TSharedPtr<FJsonObject>
+	{
+		UMaterial* Mat = LoadObject<UMaterial>(nullptr, *MaterialPath);
+		if (!Mat) return FMCPJson::MakeError(FString::Printf(TEXT("Could not load base UMaterial: %s"), *MaterialPath));
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: Recompile Material")));
+		Mat->Modify();
+
+		if (bLayout)
+		{
+			UMaterialEditingLibrary::LayoutMaterialExpressions(Mat);
+		}
+		UMaterialEditingLibrary::RecompileMaterial(Mat);
+		Mat->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("material_path"), MaterialPath);
+		Result->SetBoolField(TEXT("layout_expressions"), bLayout);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: material/recompile %s (layout=%s)"),
+			*MaterialPath, bLayout ? TEXT("true") : TEXT("false"));
+		return Result;
+	};
+
+	return FMCPResponse::Success(Request.Id,
+		FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task));
+}
+
 TArray<FMCPToolInfo> FMaterialService::GetAvailableTools() const
 {
 	TArray<FMCPToolInfo> Tools;
@@ -531,6 +845,55 @@ TArray<FMCPToolInfo> FMaterialService::GetAvailableTools() const
 			 "Workflow: call after set_*_parameter to verify the applied value; use list_parameters when you only need names. "
 			 "Warning: values are the EFFECTIVE values (instance override or parent fallback), not override-only; static switches are not reported; material_path must load."))
 		.RequiredString(TEXT("material_path"), TEXT("Object path of a UMaterial or UMaterialInstanceConstant"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("add_expression"),
+		TEXT("Add a material-graph expression node to a base UMaterial (NOT a UMaterialInstanceConstant) via UMaterialEditingLibrary::CreateMaterialExpression. "
+			 "Returns {material_path, expression_name, expression_class}; expression_name is the engine-assigned object name you pass to connect_expression (handles do not persist across MCP calls). "
+			 "Params: material_path (string, base UMaterial object path, required), expression_class (string, one of MaterialExpressionTextureSample/ScalarParameter/VectorParameter/Constant/Multiply/Add/TextureCoordinate, required), node_pos_x (integer, graph X, optional), node_pos_y (integer, graph Y, optional). "
+			 "Workflow: add_expression for each node -> connect_expression to wire outputs to inputs/material properties -> recompile once at the end. "
+			 "Warning: an unknown expression_class returns an error; this does NOT recompile shaders per call (deliberately cheap) and only marks the package dirty, so changes are NOT reflected until you call recompile; only base UMaterial assets are supported, not instances."))
+		.RequiredString(TEXT("material_path"), TEXT("Base UMaterial object path, e.g. /Game/Materials/M_Base.M_Base"))
+		.RequiredString(TEXT("expression_class"), TEXT("Expression class short name, e.g. MaterialExpressionScalarParameter"))
+		.OptionalInteger(TEXT("node_pos_x"), TEXT("X position of the new node in the material graph (default 0)"))
+		.OptionalInteger(TEXT("node_pos_y"), TEXT("Y position of the new node in the material graph (default 0)"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("connect_expression"),
+		TEXT("Wire one material expression's output to another expression's input, OR to a base material property, on a base UMaterial. Expressions are re-found by name each call since handles do not persist. "
+			 "Returns {material_path, from_expression, (to_expression|to_property), connected}. "
+			 "Params: material_path (string, base UMaterial object path, required), from_expression (string, source node name from add_expression, required), from_output (string, source output pin name, empty = first output, optional), to_expression (string, target node name) OR to_property (string, material input), to_input (string, target input pin name, empty = first input, optional). "
+			 "Workflow: add_expression to create nodes -> connect_expression to wire them and connect the final node to a material property -> recompile. "
+			 "Warning: provide EXACTLY one of to_expression or to_property; valid to_property values are BaseColor/Metallic/Specular/Roughness/Normal/EmissiveColor/Opacity/OpacityMask/AmbientOcclusion (WorldPositionOffset is hidden and rejected); missing from/to expressions error; the underlying bool result is surfaced as 'connected'; does NOT recompile - call recompile to apply."))
+		.RequiredString(TEXT("material_path"), TEXT("Base UMaterial object path"))
+		.RequiredString(TEXT("from_expression"), TEXT("Name of the source expression (from add_expression)"))
+		.OptionalString(TEXT("from_output"), TEXT("Source output pin name; empty selects the first output"))
+		.OptionalString(TEXT("to_expression"), TEXT("Name of the target expression (mutually exclusive with to_property)"))
+		.OptionalString(TEXT("to_input"), TEXT("Target input pin name; empty selects the first input"))
+		.OptionalString(TEXT("to_property"), TEXT("Material property input: BaseColor/Metallic/Specular/Roughness/Normal/EmissiveColor/Opacity/OpacityMask/AmbientOcclusion"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("set_base_properties"),
+		TEXT("Set top-level rendering properties on a base UMaterial: blend mode, shading model, two-sided, and opacity-mask clip value. All fields are optional; supply only the ones you want to change. "
+			 "Returns {material_path, changed}; changed is false when every supplied value already matched (idempotent skip, no PostEditChange). "
+			 "Params: material_path (string, base UMaterial object path, required), blend_mode (string Opaque/Masked/Translucent/Additive/Modulate/AlphaComposite/AlphaHoldout, optional), shading_model (string Unlit/DefaultLit/Subsurface/PreintegratedSkin/ClearCoat/SubsurfaceProfile/TwoSidedFoliage/Hair/Cloth/Eye/SingleLayerWater/ThinTranslucent, optional), two_sided (boolean, optional), opacity_mask_clip_value (number, optional). "
+			 "Workflow: set blend_mode=Masked before wiring an OpacityMask node, then set opacity_mask_clip_value; call recompile afterwards to apply shader changes. "
+			 "Warning: you must supply at least one optional field or the call errors; unknown enum strings error before the asset is touched; PostEditChange may trigger shader work even though full recompile is deferred to the recompile tool; only marks the package dirty, does not save to disk."))
+		.RequiredString(TEXT("material_path"), TEXT("Base UMaterial object path"))
+		.OptionalEnum(TEXT("blend_mode"), { TEXT("Opaque"), TEXT("Masked"), TEXT("Translucent"), TEXT("Additive"), TEXT("Modulate"), TEXT("AlphaComposite"), TEXT("AlphaHoldout") }, TEXT("EBlendMode value"))
+		.OptionalEnum(TEXT("shading_model"), { TEXT("Unlit"), TEXT("DefaultLit"), TEXT("Subsurface"), TEXT("PreintegratedSkin"), TEXT("ClearCoat"), TEXT("SubsurfaceProfile"), TEXT("TwoSidedFoliage"), TEXT("Hair"), TEXT("Cloth"), TEXT("Eye"), TEXT("SingleLayerWater"), TEXT("ThinTranslucent") }, TEXT("EMaterialShadingModel value"))
+		.OptionalBool(TEXT("two_sided"), TEXT("Render both faces (disables backface culling)"))
+		.OptionalNumber(TEXT("opacity_mask_clip_value"), TEXT("Clip threshold for BLEND_Masked (0..1)"))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("recompile"),
+		TEXT("Recompile a base UMaterial after graph/property edits via UMaterialEditingLibrary::RecompileMaterial, optionally laying out expression nodes first. This is what makes add_expression/connect_expression/set_base_properties changes actually take effect. "
+			 "Returns {material_path, layout_expressions}. "
+			 "Params: material_path (string, base UMaterial object path, required), layout_expressions (boolean, run LayoutMaterialExpressions to tidy the graph grid before compiling, optional, default false). "
+			 "Workflow: do all add_expression/connect_expression/set_base_properties edits first, then call recompile ONCE; save the asset afterwards to persist. "
+			 "Warning: this is an EXPENSIVE blocking shader compile that runs on the game thread and can take several seconds (longer for many permutations) - call it once after batching edits, never in a loop; it only marks the package dirty, it does NOT save to disk."))
+		.RequiredString(TEXT("material_path"), TEXT("Base UMaterial object path"))
+		.OptionalBool(TEXT("layout_expressions"), TEXT("Tidy the node graph with LayoutMaterialExpressions before compiling"))
 		.Build());
 
 	return Tools;

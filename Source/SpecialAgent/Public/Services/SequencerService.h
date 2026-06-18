@@ -19,6 +19,9 @@ private:
     FMCPResponse HandleCreate(const FMCPRequest& Request);
     FMCPResponse HandleAddActorBinding(const FMCPRequest& Request);
     FMCPResponse HandleAddTransformTrack(const FMCPRequest& Request);
+    FMCPResponse HandleAddCameraCut(const FMCPRequest& Request);
+    FMCPResponse HandleAddSkeletalAnimationTrack(const FMCPRequest& Request);
+    FMCPResponse HandleAddAudioTrack(const FMCPRequest& Request);
     FMCPResponse HandleAddKeyframe(const FMCPRequest& Request);
     FMCPResponse HandleSetPlaybackRange(const FMCPRequest& Request);
     FMCPResponse HandlePlay(const FMCPRequest& Request);

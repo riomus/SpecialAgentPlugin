@@ -16,6 +16,7 @@
 #include "PCGGraph.h"
 #include "PCGComponent.h"
 #include "PCGVolume.h"
+#include "Helpers/PCGGraphParametersHelpers.h"
 
 FString FPCGService::GetServiceDescription() const
 {
@@ -24,9 +25,10 @@ FString FPCGService::GetServiceDescription() const
 
 FMCPResponse FPCGService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
-    if (MethodName == TEXT("list_graphs"))     return HandleListGraphs(Request);
-    if (MethodName == TEXT("execute_graph"))   return HandleExecuteGraph(Request);
-    if (MethodName == TEXT("spawn_pcg_actor")) return HandleSpawnPCGActor(Request);
+    if (MethodName == TEXT("list_graphs"))        return HandleListGraphs(Request);
+    if (MethodName == TEXT("execute_graph"))      return HandleExecuteGraph(Request);
+    if (MethodName == TEXT("spawn_pcg_actor"))    return HandleSpawnPCGActor(Request);
+    if (MethodName == TEXT("set_graph_parameter")) return HandleSetGraphParameter(Request);
 
     return MethodNotFound(Request.Id, TEXT("pcg"), MethodName);
 }
@@ -223,6 +225,149 @@ FMCPResponse FPCGService::HandleSpawnPCGActor(const FMCPRequest& Request)
     return FMCPResponse::Success(Request.Id, Result);
 }
 
+FMCPResponse FPCGService::HandleSetGraphParameter(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid())
+        return InvalidParams(Request.Id, TEXT("Missing params"));
+
+    FString ActorName;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("actor_name"), ActorName))
+        return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+
+    FString ParameterName;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("parameter"), ParameterName))
+        return InvalidParams(Request.Id, TEXT("Missing 'parameter'"));
+
+    FString ValueType;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("value_type"), ValueType))
+        return InvalidParams(Request.Id, TEXT("Missing 'value_type' (float|int|bool|name|string|vector)"));
+    ValueType = ValueType.ToLower();
+
+    // Read the typed value up front; only the field matching value_type is required.
+    double NumberValue = 0.0;
+    int32  IntValue    = 0;
+    bool   BoolValue   = false;
+    FString StringValue;
+    FVector VectorValue = FVector::ZeroVector;
+
+    if (ValueType == TEXT("float"))
+    {
+        if (!FMCPJson::ReadNumber(Request.Params, TEXT("value"), NumberValue))
+            return InvalidParams(Request.Id, TEXT("Missing or invalid 'value' (expected number for value_type 'float')"));
+    }
+    else if (ValueType == TEXT("int"))
+    {
+        if (!FMCPJson::ReadInteger(Request.Params, TEXT("value"), IntValue))
+            return InvalidParams(Request.Id, TEXT("Missing or invalid 'value' (expected integer for value_type 'int')"));
+    }
+    else if (ValueType == TEXT("bool"))
+    {
+        if (!FMCPJson::ReadBool(Request.Params, TEXT("value"), BoolValue))
+            return InvalidParams(Request.Id, TEXT("Missing or invalid 'value' (expected bool for value_type 'bool')"));
+    }
+    else if (ValueType == TEXT("name") || ValueType == TEXT("string"))
+    {
+        if (!FMCPJson::ReadString(Request.Params, TEXT("value"), StringValue))
+            return InvalidParams(Request.Id, FString::Printf(TEXT("Missing or invalid 'value' (expected string for value_type '%s')"), *ValueType));
+    }
+    else if (ValueType == TEXT("vector"))
+    {
+        if (!FMCPJson::ReadVec3(Request.Params, TEXT("value"), VectorValue))
+            return InvalidParams(Request.Id, TEXT("Missing or invalid 'value' (expected [X,Y,Z] for value_type 'vector')"));
+    }
+    else
+    {
+        return InvalidParams(Request.Id, FString::Printf(TEXT("Unsupported 'value_type': %s (expected float|int|bool|name|string|vector)"), *ValueType));
+    }
+
+    bool bRegenerate = false;
+    FMCPJson::ReadBool(Request.Params, TEXT("regenerate"), bRegenerate);
+
+    auto Task = [ActorName, ParameterName, ValueType, NumberValue, IntValue, BoolValue, StringValue, VectorValue, bRegenerate]() -> TSharedPtr<FJsonObject>
+    {
+        UWorld* World = GEditor->GetEditorWorldContext().World();
+        if (!World)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: pcg/set_graph_parameter no editor world"));
+            return FMCPJson::MakeError(TEXT("No editor world"));
+        }
+
+        AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
+        if (!Actor)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: pcg/set_graph_parameter actor not found: %s"), *ActorName);
+            return FMCPJson::MakeError(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+        }
+
+        UPCGComponent* PCGComp = Actor->FindComponentByClass<UPCGComponent>();
+        if (!PCGComp)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: pcg/set_graph_parameter no PCGComponent on %s"), *ActorName);
+            return FMCPJson::MakeError(FString::Printf(TEXT("Actor '%s' has no UPCGComponent"), *ActorName));
+        }
+
+        UPCGGraphInstance* GraphInstance = PCGComp->GetGraphInstance();
+        if (!GraphInstance)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: pcg/set_graph_parameter no graph instance on %s"), *ActorName);
+            return FMCPJson::MakeError(FString::Printf(TEXT("PCGComponent on '%s' has no graph instance (assign a graph first via pcg/execute_graph)"), *ActorName));
+        }
+
+        const FName ParamFName(*ParameterName);
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set PCG graph parameter")));
+        Actor->Modify();
+        GraphInstance->Modify();
+
+        if (ValueType == TEXT("float"))
+        {
+            UPCGGraphParametersHelpers::SetFloatParameter(GraphInstance, ParamFName, static_cast<float>(NumberValue));
+        }
+        else if (ValueType == TEXT("int"))
+        {
+            UPCGGraphParametersHelpers::SetInt32Parameter(GraphInstance, ParamFName, IntValue);
+        }
+        else if (ValueType == TEXT("bool"))
+        {
+            UPCGGraphParametersHelpers::SetBoolParameter(GraphInstance, ParamFName, BoolValue);
+        }
+        else if (ValueType == TEXT("name"))
+        {
+            UPCGGraphParametersHelpers::SetNameParameter(GraphInstance, ParamFName, FName(*StringValue));
+        }
+        else if (ValueType == TEXT("string"))
+        {
+            UPCGGraphParametersHelpers::SetStringParameter(GraphInstance, ParamFName, StringValue);
+        }
+        else // vector
+        {
+            UPCGGraphParametersHelpers::SetVectorParameter(GraphInstance, ParamFName, VectorValue);
+        }
+
+        Actor->MarkPackageDirty();
+
+        bool bApplied = false;
+        if (bRegenerate)
+        {
+            PCGComp->GenerateLocal(true);
+            bApplied = true;
+        }
+
+        TSharedPtr<FJsonObject> Out = FMCPJson::MakeSuccess();
+        Out->SetStringField(TEXT("parameter"), ParameterName);
+        Out->SetStringField(TEXT("type"), ValueType);
+        Out->SetBoolField(TEXT("applied"), bApplied);
+
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: pcg/set_graph_parameter set '%s' (%s) on %s%s"),
+            *ParameterName, *ValueType, *ActorName, bRegenerate ? TEXT(" and regenerated") : TEXT(""));
+        return Out;
+    };
+
+    TSharedPtr<FJsonObject> Result =
+        FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
 TArray<FMCPToolInfo> FPCGService::GetAvailableTools() const
 {
     TArray<FMCPToolInfo> Tools;
@@ -261,6 +406,24 @@ TArray<FMCPToolInfo> FPCGService::GetAvailableTools() const
         .RequiredString(TEXT("graph_path"), TEXT("Virtual object path of the PCG graph to attach, e.g. /Game/PCG/MyGraph.MyGraph"))
         .RequiredVec3  (TEXT("location"),   TEXT("World-space spawn location [X,Y,Z] in cm (+X forward, +Y right, +Z up)"))
         .OptionalVec3  (TEXT("scale"),      TEXT("Volume scale [X,Y,Z], unitless; controls the generation bounds. Default [10,10,10]"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(
+            TEXT("set_graph_parameter"),
+            TEXT("Set one typed user-exposed parameter (graph parameter / override) on the PCG graph instance of a scene actor's PCGComponent, then optionally regenerate. "
+                 "Resolves the actor by label, reads its UPCGComponent, gets the graph instance (UPCGComponent::GetGraphInstance), and calls the matching UPCGGraphParametersHelpers setter chosen by value_type. "
+                 "Returns {success, parameter (name), type (value_type), applied (bool, true only if regenerate ran)}. "
+                 "Params: actor_name (string, target actor label hosting the PCGComponent), parameter (string, the graph parameter name as exposed in the PCG graph's User Parameters), "
+                 "value_type (enum: float|int|bool|name|string|vector; selects the setter), value (polymorphic: number for float, integer for int, bool for bool, string for name/string, [X,Y,Z] for vector), "
+                 "regenerate (bool, default false; call GenerateLocal(true) after setting so the change takes visible effect). "
+                 "Workflow: ensure the actor already has a graph (pcg/execute_graph) so a graph instance exists; pass the exact parameter name and a value matching value_type; set regenerate=true to rebuild, or leave false to batch several parameter sets and regenerate once at the end. "
+                 "Warning: the actor must already carry a PCGComponent with a graph instance (this tool does not add one); regeneration runs on the game thread and may spawn many instances; an unknown parameter name is a silent no-op in the PCG helper; the edit persists only if you save the level."))
+        .RequiredString(TEXT("actor_name"), TEXT("Label of the actor whose PCGComponent graph instance receives the parameter"))
+        .RequiredString(TEXT("parameter"),  TEXT("Name of the PCG graph user parameter to set (must match the graph's exposed User Parameters)"))
+        .RequiredEnum  (TEXT("value_type"), {TEXT("float"), TEXT("int"), TEXT("bool"), TEXT("name"), TEXT("string"), TEXT("vector")},
+                                            TEXT("Type of the parameter; selects the UPCGGraphParametersHelpers setter (float|int|bool|name|string|vector)"))
+        .RequiredAny   (TEXT("value"),      TEXT("New value, shape must match value_type: number (float), integer (int), bool (bool), string (name/string), [X,Y,Z] array (vector)"))
+        .OptionalBool  (TEXT("regenerate"), TEXT("Call GenerateLocal(true) after setting so the change rebuilds the output (default false)"))
         .Build());
 
     return Tools;

@@ -1,7 +1,8 @@
 # SpecialAgent — MCP Tool Reference
 
-Auto-generated from the service sources. The live, authoritative list is always `tools/list` (and the `mcp://unreal/services` resource) when connected.
-**319 tools across 45 services.**
+**337 tools across 45 services.**
+
+Auto-generated from the service sources (`docs/TOOLS.md` step). The live, authoritative list is `tools/list` / `mcp://unreal/services` when connected.
 
 ## `ai` (5 tools)
 
@@ -170,7 +171,7 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`level/get_current_path`** _[read-only]_ — Return the world object path and virtual package name of the currently open editor level.
 - **`level/list_templates`** _[read-only]_ — Return the static catalog of new-level template names this service documents (Empty, Basic, OpenWorld, VR-Basic, TimeOfDay).
 
-## `lighting` (6 tools)
+## `lighting` (8 tools)
 
 - **`lighting/spawn_light`** — Spawn a point/spot/directional/rect/sky light actor into the editor world and apply optional intensity/color.
 - **`lighting/set_light_intensity`** — Set the intensity of an existing light actor (resolved by its editor label).
@@ -178,6 +179,8 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`lighting/set_light_attenuation`** — Set the attenuation radius (point/spot/rect lights) and/or spot-light cone half-angles, on a light resolved by editor label.
 - **`lighting/set_light_cast_shadows`** — Toggle shadow casting on a light actor, resolved by its editor label (works on point/spot/directional/rect and SkyLight).
 - **`lighting/build_lighting`** — Trigger an editor Build Lighting (Lightmass bake) on the current editor world.
+- **`lighting/spawn_reflection_capture`** — Spawn a reflection-capture actor (sphere/box/plane) into the editor world to provide localized cubemap reflections, and apply optional influence radius (sphere) and brightness.
+- **`lighting/recapture`** — Rebuild (recapture) the reflection-capture cubemap contents for the current editor world so capture edits become visible (newly spawned captures, brightness/influence_radius changes).
 
 ## `log` (4 tools)
 
@@ -186,7 +189,7 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`log/list_categories`** _[read-only]_ — List a curated set of common UE log category names (LogTemp, LogEngine, LogPython, LogBlueprint, etc.).
 - **`log/set_category_verbosity`** — Set the runtime verbosity threshold of a log category (via the editor 'log <Category> <Verbosity>' console command).
 
-## `material` (8 tools)
+## `material` (12 tools)
 
 - **`material/create`** — Create a new empty UMaterial asset in the Content Browser via AssetTools.
 - **`material/create_instance`** — Create a UMaterialInstanceConstant (editor/persistent MIC, not a runtime MID) parented to an existing UMaterialInterface.
@@ -196,8 +199,12 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`material/set_static_switch`** — Override a static switch on a UMaterialInstanceConstant and rebuild its static permutation.
 - **`material/list_parameters`** _[read-only]_ — List scalar/vector/texture parameter NAMES (names only, no values) on a UMaterial or UMaterialInstanceConstant.
 - **`material/get_parameters`** _[read-only]_ — List scalar/vector/texture parameters AND their current values on a UMaterial or UMaterialInstanceConstant.
+- **`material/add_expression`** — Add a material-graph expression node to a base UMaterial (NOT a UMaterialInstanceConstant) via UMaterialEditingLibrary::CreateMaterialExpression.
+- **`material/connect_expression`** — Wire one material expression's output to another expression's input, OR to a base material property, on a base UMaterial.
+- **`material/set_base_properties`** — Set top-level rendering properties on a base UMaterial: blend mode, shading model, two-sided, and opacity-mask clip value.
+- **`material/recompile`** — Recompile a base UMaterial after graph/property edits via UMaterialEditingLibrary::RecompileMaterial, optionally laying out expression nodes first.
 
-## `modeling` (6 tools)
+## `modeling` (8 tools)
 
 - **`modeling/boolean_union`** — Boolean-union two static mesh actors via GeometryScript (UDynamicMesh), merging the tool mesh into the target.
 - **`modeling/boolean_subtract`** — Boolean-subtract a tool mesh from a target mesh via GeometryScript (UDynamicMesh), carving the tool's volume out of the target.
@@ -205,6 +212,8 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`modeling/simplify`** — Reduce a static mesh actor's triangle count via GeometryScript (UDynamicMesh).
 - **`modeling/add_simple_collision`** — Add a simple collision primitive to a StaticMesh asset via UStaticMeshEditorSubsystem::AddSimpleCollisionsWithNotification, operating on the /Game asset PATH (not an actor).
 - **`modeling/set_nanite`** — Enable or disable Nanite on a StaticMesh asset via UStaticMeshEditorSubsystem::SetNaniteSettings, operating on the /Game asset PATH (not an actor).
+- **`modeling/generate_lods`** — Build a chain of reduction LODs on a StaticMesh asset via UStaticMeshEditorSubsystem::SetLodsWithNotification, operating on the /Game asset PATH (not an actor).
+- **`modeling/manage_sockets`** — Add, remove, or list named attachment sockets (UStaticMeshSocket) on a StaticMesh asset, operating on the /Game asset PATH (not an actor).
 
 ## `navigation` (4 tools)
 
@@ -213,7 +222,7 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`navigation/get_navmesh_bounds`** _[read-only]_ — List every ANavMeshBoundsVolume in the editor world with its bounds, plus a combined box spanning all of them.
 - **`navigation/find_nearest_reachable_point`** _[read-only]_ — Snap a world-space point onto the nearest navmesh location (UNavigationSystemV1::ProjectPointToNavigation).
 
-## `niagara` (6 tools)
+## `niagara` (11 tools)
 
 - **`niagara/spawn_emitter`** — Spawn a Niagara system at a world location and auto-activate it.
 - **`niagara/set_parameter`** — Set a float parameter on a spawned Niagara component via SetFloatParameter.
@@ -221,12 +230,18 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`niagara/deactivate`** — Deactivate a spawned Niagara component: stops emission, existing particles finish their lifetime and die off.
 - **`niagara/set_user_float`** — Set a User.
 - **`niagara/set_user_vec3`** — Set a User.
+- **`niagara/list_user_params`** _[read-only]_ — List the User.
+- **`niagara/set_user_int`** — Set a User.
+- **`niagara/set_user_bool`** — Set a User.
+- **`niagara/set_user_color`** — Set a User.
+- **`niagara/set_user_object`** — Set a User.
 
-## `pcg` (3 tools)
+## `pcg` (4 tools)
 
 - **`pcg/list_graphs`** _[read-only]_ — Discover PCG (Procedural Content Generation) graph assets via the asset registry.
 - **`pcg/execute_graph`** — Run a PCG graph on an existing scene actor: finds (or adds) a PCGComponent on the actor, assigns the graph, and calls GenerateLocal.
 - **`pcg/spawn_pcg_actor`** — Spawn a new APCGVolume at a world location, assign a PCG graph to its built-in PCGComponent, and generate immediately.
+- **`pcg/set_graph_parameter`** — Set one typed user-exposed parameter (graph parameter / override) on the PCG graph instance of a scene actor's PCGComponent, then optionally regenerate.
 
 ## `performance` (5 tools)
 
@@ -323,11 +338,14 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`screenshot/capture`** _[read-only]_ — Capture the Level Editor viewport as an in-memory image for inline vision (no file written).
 - **`screenshot/save`** — Capture the Level Editor viewport and write it to a lossless PNG file on disk.
 
-## `sequencer` (6 tools)
+## `sequencer` (9 tools)
 
 - **`sequencer/create`** — Create a new ULevelSequence (cinematic) asset in the content browser.
 - **`sequencer/add_actor_binding`** — Bind an existing level actor to a Level Sequence as a possessable.
 - **`sequencer/add_transform_track`** — Add a 3D transform track (with a single full-range section) to an actor binding so it can hold transform keys.
+- **`sequencer/add_camera_cut`** — Add a camera cut section to a Level Sequence so the cinematic looks through a bound camera actor over a frame range.
+- **`sequencer/add_skeletal_animation_track`** — Add a skeletal animation track to an actor binding and place one UAnimSequence section at a frame so a SkeletalMeshActor plays an animation clip in the sequence.
+- **`sequencer/add_audio_track`** — Add a master (unbound) audio track to a Level Sequence and place one sound section at a frame so the cinematic plays a USoundBase.
 - **`sequencer/add_keyframe`** — Add a cubic-interpolated transform keyframe on a binding's transform track at a display-rate frame.
 - **`sequencer/set_playback_range`** — Set the playback range of a Level Sequence, in Display-Rate frames.
 - **`sequencer/play`** — Play a Level Sequence in the editor world.
@@ -407,7 +425,7 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`viewport/toggle_realtime`** — Toggle realtime mode on the active Level Editor viewport, flipping its current state.
 - **`viewport/force_redraw`** — Synchronously repaint all Level Editor viewports now, committing any queued camera/view changes to pixels before returning.
 
-## `world` (39 tools)
+## `world` (40 tools)
 
 - **`world/list_actors`** _[read-only]_ — List actors in the active editor world (editor-world only; excludes PIE actors).
 - **`world/get_actor`** _[read-only]_ — Look up one actor by its outliner label and return its current transform.
@@ -448,6 +466,7 @@ Auto-generated from the service sources. The live, authoritative list is always 
 - **`world/randomize_transforms`** — Deterministically perturb the transforms of a set of actors using a seeded RNG, applying each change relative to the actor's current transform.
 - **`world/set_actor_mesh`** — Swap the UStaticMesh asset on an actor's StaticMeshComponent without respawning the actor.
 - **`world/set_world_settings`** — Edit the active level's AWorldSettings: kill-Z plane, world gravity, and/or the default GameMode override.
+- **`world/spawn_cine_camera`** — Spawn an ACineCameraActor (cinematic camera) into the current editor level and optionally configure its lens, filmback, and focus on the UCineCameraComponent.
 
 ## `world_partition` (5 tools)
 

@@ -10,7 +10,8 @@
  *
  * Spawn and configure lighting actors, build lightmaps.
  * Methods: spawn_light, set_light_intensity, set_light_color,
- *          set_light_attenuation, set_light_cast_shadows, build_lighting
+ *          set_light_attenuation, set_light_cast_shadows, build_lighting,
+ *          spawn_reflection_capture, recapture
  */
 class SPECIALAGENT_API FLightingService : public IMCPService
 {
@@ -30,4 +31,6 @@ private:
 	FMCPResponse HandleSetLightAttenuation(const FMCPRequest& Request);
 	FMCPResponse HandleSetLightCastShadows(const FMCPRequest& Request);
 	FMCPResponse HandleBuildLighting(const FMCPRequest& Request);
+	FMCPResponse HandleSpawnReflectionCapture(const FMCPRequest& Request);
+	FMCPResponse HandleRecapture(const FMCPRequest& Request);
 };
