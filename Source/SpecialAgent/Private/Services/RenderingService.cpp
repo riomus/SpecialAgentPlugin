@@ -9,6 +9,8 @@
 
 #include "CoreGlobals.h"
 #include "Editor.h"
+#include "EditorBuildUtils.h"
+#include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 #include "LevelEditorViewport.h"
 #include "Scalability.h"
@@ -26,6 +28,7 @@ FMCPResponse FRenderingService::HandleRequest(const FMCPRequest& Request, const 
     if (MethodName == TEXT("high_res_screenshot")) return HandleHighResScreenshot(Request);
     if (MethodName == TEXT("toggle_nanite"))        return HandleToggleNanite(Request);
     if (MethodName == TEXT("toggle_lumen"))         return HandleToggleLumen(Request);
+    if (MethodName == TEXT("build_virtual_textures")) return HandleBuildVirtualTextures(Request);
 
     return MethodNotFound(Request.Id, TEXT("rendering"), MethodName);
 }
@@ -91,6 +94,13 @@ TArray<FMCPToolInfo> FRenderingService::GetAvailableTools() const
              "Workflow: disable, then screenshot/capture to compare against the Lumen-lit look, then re-enable (Lumen is the UE5.7 default GI/reflection method). "
              "Warning: global engine CVars affecting the whole editor (not per-actor); disabling does not produce baked lighting -- it just drops dynamic GI and falls back to screen-space reflections. Returns an error if the CVars are not found."))
         .RequiredBool(TEXT("enabled"), TEXT("true to enable Lumen GI + reflections, false to disable (GI None, reflections Screen Space)"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(TEXT("build_virtual_textures"),
+        TEXT("Run the editor 'Build Virtual Textures' pass (FEditorBuildUtils::EditorBuildVirtualTexture) — rebuilds the STREAMING low-mips of every Runtime Virtual Texture (RVT) in the current level into its UVirtualTextureBuilder. Returns {success, error?}. "
+             "Params: (none). "
+             "Workflow: place/configure RVT volumes + RVT-writer meshes first, then call this to bake the streaming cache (this offline pass is otherwise only on the editor Build menu and not in the Python API). "
+             "Warning: BLOCKS the editor and can take minutes on large levels. This bakes the streaming cache only; the live RVT runtime pages are produced by RVT writers at render time — if a writer is not painting, use console/set_cvar r.VT.ForceContinuousUpdate 1 and confirm the writer mesh has 'Draw in Virtual Textures' enabled and overlaps the RVT volume. Returns success=false if there are no RVT volumes or the build fails."))
         .Build());
 
     return Tools;
@@ -313,5 +323,39 @@ FMCPResponse FRenderingService::HandleToggleLumen(const FMCPRequest& Request)
     };
 
     TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FRenderingService::HandleBuildVirtualTextures(const FMCPRequest& Request)
+{
+    auto Task = []() -> TSharedPtr<FJsonObject>
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        if (!World)
+        {
+            return FMCPJson::MakeError(TEXT("No editor world"));
+        }
+
+        // Runs the editor "Build > Build Virtual Textures" pass: rebuilds the
+        // streaming low-mips of every Runtime Virtual Texture in the level into
+        // its UVirtualTextureBuilder. This is the offline step NOT reachable via
+        // the Python scripting API; runtime RVT pages are produced by RVT writers
+        // at render time (use console r.VT.ForceContinuousUpdate 1 for those).
+        const bool bSuccess = FEditorBuildUtils::EditorBuildVirtualTexture(World);
+
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("success"), bSuccess);
+        if (!bSuccess)
+        {
+            Result->SetStringField(TEXT("error"),
+                TEXT("EditorBuildVirtualTexture returned false (no RVT volumes, or build failed — check the Output Log)"));
+        }
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: rendering/build_virtual_textures success=%d"), bSuccess ? 1 : 0);
+        return Result;
+    };
+
+    // Generous timeout: streaming-VT builds can take minutes on large levels.
+    TSharedPtr<FJsonObject> Result =
+        FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task, 1800.0);
     return FMCPResponse::Success(Request.Id, Result);
 }

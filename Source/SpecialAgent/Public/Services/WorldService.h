@@ -74,6 +74,12 @@ private:
 	FMCPResponse HandleAttachTo(const FMCPRequest& Request);
 	FMCPResponse HandleDetach(const FMCPRequest& Request);
 
+	// World quick-wins methods
+	FMCPResponse HandleSnapToFloor(const FMCPRequest& Request);
+	FMCPResponse HandleRandomizeTransforms(const FMCPRequest& Request);
+	FMCPResponse HandleSetActorMesh(const FMCPRequest& Request);
+	FMCPResponse HandleSetWorldSettings(const FMCPRequest& Request);
+
 	// Helper method for executing Python scripts
 	FMCPResponse ExecutePythonFromParams(const FMCPRequest& Request);
 };

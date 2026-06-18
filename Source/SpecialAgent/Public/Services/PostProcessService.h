@@ -23,4 +23,6 @@ private:
 	FMCPResponse HandleSetDof(const FMCPRequest& Request);
 	FMCPResponse HandleSetColorGrading(const FMCPRequest& Request);
 	FMCPResponse HandleSetGi(const FMCPRequest& Request);
+	FMCPResponse HandleSetLensEffects(const FMCPRequest& Request);
+	FMCPResponse HandleSetAutoExposure(const FMCPRequest& Request);
 };

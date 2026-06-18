@@ -16,7 +16,15 @@ struct FMCPToolInfo
 	FString Description;                           // Human-readable description
 	TSharedPtr<FJsonObject> Parameters;            // JSON schema for parameters
 	TArray<FString> RequiredParams;                // List of required parameter names
-	
+
+	// MCP tool annotations (client UX hints — auto-approve vs confirm). When
+	// unset, the router infers a sensible default from the tool name; set them
+	// explicitly (via FMCPToolBuilder) to override.
+	TOptional<bool> ReadOnlyHint;
+	TOptional<bool> DestructiveHint;
+	TOptional<bool> IdempotentHint;
+	TOptional<bool> OpenWorldHint;
+
 	FMCPToolInfo()
 		: Parameters(MakeShared<FJsonObject>())
 	{}

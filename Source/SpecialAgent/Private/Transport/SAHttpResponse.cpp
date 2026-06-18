@@ -10,6 +10,8 @@ FString FSAHttpResponse::StatusText(int32 Code)
         case 200: return TEXT("OK");
         case 204: return TEXT("No Content");
         case 400: return TEXT("Bad Request");
+        case 401: return TEXT("Unauthorized");
+        case 403: return TEXT("Forbidden");
         case 404: return TEXT("Not Found");
         case 405: return TEXT("Method Not Allowed");
         case 411: return TEXT("Length Required");

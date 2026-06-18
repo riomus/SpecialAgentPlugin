@@ -53,6 +53,8 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 
+#include <initializer_list>
+
 namespace
 {
 	static FString GetSpecialAgentDocsDir()
@@ -131,6 +133,10 @@ namespace
 		AddResource(TEXT("mcp://unreal/deprecations"),
 			TEXT("Deprecated to modern API table"),
 			TEXT("Mapping consumed by python/diff_against_deprecated."));
+
+		AddResource(TEXT("mcp://unreal/best_practices"),
+			TEXT("UE5.7 Python best practices"),
+			TEXT("Golden rules, subsystem map, units, gotchas, and how to discover the live API for python/execute."));
 
 		AddResource(TEXT("mcp://unreal/services"),
 			TEXT("MCP services + tools index"),
@@ -423,7 +429,28 @@ FMCPResponse FMCPRequestRouter::HandleToolsList(const FMCPRequest& Request)
 	// Return list of available tools
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> ToolsArray;
-	
+
+	// Infer MCP annotation hints from the method name when a service didn't set
+	// them explicitly. Without annotations, clients treat every tool as the
+	// worst case (read-write + destructive) and confirm each call.
+	auto StartsWithAny = [](const FString& M, std::initializer_list<const TCHAR*> Prefixes) -> bool
+	{
+		for (const TCHAR* P : Prefixes) { if (M.StartsWith(P)) return true; }
+		return false;
+	};
+	auto InferReadOnly = [&](const FString& M) -> bool
+	{
+		return StartsWithAny(M, { TEXT("get"), TEXT("list"), TEXT("find"), TEXT("search"),
+			TEXT("inspect"), TEXT("read"), TEXT("query"), TEXT("test"), TEXT("measure"),
+			TEXT("validate"), TEXT("diff"), TEXT("help"), TEXT("tail"), TEXT("is_"),
+			TEXT("has_"), TEXT("check"), TEXT("trace"), TEXT("raycast"), TEXT("capture") });
+	};
+	auto InferDestructive = [&](const FString& M) -> bool
+	{
+		return StartsWithAny(M, { TEXT("delete"), TEXT("remove"), TEXT("clear"),
+			TEXT("destroy"), TEXT("revert") });
+	};
+
 	// Collect tools from all services
 	for (const auto& ServicePair : Services)
 	{
@@ -450,6 +477,16 @@ FMCPResponse FMCPRequestRouter::HandleToolsList(const FMCPRequest& Request)
 			}
 			
 			ToolObj->SetObjectField(TEXT("inputSchema"), InputSchema);
+				{
+					const bool bReadOnly    = ToolInfo.ReadOnlyHint.Get(InferReadOnly(ToolInfo.Name));
+					const bool bDestructive = bReadOnly ? false : ToolInfo.DestructiveHint.Get(InferDestructive(ToolInfo.Name));
+					TSharedPtr<FJsonObject> Annotations = MakeShared<FJsonObject>();
+					Annotations->SetBoolField(TEXT("readOnlyHint"),    bReadOnly);
+					Annotations->SetBoolField(TEXT("destructiveHint"), bDestructive);
+					Annotations->SetBoolField(TEXT("idempotentHint"),  ToolInfo.IdempotentHint.Get(bReadOnly));
+					Annotations->SetBoolField(TEXT("openWorldHint"),   ToolInfo.OpenWorldHint.Get(false));
+					ToolObj->SetObjectField(TEXT("annotations"), Annotations);
+				}
 			ToolsArray.Add(MakeShared<FJsonValueObject>(ToolObj));
 		}
 	}
@@ -703,6 +740,10 @@ FMCPResponse FMCPRequestRouter::HandleResourcesRead(const FMCPRequest& Request)
 	else if (Uri == TEXT("mcp://unreal/deprecations"))
 	{
 		RelKey = TEXT("deprecations.md");
+	}
+	else if (Uri == TEXT("mcp://unreal/best_practices"))
+	{
+		RelKey = TEXT("ue5_python_best_practices.md");
 	}
 	else if (Uri.StartsWith(TEXT("mcp://unreal/idioms/")))
 	{

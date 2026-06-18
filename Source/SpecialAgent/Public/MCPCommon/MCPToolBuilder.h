@@ -52,6 +52,13 @@ public:
 	FMCPToolBuilder& RequiredAny(const FString& Field, const FString& Description);
 	FMCPToolBuilder& OptionalAny(const FString& Field, const FString& Description);
 
+	// MCP tool annotations (client UX hints). Override the router's name-based
+	// inference when it would be wrong.
+	FMCPToolBuilder& ReadOnly(bool bValue = true);
+	FMCPToolBuilder& Destructive(bool bValue = true);
+	FMCPToolBuilder& Idempotent(bool bValue = true);
+	FMCPToolBuilder& OpenWorld(bool bValue = true);
+
 	FMCPToolInfo Build() const;
 
 private:

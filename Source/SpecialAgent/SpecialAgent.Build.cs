@@ -89,6 +89,7 @@ public class SpecialAgent : ModuleRules
 				"ContentBrowser",
 				"DataValidation",
 				"MessageLog",
+				"StaticMeshEditor",
 			}
 		);
 		

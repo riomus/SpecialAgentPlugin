@@ -21,4 +21,6 @@ private:
     FMCPResponse HandleBooleanSubtract(const FMCPRequest& Request);
     FMCPResponse HandleExtrude(const FMCPRequest& Request);
     FMCPResponse HandleSimplify(const FMCPRequest& Request);
+    FMCPResponse HandleAddSimpleCollision(const FMCPRequest& Request);
+    FMCPResponse HandleSetNanite(const FMCPRequest& Request);
 };

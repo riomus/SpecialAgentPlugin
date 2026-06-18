@@ -25,35 +25,43 @@ void FSpecialAgentModule::StartupModule()
 
 	// Server settings. Defaults are used unless overridden in config.
 	const TCHAR* SettingsSection = TEXT("/Script/SpecialAgent.SpecialAgentSettings");
-	bool bAutoStart = true;     // ServerEnabled
-	int32 ServerPort = 8767;    // HTTP/SSE port for MCP client connections
+	bool bAutoStart = true;                        // ServerEnabled
+	int32 ServerPort = 8767;                       // HTTP/SSE port for MCP client connections
+	FString BindAddress = TEXT("127.0.0.1");       // loopback by default (the server runs arbitrary Python)
+	FString AuthToken;                             // optional bearer token (empty = disabled)
+
+	auto ReadServerKeys = [&](const FString& IniFile)
+	{
+		GConfig->GetBool  (SettingsSection, TEXT("ServerEnabled"), bAutoStart,  IniFile);
+		GConfig->GetInt   (SettingsSection, TEXT("ServerPort"),    ServerPort,  IniFile);
+		GConfig->GetString(SettingsSection, TEXT("BindAddress"),   BindAddress, IniFile);
+		GConfig->GetString(SettingsSection, TEXT("AuthToken"),     AuthToken,   IniFile);
+	};
 
 	if (GConfig)
 	{
-		// The plugin ships Config/DefaultSpecialAgent.ini (ServerEnabled / ServerPort).
-		// Without a UCLASS(config=SpecialAgent) settings object it is not merged
-		// into a standard config branch automatically, so load it explicitly by
-		// path — otherwise the shipped config file has no effect.
+		// The plugin ships Config/DefaultSpecialAgent.ini. Without a
+		// UCLASS(config=SpecialAgent) settings object it is not merged into a
+		// standard config branch automatically, so load it explicitly by path.
 		if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("SpecialAgent")))
 		{
 			const FString PluginIni = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Config"), TEXT("DefaultSpecialAgent.ini"));
 			if (FPaths::FileExists(PluginIni))
 			{
-				GConfig->GetBool(SettingsSection, TEXT("ServerEnabled"), bAutoStart, PluginIni);
-				GConfig->GetInt (SettingsSection, TEXT("ServerPort"),    ServerPort,  PluginIni);
+				ReadServerKeys(PluginIni);
 			}
 		}
 
 		// Project-level DefaultGame.ini overrides the plugin default when present.
-		GConfig->GetBool(SettingsSection, TEXT("ServerEnabled"), bAutoStart, GGameIni);
-		GConfig->GetInt (SettingsSection, TEXT("ServerPort"),    ServerPort,  GGameIni);
+		ReadServerKeys(GGameIni);
 	}
 	
-	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: ServerEnabled=%d, ServerPort=%d"), bAutoStart, ServerPort);
+	UE_LOG(LogTemp, Log, TEXT("SpecialAgent: ServerEnabled=%d, ServerPort=%d, BindAddress=%s, Auth=%s"),
+		bAutoStart, ServerPort, *BindAddress, AuthToken.IsEmpty() ? TEXT("disabled") : TEXT("enabled"));
 
 	if (bAutoStart)
 	{
-		if (MCPServer->StartServer(ServerPort))
+		if (MCPServer->StartServer(ServerPort, BindAddress, AuthToken))
 		{
 			UE_LOG(LogTemp, Log, TEXT("SpecialAgent: MCP Server started on port %d"), ServerPort);
 		}

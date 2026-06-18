@@ -13,6 +13,7 @@
 #include "Editor.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/WorldSettings.h"
+#include "GameFramework/GameModeBase.h"
 #include "EditorLevelLibrary.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/MeshComponent.h"
@@ -198,6 +199,12 @@ FMCPResponse FWorldService::HandleRequest(const FMCPRequest& Request, const FStr
 	if (MethodName == TEXT("set_actor_collision")) return HandleSetActorCollision(Request);
 	if (MethodName == TEXT("attach_to")) return HandleAttachTo(Request);
 	if (MethodName == TEXT("detach")) return HandleDetach(Request);
+
+	// World quick-wins methods
+	if (MethodName == TEXT("snap_to_floor")) return HandleSnapToFloor(Request);
+	if (MethodName == TEXT("randomize_transforms")) return HandleRandomizeTransforms(Request);
+	if (MethodName == TEXT("set_actor_mesh")) return HandleSetActorMesh(Request);
+	if (MethodName == TEXT("set_world_settings")) return HandleSetWorldSettings(Request);
 
 	return MethodNotFound(Request.Id, TEXT("world"), MethodName);
 }
@@ -1663,6 +1670,375 @@ FMCPResponse FWorldService::HandleDetach(const FMCPRequest& Request)
 }
 
 // ============================================================================
+// World quick-wins
+// ============================================================================
+// Resolve a target set of actors from any one of: actor_names (array), tag (string),
+// or class_filter (case-sensitive substring against the class name, like list_actors).
+// Must run on the game thread. Returns the resolved actors; OutError set if the
+// params did not specify any selector. An empty result with no error is valid.
+static TArray<AActor*> ResolveActorSet(UWorld* World, const TSharedPtr<FJsonObject>& Params, FString& OutError)
+{
+	TArray<AActor*> Result;
+	OutError.Empty();
+	if (!World || !Params.IsValid()) { OutError = TEXT("No world or params"); return Result; }
+
+	const TArray<TSharedPtr<FJsonValue>>* NamesArr = nullptr;
+	FString Tag, ClassFilter;
+	const bool bHasNames = Params->TryGetArrayField(TEXT("actor_names"), NamesArr) && NamesArr && NamesArr->Num() > 0;
+	const bool bHasTag = Params->TryGetStringField(TEXT("tag"), Tag) && !Tag.IsEmpty();
+	const bool bHasClass = Params->TryGetStringField(TEXT("class_filter"), ClassFilter) && !ClassFilter.IsEmpty();
+
+	if (bHasNames)
+	{
+		for (const TSharedPtr<FJsonValue>& V : *NamesArr)
+		{
+			FString Name;
+			if (!V->TryGetString(Name) || Name.IsEmpty()) continue;
+			if (AActor* A = FMCPActorResolver::ByLabel(World, Name))
+				Result.AddUnique(A);
+		}
+	}
+	else if (bHasTag)
+	{
+		Result = FMCPActorResolver::ByTag(World, FName(*Tag));
+	}
+	else if (bHasClass)
+	{
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* Actor = *It;
+			if (Actor && Actor->GetClass()->GetName().Contains(ClassFilter))
+				Result.Add(Actor);
+		}
+	}
+	else
+	{
+		OutError = TEXT("Provide one selector: 'actor_names' (array), 'tag' (string), or 'class_filter' (substring)");
+	}
+	return Result;
+}
+
+FMCPResponse FWorldService::HandleSnapToFloor(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	const TSharedPtr<FJsonObject> Params = Request.Params;
+
+	double TraceUp = 1000.0;
+	Params->TryGetNumberField(TEXT("trace_up"), TraceUp);
+	double TraceDown = 100000.0;
+	Params->TryGetNumberField(TEXT("trace_down"), TraceDown);
+	bool bUseBounds = true;
+	Params->TryGetBoolField(TEXT("use_bounds"), bUseBounds);
+	bool bAlignToNormal = false;
+	Params->TryGetBoolField(TEXT("align_to_normal"), bAlignToNormal);
+
+	auto Task = [Params, TraceUp, TraceDown, bUseBounds, bAlignToNormal]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+
+		FString SelErr;
+		TArray<AActor*> Actors = ResolveActorSet(World, Params, SelErr);
+		if (!SelErr.IsEmpty()) return FMCPJson::MakeError(SelErr);
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: snap to floor")));
+		TArray<TSharedPtr<FJsonValue>> Snapped;
+		int32 HitCount = 0;
+		for (AActor* Actor : Actors)
+		{
+			if (!Actor) continue;
+			const FVector Loc = Actor->GetActorLocation();
+			FVector Start = Loc + FVector(0, 0, TraceUp);
+			FVector End = Loc - FVector(0, 0, TraceDown);
+
+			FHitResult Hit;
+			FCollisionQueryParams QP(SCENE_QUERY_STAT(SpecialAgentSnapToFloor), true);
+			QP.AddIgnoredActor(Actor);
+			const bool bHit = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, QP);
+
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("actor_label"), Actor->GetActorLabel());
+			Entry->SetBoolField(TEXT("hit"), bHit);
+
+			if (bHit)
+			{
+				Actor->Modify();
+				// Offset so the actor's bbox bottom rests on the surface (when use_bounds),
+				// otherwise drop the pivot straight to the hit point.
+				double NewZ = Hit.Location.Z;
+				if (bUseBounds)
+				{
+					FVector Origin, Extent;
+					Actor->GetActorBounds(false, Origin, Extent);
+					const double BottomOffset = Loc.Z - (Origin.Z - Extent.Z); // pivot above bbox bottom
+					NewZ = Hit.Location.Z + BottomOffset;
+				}
+				FVector MovedLoc = Loc;
+				MovedLoc.Z = NewZ;
+				Actor->SetActorLocation(MovedLoc);
+
+				if (bAlignToNormal)
+				{
+					const FRotator NormalRot = FRotationMatrix::MakeFromZ(Hit.ImpactNormal).Rotator();
+					Actor->SetActorRotation(NormalRot);
+				}
+				Actor->MarkPackageDirty();
+				Entry->SetNumberField(TEXT("new_z"), NewZ);
+				++HitCount;
+			}
+			Snapped.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetArrayField(TEXT("snapped"), Snapped);
+		Result->SetNumberField(TEXT("count"), HitCount);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Snapped %d/%d actors to floor"), HitCount, Snapped.Num());
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FWorldService::HandleRandomizeTransforms(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	const TSharedPtr<FJsonObject> Params = Request.Params;
+
+	int32 Seed = 0;
+	if (!Params->TryGetNumberField(TEXT("seed"), Seed))
+		return InvalidParams(Request.Id, TEXT("Missing 'seed' (integer, required for determinism)"));
+
+	FVector PositionJitter(0, 0, 0);
+	const bool bJitterPos = FMCPJson::ReadVec3(Params, TEXT("position_jitter"), PositionJitter);
+
+	// yaw_range [min,max] degrees (preferred) OR rotation_jitter [P,Y,R] symmetric +/- degrees.
+	double YawMin = 0.0, YawMax = 0.0;
+	bool bYawRange = false;
+	{
+		const TArray<TSharedPtr<FJsonValue>>* YawArr = nullptr;
+		if (Params->TryGetArrayField(TEXT("yaw_range"), YawArr) && YawArr && YawArr->Num() == 2)
+		{
+			YawMin = (*YawArr)[0]->AsNumber();
+			YawMax = (*YawArr)[1]->AsNumber();
+			bYawRange = true;
+		}
+	}
+	FVector RotationJitter(0, 0, 0);
+	const bool bRotJitter = !bYawRange && FMCPJson::ReadVec3(Params, TEXT("rotation_jitter"), RotationJitter);
+
+	double ScaleMin = 1.0, ScaleMax = 1.0;
+	const bool bScaleMin = Params->TryGetNumberField(TEXT("scale_min"), ScaleMin);
+	const bool bScaleMax = Params->TryGetNumberField(TEXT("scale_max"), ScaleMax);
+	const bool bScale = bScaleMin || bScaleMax;
+
+	auto Task = [Params, Seed, bJitterPos, PositionJitter, bYawRange, YawMin, YawMax,
+	             bRotJitter, RotationJitter, bScale, ScaleMin, ScaleMax]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+
+		FString SelErr;
+		TArray<AActor*> Actors = ResolveActorSet(World, Params, SelErr);
+		if (!SelErr.IsEmpty()) return FMCPJson::MakeError(SelErr);
+
+		FRandomStream Rand(Seed);
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: randomize transforms")));
+		int32 Count = 0;
+		for (AActor* Actor : Actors)
+		{
+			if (!Actor) continue;
+			Actor->Modify();
+			FTransform T = Actor->GetActorTransform();
+
+			if (bJitterPos)
+			{
+				const FVector Offset(
+					Rand.FRandRange(-static_cast<float>(PositionJitter.X), static_cast<float>(PositionJitter.X)),
+					Rand.FRandRange(-static_cast<float>(PositionJitter.Y), static_cast<float>(PositionJitter.Y)),
+					Rand.FRandRange(-static_cast<float>(PositionJitter.Z), static_cast<float>(PositionJitter.Z)));
+				T.SetLocation(T.GetLocation() + Offset);
+			}
+
+			if (bYawRange)
+			{
+				FRotator Rot = T.GetRotation().Rotator();
+				Rot.Yaw += Rand.FRandRange(static_cast<float>(YawMin), static_cast<float>(YawMax));
+				T.SetRotation(Rot.Quaternion());
+			}
+			else if (bRotJitter)
+			{
+				FRotator Rot = T.GetRotation().Rotator();
+				Rot.Pitch += Rand.FRandRange(-static_cast<float>(RotationJitter.X), static_cast<float>(RotationJitter.X));
+				Rot.Yaw   += Rand.FRandRange(-static_cast<float>(RotationJitter.Y), static_cast<float>(RotationJitter.Y));
+				Rot.Roll  += Rand.FRandRange(-static_cast<float>(RotationJitter.Z), static_cast<float>(RotationJitter.Z));
+				T.SetRotation(Rot.Quaternion());
+			}
+
+			if (bScale)
+			{
+				const float Factor = Rand.FRandRange(static_cast<float>(ScaleMin), static_cast<float>(ScaleMax));
+				T.SetScale3D(T.GetScale3D() * Factor);
+			}
+
+			Actor->SetActorTransform(T);
+			Actor->MarkPackageDirty();
+			++Count;
+		}
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetNumberField(TEXT("count"), Count);
+		Result->SetNumberField(TEXT("seed"), Seed);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Randomized transforms on %d actors (seed %d)"), Count, Seed);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FWorldService::HandleSetActorMesh(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	FString ActorName, MeshPath, ComponentName;
+	if (!Request.Params->TryGetStringField(TEXT("actor_name"), ActorName))
+		return InvalidParams(Request.Id, TEXT("Missing 'actor_name'"));
+	if (!Request.Params->TryGetStringField(TEXT("mesh_path"), MeshPath))
+		return InvalidParams(Request.Id, TEXT("Missing 'mesh_path'"));
+	Request.Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+	auto Task = [ActorName, MeshPath, ComponentName]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+		AActor* Actor = FMCPActorResolver::ByLabel(World, ActorName);
+		if (!Actor) return FMCPJson::MakeError(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+
+		TArray<UStaticMeshComponent*> MeshComps;
+		Actor->GetComponents<UStaticMeshComponent>(MeshComps);
+		if (MeshComps.Num() == 0)
+			return FMCPJson::MakeError(TEXT("Actor has no UStaticMeshComponent"));
+
+		UStaticMeshComponent* Target = nullptr;
+		if (!ComponentName.IsEmpty())
+		{
+			for (UStaticMeshComponent* SMC : MeshComps)
+			{
+				if (SMC && SMC->GetName() == ComponentName) { Target = SMC; break; }
+			}
+			if (!Target)
+				return FMCPJson::MakeError(FString::Printf(TEXT("No UStaticMeshComponent named '%s' on actor"), *ComponentName));
+		}
+		else
+		{
+			Target = MeshComps[0];
+		}
+
+		UStaticMesh* NewMesh = LoadObject<UStaticMesh>(nullptr, *MeshPath);
+		if (!NewMesh) return FMCPJson::MakeError(FString::Printf(TEXT("Static mesh not found: %s"), *MeshPath));
+
+		UStaticMesh* OldMesh = Target->GetStaticMesh();
+		const FString OldMeshPath = OldMesh ? OldMesh->GetPathName() : TEXT("");
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set actor mesh")));
+		Target->Modify();
+		Target->SetStaticMesh(NewMesh);
+		Target->MarkPackageDirty();
+		Actor->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("actor_label"), Actor->GetActorLabel());
+		Result->SetStringField(TEXT("old_mesh"), OldMeshPath);
+		Result->SetStringField(TEXT("new_mesh"), NewMesh->GetPathName());
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Set mesh on %s -> %s"), *ActorName, *MeshPath);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FWorldService::HandleSetWorldSettings(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+	const TSharedPtr<FJsonObject> Params = Request.Params;
+
+	double KillZ = 0.0;
+	const bool bKillZ = Params->TryGetNumberField(TEXT("kill_z"), KillZ);
+	double GravityZ = 0.0;
+	const bool bGravity = Params->TryGetNumberField(TEXT("gravity_z"), GravityZ);
+	FString GameModePath;
+	const bool bGameMode = Params->TryGetStringField(TEXT("game_mode"), GameModePath) && !GameModePath.IsEmpty();
+
+	if (!bKillZ && !bGravity && !bGameMode)
+		return InvalidParams(Request.Id, TEXT("Provide at least one of kill_z / gravity_z / game_mode"));
+
+	auto Task = [bKillZ, KillZ, bGravity, GravityZ, bGameMode, GameModePath]() -> TSharedPtr<FJsonObject>
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) return FMCPJson::MakeError(TEXT("No editor world"));
+		AWorldSettings* WS = World->GetWorldSettings();
+		if (!WS) return FMCPJson::MakeError(TEXT("World has no WorldSettings"));
+
+		// Validate the game mode class first so we reject before mutating anything.
+		UClass* GameModeClass = nullptr;
+		if (bGameMode)
+		{
+			if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *GameModePath))
+			{
+				if (BP->GeneratedClass && BP->GeneratedClass->IsChildOf(AGameModeBase::StaticClass()))
+					GameModeClass = BP->GeneratedClass;
+			}
+			if (!GameModeClass)
+			{
+				if (UClass* Loaded = LoadObject<UClass>(nullptr, *GameModePath))
+				{
+					if (Loaded->IsChildOf(AGameModeBase::StaticClass()))
+						GameModeClass = Loaded;
+				}
+			}
+			if (!GameModeClass)
+				return FMCPJson::MakeError(FString::Printf(TEXT("'%s' does not load as a subclass of AGameModeBase"), *GameModePath));
+		}
+
+		TSharedPtr<FJsonObject> Before = MakeShared<FJsonObject>();
+		Before->SetNumberField(TEXT("kill_z"), WS->KillZ);
+		Before->SetNumberField(TEXT("gravity_z"), WS->GetGravityZ());
+		Before->SetStringField(TEXT("game_mode"), WS->DefaultGameMode ? WS->DefaultGameMode->GetPathName() : TEXT(""));
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set world settings")));
+		WS->Modify();
+		if (bKillZ)
+		{
+			WS->KillZ = static_cast<float>(KillZ);
+		}
+		if (bGravity)
+		{
+			WS->GlobalGravityZ = static_cast<float>(GravityZ);
+			WS->WorldGravityZ = static_cast<float>(GravityZ);
+			WS->bGlobalGravitySet = true;
+			WS->bWorldGravitySet = true;
+		}
+		if (bGameMode)
+		{
+			WS->DefaultGameMode = GameModeClass;
+		}
+		WS->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> After = MakeShared<FJsonObject>();
+		After->SetNumberField(TEXT("kill_z"), WS->KillZ);
+		After->SetNumberField(TEXT("gravity_z"), WS->GetGravityZ());
+		After->SetStringField(TEXT("game_mode"), WS->DefaultGameMode ? WS->DefaultGameMode->GetPathName() : TEXT(""));
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetObjectField(TEXT("before"), Before);
+		Result->SetObjectField(TEXT("after"), After);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: Updated WorldSettings (kill_z=%d gravity=%d game_mode=%d)"),
+			bKillZ ? 1 : 0, bGravity ? 1 : 0, bGameMode ? 1 : 0);
+		return Result;
+	};
+	TSharedPtr<FJsonObject> Result = FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+	return FMCPResponse::Success(Request.Id, Result);
+}
+
+// ============================================================================
 // Tool schemas
 // ============================================================================
 TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
@@ -2112,6 +2488,137 @@ TArray<FMCPToolInfo> FWorldService::GetAvailableTools() const
 			 "Warning: no-op if the actor is not attached; in-memory hierarchy change."))
 		.RequiredString(TEXT("actor_name"), TEXT("Outliner label of the actor to detach"))
 		.Build());
+
+	// ---------- World quick-wins ----------
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("snap_to_floor");
+		Tool.Description = TEXT("Drop a set of actors onto the surface beneath them by line-tracing straight down on the Visibility channel, ignoring each actor itself. "
+			"Returns {success, snapped:[{actor_label, hit (bool), new_z}], count} where count is the number that hit a surface (entries with hit=false are left unmoved and omit new_z). "
+			"Params: provide exactly one selector -- actor_names (array of outliner labels) OR tag (string) OR class_filter (case-sensitive class-name substring); "
+			"use_bounds (bool, optional, default true -- rest the actor's bounding-box bottom on the surface instead of dropping the pivot to the hit point), "
+			"align_to_normal (bool, optional, default false -- rotate each actor to the surface normal), "
+			"trace_up (number cm, optional, default 1000 -- how far above the actor to start the trace), trace_down (number cm, optional, default 100000 -- how far below to trace). "
+			"Workflow: select actors with the tag/class/names selector, then snap them so they sit on terrain or floors; pair with randomize_transforms for natural scatter. "
+			"Warning: only hits actors with collision on the Visibility channel; all moves run inside one undo transaction and are in-memory until the level is saved.");
+		TSharedPtr<FJsonObject> NamesParam = MakeShared<FJsonObject>();
+		NamesParam->SetStringField(TEXT("type"), TEXT("array"));
+		NamesParam->SetStringField(TEXT("description"), TEXT("Outliner labels to snap (alternative to tag/class_filter)."));
+		Tool.Parameters->SetObjectField(TEXT("actor_names"), NamesParam);
+		TSharedPtr<FJsonObject> TagParam = MakeShared<FJsonObject>();
+		TagParam->SetStringField(TEXT("type"), TEXT("string"));
+		TagParam->SetStringField(TEXT("description"), TEXT("Select all actors carrying this exact actor tag (alternative to actor_names/class_filter)."));
+		Tool.Parameters->SetObjectField(TEXT("tag"), TagParam);
+		TSharedPtr<FJsonObject> ClassParam = MakeShared<FJsonObject>();
+		ClassParam->SetStringField(TEXT("type"), TEXT("string"));
+		ClassParam->SetStringField(TEXT("description"), TEXT("Case-sensitive substring matched against the actor's class name (alternative to actor_names/tag)."));
+		Tool.Parameters->SetObjectField(TEXT("class_filter"), ClassParam);
+		TSharedPtr<FJsonObject> UseBoundsParam = MakeShared<FJsonObject>();
+		UseBoundsParam->SetStringField(TEXT("type"), TEXT("boolean"));
+		UseBoundsParam->SetStringField(TEXT("description"), TEXT("Rest the bounding-box bottom on the surface instead of dropping the pivot (default true)."));
+		Tool.Parameters->SetObjectField(TEXT("use_bounds"), UseBoundsParam);
+		TSharedPtr<FJsonObject> AlignParam = MakeShared<FJsonObject>();
+		AlignParam->SetStringField(TEXT("type"), TEXT("boolean"));
+		AlignParam->SetStringField(TEXT("description"), TEXT("Rotate each actor to the surface normal (default false)."));
+		Tool.Parameters->SetObjectField(TEXT("align_to_normal"), AlignParam);
+		TSharedPtr<FJsonObject> UpParam = MakeShared<FJsonObject>();
+		UpParam->SetStringField(TEXT("type"), TEXT("number"));
+		UpParam->SetStringField(TEXT("description"), TEXT("Distance above the actor to start the down-trace, cm (default 1000)."));
+		Tool.Parameters->SetObjectField(TEXT("trace_up"), UpParam);
+		TSharedPtr<FJsonObject> DownParam = MakeShared<FJsonObject>();
+		DownParam->SetStringField(TEXT("type"), TEXT("number"));
+		DownParam->SetStringField(TEXT("description"), TEXT("Distance below the actor to trace, cm (default 100000)."));
+		Tool.Parameters->SetObjectField(TEXT("trace_down"), DownParam);
+		Tools.Add(Tool);
+	}
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("randomize_transforms");
+		Tool.Description = TEXT("Deterministically perturb the transforms of a set of actors using a seeded RNG, applying each change relative to the actor's current transform. "
+			"Returns {success, count, seed}. "
+			"Params: provide exactly one selector -- actor_names (array of outliner labels) OR tag (string) OR class_filter (case-sensitive class-name substring); "
+			"seed (integer, required -- same seed + same selection reproduces the exact same result); "
+			"position_jitter (array [X,Y,Z] max +/- cm box offset, optional), yaw_range (array [min,max] degrees added to yaw, optional) OR rotation_jitter (array [Pitch,Yaw,Roll] symmetric +/- degrees, optional; ignored if yaw_range is given), "
+			"scale_min / scale_max (numbers, optional -- a single uniform factor drawn in [scale_min,scale_max] multiplies the current scale). "
+			"Workflow: scatter or place actors first, then call this to break up repetition; follow with snap_to_floor to reseat them on terrain. "
+			"Warning: offsets are relative and stack on repeated calls; seed is mandatory for determinism. All edits run inside one undo transaction and are in-memory until saved.");
+		TSharedPtr<FJsonObject> NamesParam = MakeShared<FJsonObject>();
+		NamesParam->SetStringField(TEXT("type"), TEXT("array"));
+		NamesParam->SetStringField(TEXT("description"), TEXT("Outliner labels to randomize (alternative to tag/class_filter)."));
+		Tool.Parameters->SetObjectField(TEXT("actor_names"), NamesParam);
+		TSharedPtr<FJsonObject> TagParam = MakeShared<FJsonObject>();
+		TagParam->SetStringField(TEXT("type"), TEXT("string"));
+		TagParam->SetStringField(TEXT("description"), TEXT("Select all actors carrying this exact actor tag (alternative to actor_names/class_filter)."));
+		Tool.Parameters->SetObjectField(TEXT("tag"), TagParam);
+		TSharedPtr<FJsonObject> ClassParam = MakeShared<FJsonObject>();
+		ClassParam->SetStringField(TEXT("type"), TEXT("string"));
+		ClassParam->SetStringField(TEXT("description"), TEXT("Case-sensitive substring matched against the actor's class name (alternative to actor_names/tag)."));
+		Tool.Parameters->SetObjectField(TEXT("class_filter"), ClassParam);
+		TSharedPtr<FJsonObject> SeedParam = MakeShared<FJsonObject>();
+		SeedParam->SetStringField(TEXT("type"), TEXT("integer"));
+		SeedParam->SetStringField(TEXT("description"), TEXT("RNG seed; same seed + selection reproduces the same result."));
+		Tool.Parameters->SetObjectField(TEXT("seed"), SeedParam);
+		Tool.RequiredParams.Add(TEXT("seed"));
+		TSharedPtr<FJsonObject> PosParam = MakeShared<FJsonObject>();
+		PosParam->SetStringField(TEXT("type"), TEXT("array"));
+		PosParam->SetStringField(TEXT("description"), TEXT("Max +/- position offset box [X,Y,Z] in cm applied relative to current location."));
+		Tool.Parameters->SetObjectField(TEXT("position_jitter"), PosParam);
+		TSharedPtr<FJsonObject> YawParam = MakeShared<FJsonObject>();
+		YawParam->SetStringField(TEXT("type"), TEXT("array"));
+		YawParam->SetStringField(TEXT("description"), TEXT("Yaw range [min,max] degrees added to current yaw (takes precedence over rotation_jitter)."));
+		Tool.Parameters->SetObjectField(TEXT("yaw_range"), YawParam);
+		TSharedPtr<FJsonObject> RotParam = MakeShared<FJsonObject>();
+		RotParam->SetStringField(TEXT("type"), TEXT("array"));
+		RotParam->SetStringField(TEXT("description"), TEXT("Symmetric +/- rotation jitter [Pitch,Yaw,Roll] degrees (ignored when yaw_range is supplied)."));
+		Tool.Parameters->SetObjectField(TEXT("rotation_jitter"), RotParam);
+		TSharedPtr<FJsonObject> SMinParam = MakeShared<FJsonObject>();
+		SMinParam->SetStringField(TEXT("type"), TEXT("number"));
+		SMinParam->SetStringField(TEXT("description"), TEXT("Minimum uniform scale factor multiplied into current scale (default 1)."));
+		Tool.Parameters->SetObjectField(TEXT("scale_min"), SMinParam);
+		TSharedPtr<FJsonObject> SMaxParam = MakeShared<FJsonObject>();
+		SMaxParam->SetStringField(TEXT("type"), TEXT("number"));
+		SMaxParam->SetStringField(TEXT("description"), TEXT("Maximum uniform scale factor multiplied into current scale (default 1)."));
+		Tool.Parameters->SetObjectField(TEXT("scale_max"), SMaxParam);
+		Tools.Add(Tool);
+	}
+
+	Tools.Add(FMCPToolBuilder(TEXT("set_actor_mesh"),
+		TEXT("Swap the UStaticMesh asset on an actor's StaticMeshComponent without respawning the actor. "
+			 "Returns {success, actor_label, old_mesh (path or empty), new_mesh (path)}, or an error if the actor has no StaticMeshComponent or the mesh fails to load. "
+			 "Params: actor_name (string, required, outliner label), mesh_path (string, required, full StaticMesh object path like /Game/Meshes/Rock.Rock), "
+			 "component_name (string, optional -- the exact component name to target when the actor has more than one StaticMeshComponent; omit to use the first). "
+			 "Workflow: use list_actors to find the label, then swap meshes in place; pair with set_actor_material to retheme the new mesh. "
+			 "Warning: only StaticMeshComponents are affected (not SkeletalMesh); the change is in-memory until the level is saved."))
+		.RequiredString(TEXT("actor_name"), TEXT("Outliner label of the actor"))
+		.RequiredString(TEXT("mesh_path"), TEXT("StaticMesh asset object path, e.g. /Game/Meshes/Rock.Rock"))
+		.OptionalString(TEXT("component_name"), TEXT("Exact StaticMeshComponent name to target when the actor has several (default: first)"))
+		.Build());
+
+	{
+		FMCPToolInfo Tool;
+		Tool.Name = TEXT("set_world_settings");
+		Tool.Description = TEXT("Edit the active level's AWorldSettings: kill-Z plane, world gravity, and/or the default GameMode override. "
+			"Returns {success, before:{kill_z, gravity_z, game_mode}, after:{kill_z, gravity_z, game_mode}} echoing the effective values before and after the edit. "
+			"Params: kill_z (number cm, optional -- actors falling below this Z are destroyed at runtime), "
+			"gravity_z (number cm/s^2, optional -- sets the level gravity and enables the global-gravity override; earth gravity is about -980), "
+			"game_mode (string, optional -- a class path that must load as a subclass of AGameModeBase; an invalid or non-GameMode path is rejected before any change is made). "
+			"Workflow: configure a level's physics and rules in one call; provide only the fields you want to change. "
+			"Warning: gravity and kill-Z affect runtime/PIE behavior, not the editor viewport. WorldSettings is marked dirty and must be saved with the level to persist; an invalid game_mode aborts the whole call.");
+		TSharedPtr<FJsonObject> KillParam = MakeShared<FJsonObject>();
+		KillParam->SetStringField(TEXT("type"), TEXT("number"));
+		KillParam->SetStringField(TEXT("description"), TEXT("Kill-Z plane in cm; actors falling below it are destroyed at runtime."));
+		Tool.Parameters->SetObjectField(TEXT("kill_z"), KillParam);
+		TSharedPtr<FJsonObject> GravParam = MakeShared<FJsonObject>();
+		GravParam->SetStringField(TEXT("type"), TEXT("number"));
+		GravParam->SetStringField(TEXT("description"), TEXT("World gravity in cm/s^2 (earth ~ -980); enables the global-gravity override."));
+		Tool.Parameters->SetObjectField(TEXT("gravity_z"), GravParam);
+		TSharedPtr<FJsonObject> GMParam = MakeShared<FJsonObject>();
+		GMParam->SetStringField(TEXT("type"), TEXT("string"));
+		GMParam->SetStringField(TEXT("description"), TEXT("Default GameMode class path; must resolve to a subclass of AGameModeBase or the call is rejected."));
+		Tool.Parameters->SetObjectField(TEXT("game_mode"), GMParam);
+		Tools.Add(Tool);
+	}
 
 	return Tools;
 }

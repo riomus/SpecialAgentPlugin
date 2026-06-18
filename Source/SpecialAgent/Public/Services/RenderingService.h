@@ -21,4 +21,5 @@ private:
     FMCPResponse HandleHighResScreenshot(const FMCPRequest& Request);
     FMCPResponse HandleToggleNanite(const FMCPRequest& Request);
     FMCPResponse HandleToggleLumen(const FMCPRequest& Request);
+    FMCPResponse HandleBuildVirtualTextures(const FMCPRequest& Request);
 };

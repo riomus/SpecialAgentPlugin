@@ -458,7 +458,11 @@ uint32 FSAConnection::Run()
             Sid.IsEmpty() ? TEXT("<none>") : *Sid,
             Req.Body.Num());
 
-        if (Req.Verb == TEXT("OPTIONS"))
+        if (!CheckAuthorized(Req))
+        {
+            // 401/403 already written by CheckAuthorized.
+        }
+        else if (Req.Verb == TEXT("OPTIONS"))
         {
             HandleOptions();
         }
@@ -498,4 +502,50 @@ void FSAConnection::OnReplacedBySessionRegistry()
 bool FSAConnection::PushSSEEvent(const FString& EventName, const FString& Data)
 {
     return Writer.WriteEvent(EventName, Data);
+}
+
+namespace
+{
+    // A native MCP client (Claude Code, Codex, curl) does not send an Origin
+    // header; a browser fetch always does. So any Origin that isn't loopback is
+    // a web page trying to reach the local server — reject it (DNS-rebinding /
+    // localhost-CSRF defense). "null" is sent for sandboxed/file origins.
+    bool IsLocalOrigin(const FString& Origin)
+    {
+        if (Origin.IsEmpty() || Origin.Equals(TEXT("null"), ESearchCase::IgnoreCase)) return true;
+        return Origin.Contains(TEXT("://localhost"), ESearchCase::IgnoreCase)
+            || Origin.Contains(TEXT("://127.0.0.1"))
+            || Origin.Contains(TEXT("://[::1]"));
+    }
+}
+
+bool FSAConnection::CheckAuthorized(const FSAHttpRequest& Req)
+{
+    // 1. Origin gate — applies to every request (incl. OPTIONS preflight).
+    const FString Origin = Req.GetHeader(TEXT("Origin"));
+    if (!IsLocalOrigin(Origin))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 403 — rejected non-local Origin '%s'"), *Origin);
+        Writer.WriteSingleBodyString(403, TEXT("application/json"), TEXT("{\"error\":\"forbidden origin\"}"));
+        return false;
+    }
+
+    // 2. Optional bearer token (only when configured). Allow the unauthenticated
+    //    health probe and CORS preflight so tooling can still discover the server.
+    const FString Token = Owner ? Owner->GetAuthToken() : FString();
+    if (!Token.IsEmpty())
+    {
+        if (Req.Verb == TEXT("OPTIONS")) return true;
+        if (Req.Verb == TEXT("GET") && Req.Path == TEXT("/health")) return true;
+
+        const FString Auth = Req.GetHeader(TEXT("Authorization"));
+        const FString Expected = FString::Printf(TEXT("Bearer %s"), *Token);
+        if (Auth != Expected)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SpecialAgent: 401 — missing/invalid Authorization on %s %s"), *Req.Verb, *Req.Path);
+            Writer.WriteSingleBodyString(401, TEXT("application/json"), TEXT("{\"error\":\"unauthorized\"}"));
+            return false;
+        }
+    }
+    return true;
 }

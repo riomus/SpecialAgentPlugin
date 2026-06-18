@@ -23,11 +23,13 @@ public:
 	~FSpecialAgentMCPServer();
 
 	/**
-	 * Start the MCP server on the specified port
+	 * Start the MCP server.
 	 * @param Port The port to listen on (default 8767)
+	 * @param BindAddress Interface to bind ("127.0.0.1" default, "0.0.0.0"/"any" for all)
+	 * @param AuthToken Optional bearer token required on requests (empty = disabled)
 	 * @return true if server started successfully
 	 */
-	bool StartServer(int32 Port = 8767);
+	bool StartServer(int32 Port = 8767, const FString& BindAddress = TEXT("127.0.0.1"), const FString& AuthToken = FString());
 
 	/**
 	 * Stop the MCP server

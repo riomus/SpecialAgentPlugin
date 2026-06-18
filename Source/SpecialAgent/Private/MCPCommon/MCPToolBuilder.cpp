@@ -10,6 +10,11 @@ FMCPToolBuilder::FMCPToolBuilder(const FString& Name, const FString& Description
 	Tool.Parameters = MakeShared<FJsonObject>();
 }
 
+FMCPToolBuilder& FMCPToolBuilder::ReadOnly(bool bValue)    { Tool.ReadOnlyHint = bValue;    return *this; }
+FMCPToolBuilder& FMCPToolBuilder::Destructive(bool bValue) { Tool.DestructiveHint = bValue; return *this; }
+FMCPToolBuilder& FMCPToolBuilder::Idempotent(bool bValue)  { Tool.IdempotentHint = bValue;  return *this; }
+FMCPToolBuilder& FMCPToolBuilder::OpenWorld(bool bValue)   { Tool.OpenWorldHint = bValue;   return *this; }
+
 // ---- Scalars ----
 
 FMCPToolBuilder& FMCPToolBuilder::RequiredString(const FString& Field, const FString& Description)

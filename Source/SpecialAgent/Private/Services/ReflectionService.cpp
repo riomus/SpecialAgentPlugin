@@ -11,6 +11,9 @@
 #include "UObject/UnrealType.h"
 #include "UObject/Package.h"
 #include "UObject/PropertyPortFlags.h"
+#include "UObject/SavePackage.h"
+#include "Misc/PackageName.h"
+#include "ScopedTransaction.h"
 
 namespace
 {
@@ -96,7 +99,7 @@ namespace
 
 FString FReflectionService::GetServiceDescription() const
 {
-	return TEXT("UObject / UClass / UProperty / UFunction introspection");
+	return TEXT("UObject / UClass / UProperty / UFunction introspection, plus generic reflected-property setting on any loaded object/asset");
 }
 
 FMCPResponse FReflectionService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
@@ -106,6 +109,7 @@ FMCPResponse FReflectionService::HandleRequest(const FMCPRequest& Request, const
 	if (MethodName == TEXT("list_properties")) return HandleListProperties(Request);
 	if (MethodName == TEXT("list_functions"))  return HandleListFunctions(Request);
 	if (MethodName == TEXT("call_function"))   return HandleCallFunction(Request);
+	if (MethodName == TEXT("set_asset_property")) return HandleSetAssetProperty(Request);
 
 	return MethodNotFound(Request.Id, TEXT("reflection"), MethodName);
 }
@@ -512,6 +516,139 @@ FMCPResponse FReflectionService::HandleCallFunction(const FMCPRequest& Request)
 		FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task));
 }
 
+FMCPResponse FReflectionService::HandleSetAssetProperty(const FMCPRequest& Request)
+{
+	if (!Request.Params.IsValid())
+	{
+		return InvalidParams(Request.Id, TEXT("Missing params object"));
+	}
+
+	FString ObjectPath, PropertyName;
+	if (!Request.Params->TryGetStringField(TEXT("object_path"), ObjectPath))
+	{
+		return InvalidParams(Request.Id, TEXT("Missing required parameter 'object_path'"));
+	}
+	if (!Request.Params->TryGetStringField(TEXT("property_name"), PropertyName))
+	{
+		return InvalidParams(Request.Id, TEXT("Missing required parameter 'property_name'"));
+	}
+
+	// 'value' may arrive as a string (UE ImportText form) or as any JSON value
+	// (number / bool / array / object) which we stringify into ImportText form.
+	FString ValueStr;
+	const TSharedPtr<FJsonValue> ValueField = Request.Params->TryGetField(TEXT("value"));
+	if (!ValueField.IsValid())
+	{
+		return InvalidParams(Request.Id, TEXT("Missing required parameter 'value'"));
+	}
+	switch (ValueField->Type)
+	{
+		case EJson::String:
+			ValueStr = ValueField->AsString();
+			break;
+		case EJson::Number:
+			ValueStr = LexToString(ValueField->AsNumber());
+			break;
+		case EJson::Boolean:
+			ValueStr = ValueField->AsBool() ? TEXT("true") : TEXT("false");
+			break;
+		case EJson::Array:
+		{
+			// Marshal a 3-element [X,Y,Z] array as UE ImportText struct syntax.
+			const TArray<TSharedPtr<FJsonValue>>& InnerArr = ValueField->AsArray();
+			if (InnerArr.Num() == 3)
+			{
+				ValueStr = FString::Printf(TEXT("(X=%f,Y=%f,Z=%f)"),
+					InnerArr[0]->AsNumber(), InnerArr[1]->AsNumber(), InnerArr[2]->AsNumber());
+			}
+			else
+			{
+				return InvalidParams(Request.Id, TEXT("Array 'value' must be a 3-element [X,Y,Z] vector"));
+			}
+			break;
+		}
+		default:
+			return InvalidParams(Request.Id, TEXT("'value' must be a string, number, bool, or 3-element array"));
+	}
+
+	bool bSave = false;
+	Request.Params->TryGetBoolField(TEXT("save"), bSave);
+
+	auto Task = [ObjectPath, PropertyName, ValueStr, bSave]() -> TSharedPtr<FJsonObject>
+	{
+		UObject* Target = FindFirstObjectSafe<UObject>(*ObjectPath);
+		if (!Target)
+		{
+			Target = LoadObject<UObject>(nullptr, *ObjectPath);
+		}
+		if (!Target)
+		{
+			return FMCPJson::MakeError(FString::Printf(TEXT("Object not found: %s"), *ObjectPath));
+		}
+
+		FProperty* Property = Target->GetClass()->FindPropertyByName(FName(*PropertyName));
+		if (!Property)
+		{
+			// List a few available property names to aid discovery.
+			FString Available;
+			int32 Shown = 0;
+			for (TFieldIterator<FProperty> It(Target->GetClass(), EFieldIteratorFlags::IncludeSuper); It && Shown < 20; ++It, ++Shown)
+			{
+				if (!Available.IsEmpty()) Available += TEXT(", ");
+				Available += It->GetName();
+			}
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Property '%s' not found on '%s'. Available (first %d): %s"),
+				*PropertyName, *Target->GetClass()->GetName(), Shown, *Available));
+		}
+
+		const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set asset property")));
+		Target->Modify();
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Target);
+		const TCHAR* ImportResult = Property->ImportText_Direct(*ValueStr, ValuePtr, Target, PPF_None);
+		if (ImportResult == nullptr)
+		{
+			return FMCPJson::MakeError(FString::Printf(
+				TEXT("Failed to import value '%s' into property '%s' (type '%s')"),
+				*ValueStr, *PropertyName, *PropertyTypeString(Property)));
+		}
+
+		Target->PostEditChange();
+		Target->MarkPackageDirty();
+
+		// Read back the value as it now stands (post-import canonical form).
+		FString NewValue;
+		Property->ExportTextItem_Direct(NewValue, ValuePtr, nullptr, Target, PPF_None);
+
+		bool bSaved = false;
+		if (bSave)
+		{
+			UPackage* Package = Target->GetOutermost();
+			if (Package)
+			{
+				const FString FileName = FPackageName::LongPackageNameToFilename(
+					Package->GetName(), FPackageName::GetAssetPackageExtension());
+				FSavePackageArgs Args;
+				Args.TopLevelFlags = RF_Public | RF_Standalone;
+				Args.SaveFlags = SAVE_NoError;
+				bSaved = UPackage::SavePackage(Package, nullptr, *FileName, Args);
+			}
+		}
+
+		TSharedPtr<FJsonObject> Result = FMCPJson::MakeSuccess();
+		Result->SetStringField(TEXT("object_path"), Target->GetPathName());
+		Result->SetStringField(TEXT("property"), PropertyName);
+		Result->SetStringField(TEXT("new_value"), NewValue);
+		Result->SetBoolField(TEXT("saved"), bSaved);
+		UE_LOG(LogTemp, Log, TEXT("SpecialAgent: reflection/set_asset_property — %s.%s = %s (saved=%d)"),
+			*Target->GetClass()->GetName(), *PropertyName, *NewValue, bSaved ? 1 : 0);
+		return Result;
+	};
+
+	return FMCPResponse::Success(Request.Id,
+		FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task));
+}
+
 TArray<FMCPToolInfo> FReflectionService::GetAvailableTools() const
 {
 	TArray<FMCPToolInfo> Tools;
@@ -560,6 +697,17 @@ TArray<FMCPToolInfo> FReflectionService::GetAvailableTools() const
 		.RequiredString(TEXT("object_path"), TEXT("Full UObject path of the call target"))
 		.RequiredString(TEXT("function_name"), TEXT("UFunction name to invoke"))
 		.OptionalArrayOfString(TEXT("args"), TEXT("One entry per non-return parameter, in declared order: bool/int/float/string/FName values, or a 3-element [X,Y,Z] array (cm) marshalled to an FVector."))
+		.Build());
+
+	Tools.Add(FMCPToolBuilder(TEXT("set_asset_property"),
+		TEXT("Set any reflected UPROPERTY on any loaded UObject (DataAsset, asset config, settings object, in-memory actor) by parsing a text value through the property's own ImportText. Returns {object_path, property, new_value (canonical text read-back), saved}.\n"
+			"Params: object_path (string, required, full UObject path — e.g. /Game/Data/MyConfig.MyConfig — resolved in-memory then via LoadObject); property_name (string, required, exact reflected UPROPERTY name — case-sensitive, no type prefix); value (required, a string in UE text/ImportText form, or a JSON number/bool/3-element [X,Y,Z] array which is stringified to that form); save (boolean, optional, default false — when true the owning package is written to disk).\n"
+			"Workflow: reflection/list_properties to read the exact property name and type -> set_asset_property with a matching ImportText value -> optionally save=true to persist.\n"
+			"Warning: the value must be valid ImportText for that property's type or the import fails and nothing is written (structs use (X=..,Y=..) syntax, object refs use full asset paths, enums use the enumerator name). The change is transacted (undoable) and marks the package dirty; pass save=true only when you intend to overwrite the asset file on disk. If the property name is unknown the error lists the first available property names."))
+		.RequiredString(TEXT("object_path"), TEXT("Full UObject path of the target asset/object"))
+		.RequiredString(TEXT("property_name"), TEXT("Exact reflected UPROPERTY name to set"))
+		.RequiredAny(TEXT("value"), TEXT("Value in UE text/ImportText form, or a JSON number/bool/3-element [X,Y,Z] array"))
+		.OptionalBool(TEXT("save"), TEXT("Write the owning package to disk after the edit (default false)"))
 		.Build());
 
 	return Tools;

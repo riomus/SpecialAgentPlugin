@@ -12,6 +12,9 @@
 #include "Engine/StaticMeshActor.h"
 #include "Components/StaticMeshComponent.h"
 
+#include "StaticMeshEditorSubsystem.h"
+#include "ScopedTransaction.h"
+
 #include "UDynamicMesh.h"
 #include "GeometryScript/MeshAssetFunctions.h"
 #include "GeometryScript/MeshBooleanFunctions.h"
@@ -136,10 +139,12 @@ FString FModelingService::GetServiceDescription() const
 
 FMCPResponse FModelingService::HandleRequest(const FMCPRequest& Request, const FString& MethodName, const FMCPRequestContext& Ctx)
 {
-    if (MethodName == TEXT("boolean_union"))    return HandleBooleanUnion(Request);
-    if (MethodName == TEXT("boolean_subtract")) return HandleBooleanSubtract(Request);
-    if (MethodName == TEXT("extrude"))          return HandleExtrude(Request);
-    if (MethodName == TEXT("simplify"))         return HandleSimplify(Request);
+    if (MethodName == TEXT("boolean_union"))        return HandleBooleanUnion(Request);
+    if (MethodName == TEXT("boolean_subtract"))     return HandleBooleanSubtract(Request);
+    if (MethodName == TEXT("extrude"))              return HandleExtrude(Request);
+    if (MethodName == TEXT("simplify"))             return HandleSimplify(Request);
+    if (MethodName == TEXT("add_simple_collision")) return HandleAddSimpleCollision(Request);
+    if (MethodName == TEXT("set_nanite"))           return HandleSetNanite(Request);
 
     return MethodNotFound(Request.Id, TEXT("modeling"), MethodName);
 }
@@ -298,6 +303,154 @@ FMCPResponse FModelingService::HandleSimplify(const FMCPRequest& Request)
     return FMCPResponse::Success(Request.Id, Result);
 }
 
+FMCPResponse FModelingService::HandleAddSimpleCollision(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+
+    FString AssetPath;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("asset_path"), AssetPath))
+        return InvalidParams(Request.Id, TEXT("Missing 'asset_path'"));
+
+    FString Shape;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("shape"), Shape))
+        return InvalidParams(Request.Id, TEXT("Missing 'shape'"));
+
+    auto Task = [AssetPath, Shape]() -> TSharedPtr<FJsonObject>
+    {
+        EScriptCollisionShapeType ShapeType;
+        if      (Shape == TEXT("box"))     ShapeType = EScriptCollisionShapeType::Box;
+        else if (Shape == TEXT("sphere"))  ShapeType = EScriptCollisionShapeType::Sphere;
+        else if (Shape == TEXT("capsule")) ShapeType = EScriptCollisionShapeType::Capsule;
+        else if (Shape == TEXT("ndop10x")) ShapeType = EScriptCollisionShapeType::NDOP10_X;
+        else if (Shape == TEXT("ndop10y")) ShapeType = EScriptCollisionShapeType::NDOP10_Y;
+        else if (Shape == TEXT("ndop10z")) ShapeType = EScriptCollisionShapeType::NDOP10_Z;
+        else if (Shape == TEXT("ndop18"))  ShapeType = EScriptCollisionShapeType::NDOP18;
+        else if (Shape == TEXT("ndop26"))  ShapeType = EScriptCollisionShapeType::NDOP26;
+        else return FMCPJson::MakeError(FString::Printf(TEXT("Unknown shape: %s"), *Shape));
+
+        if (!GEditor) return FMCPJson::MakeError(TEXT("No GEditor"));
+
+        UStaticMeshEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UStaticMeshEditorSubsystem>();
+        if (!Subsystem) return FMCPJson::MakeError(TEXT("StaticMeshEditorSubsystem unavailable"));
+
+        UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *AssetPath);
+        if (!Mesh) return FMCPJson::MakeError(FString::Printf(TEXT("StaticMesh not found: %s"), *AssetPath));
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: add simple collision")));
+        Mesh->Modify();
+
+        const int32 Index = Subsystem->AddSimpleCollisionsWithNotification(Mesh, ShapeType, /*bApplyChanges=*/true);
+        if (Index < 0)
+        {
+            return FMCPJson::MakeError(FString::Printf(TEXT("AddSimpleCollisions failed for shape %s"), *Shape));
+        }
+
+        Mesh->MarkPackageDirty();
+
+        const int32 CollisionCount = Subsystem->GetSimpleCollisionCount(Mesh);
+
+        TSharedPtr<FJsonObject> Out = FMCPJson::MakeSuccess();
+        Out->SetStringField(TEXT("asset_path"), Mesh->GetPathName());
+        Out->SetStringField(TEXT("shape"), Shape);
+        Out->SetNumberField(TEXT("simple_collision_count"), CollisionCount >= 0 ? CollisionCount : (Index + 1));
+
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: modeling/add_simple_collision %s shape=%s index=%d"),
+            *AssetPath, *Shape, Index);
+        return Out;
+    };
+
+    TSharedPtr<FJsonObject> Result =
+        FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
+FMCPResponse FModelingService::HandleSetNanite(const FMCPRequest& Request)
+{
+    if (!Request.Params.IsValid()) return InvalidParams(Request.Id, TEXT("Missing params"));
+
+    FString AssetPath;
+    if (!FMCPJson::ReadString(Request.Params, TEXT("asset_path"), AssetPath))
+        return InvalidParams(Request.Id, TEXT("Missing 'asset_path'"));
+
+    bool bEnabled = false;
+    if (!FMCPJson::ReadBool(Request.Params, TEXT("enabled"), bEnabled))
+        return InvalidParams(Request.Id, TEXT("Missing 'enabled'"));
+
+    bool bHasPositionPrecision = false;
+    int32 PositionPrecision = 0;
+    if (FMCPJson::ReadInteger(Request.Params, TEXT("position_precision"), PositionPrecision))
+        bHasPositionPrecision = true;
+
+    bool bHasKeepPercent = false;
+    double KeepPercentTriangles = 1.0;
+    if (FMCPJson::ReadNumber(Request.Params, TEXT("keep_percent_triangles"), KeepPercentTriangles))
+        bHasKeepPercent = true;
+
+    auto Task = [AssetPath, bEnabled, bHasPositionPrecision, PositionPrecision, bHasKeepPercent, KeepPercentTriangles]() -> TSharedPtr<FJsonObject>
+    {
+        if (!GEditor) return FMCPJson::MakeError(TEXT("No GEditor"));
+
+        UStaticMeshEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UStaticMeshEditorSubsystem>();
+        if (!Subsystem) return FMCPJson::MakeError(TEXT("StaticMeshEditorSubsystem unavailable"));
+
+        UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *AssetPath);
+        if (!Mesh) return FMCPJson::MakeError(FString::Printf(TEXT("StaticMesh not found: %s"), *AssetPath));
+
+        FMeshNaniteSettings Settings = Subsystem->GetNaniteSettings(Mesh);
+
+        bool bChanged = false;
+        if (static_cast<bool>(Settings.bEnabled) != bEnabled)
+        {
+            Settings.bEnabled = bEnabled;
+            bChanged = true;
+        }
+        if (bHasPositionPrecision && Settings.PositionPrecision != PositionPrecision)
+        {
+            Settings.PositionPrecision = PositionPrecision;
+            bChanged = true;
+        }
+        if (bHasKeepPercent)
+        {
+            const float NewKeep = static_cast<float>(KeepPercentTriangles);
+            if (Settings.KeepPercentTriangles != NewKeep)
+            {
+                Settings.KeepPercentTriangles = NewKeep;
+                bChanged = true;
+            }
+        }
+
+        if (!bChanged)
+        {
+            TSharedPtr<FJsonObject> Skipped = FMCPJson::MakeSuccess();
+            Skipped->SetStringField(TEXT("asset_path"), Mesh->GetPathName());
+            Skipped->SetBoolField(TEXT("nanite_enabled"), static_cast<bool>(Settings.bEnabled));
+            Skipped->SetBoolField(TEXT("skipped"), true);
+
+            UE_LOG(LogTemp, Log, TEXT("SpecialAgent: modeling/set_nanite %s skipped (no change, enabled=%d)"),
+                *AssetPath, bEnabled ? 1 : 0);
+            return Skipped;
+        }
+
+        const FScopedTransaction Transaction(FText::FromString(TEXT("SpecialAgent: set nanite settings")));
+        Mesh->Modify();
+
+        Subsystem->SetNaniteSettings(Mesh, Settings, /*bApplyChanges=*/true);
+
+        Mesh->MarkPackageDirty();
+
+        TSharedPtr<FJsonObject> Out = FMCPJson::MakeSuccess();
+        Out->SetStringField(TEXT("asset_path"), Mesh->GetPathName());
+        Out->SetBoolField(TEXT("nanite_enabled"), bEnabled);
+
+        UE_LOG(LogTemp, Log, TEXT("SpecialAgent: modeling/set_nanite %s enabled=%d"), *AssetPath, bEnabled ? 1 : 0);
+        return Out;
+    };
+
+    TSharedPtr<FJsonObject> Result =
+        FGameThreadDispatcher::DispatchToGameThreadSyncWithReturn<TSharedPtr<FJsonObject>>(Task);
+    return FMCPResponse::Success(Request.Id, Result);
+}
+
 TArray<FMCPToolInfo> FModelingService::GetAvailableTools() const
 {
     TArray<FMCPToolInfo> Tools;
@@ -347,6 +500,33 @@ TArray<FMCPToolInfo> FModelingService::GetAvailableTools() const
                  "Warning: overwrites the target's shared source StaticMesh asset in place (affects every instance) and is irreversible; duplicate the asset first if it is reused elsewhere."))
         .RequiredString (TEXT("target_actor"),          TEXT("Label of the static mesh actor to simplify"))
         .OptionalInteger(TEXT("target_triangle_count"), TEXT("Target triangle budget; >0 simplifies toward it. Omit or 0 for planar simplify only (coplanar merge, shape-preserving)."))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(
+            TEXT("add_simple_collision"),
+            TEXT("Add a simple collision primitive to a StaticMesh asset via UStaticMeshEditorSubsystem::AddSimpleCollisionsWithNotification, operating on the /Game asset PATH (not an actor). "
+                 "Returns {success, asset_path (object path), shape (the requested shape), simple_collision_count (number of simple collision primitives after the add)}. "
+                 "Params: asset_path (string, required, /Game object path of the UStaticMesh), shape (enum, required, one of box/sphere/capsule/ndop10x/ndop10y/ndop10z/ndop18/ndop26 -> Box, Sphere, Capsule, or K-DOP hull). "
+                 "Workflow: NDOP shapes give tighter convex hulls than box/sphere; call assets/get_info afterward to confirm the new collision count. "
+                 "Warning: edits the shared source StaticMesh asset in place (affects every instance) and triggers a rebuild on the game thread; the existing simple collisions are kept and the new one is appended."))
+        .RequiredString(TEXT("asset_path"), TEXT("/Game object path of the UStaticMesh asset to add simple collision to"))
+        .RequiredEnum  (TEXT("shape"),
+            { TEXT("box"), TEXT("sphere"), TEXT("capsule"), TEXT("ndop10x"), TEXT("ndop10y"), TEXT("ndop10z"), TEXT("ndop18"), TEXT("ndop26") },
+            TEXT("Simple collision shape: box/sphere/capsule, or a K-DOP hull (ndop10x/y/z 10-sided, ndop18 18-sided, ndop26 26-sided)"))
+        .Build());
+
+    Tools.Add(FMCPToolBuilder(
+            TEXT("set_nanite"),
+            TEXT("Enable or disable Nanite on a StaticMesh asset via UStaticMeshEditorSubsystem::SetNaniteSettings, operating on the /Game asset PATH (not an actor). "
+                 "Returns {success, asset_path (object path), nanite_enabled (bool)}; if nothing changed it returns {success, asset_path, nanite_enabled, skipped:true} without rebuilding. "
+                 "Params: asset_path (string, required, /Game object path of the UStaticMesh), enabled (bool, required, whether Nanite data is generated), "
+                 "position_precision (integer, optional, FMeshNaniteSettings.PositionPrecision; step is 2^-precision cm), keep_percent_triangles (number 0..1, optional, KeepPercentTriangles fallback target where 1.0 keeps all triangles). "
+                 "Workflow: enable Nanite on dense static meshes to skip manual LODs; pass keep_percent_triangles below 1.0 to thin the source triangles. "
+                 "Warning: edits the shared source StaticMesh asset in place (affects every instance) and triggers a Nanite rebuild on the game thread; the call is skipped (no rebuild) when enabled and the provided fields already match."))
+        .RequiredString (TEXT("asset_path"),             TEXT("/Game object path of the UStaticMesh asset to configure Nanite on"))
+        .RequiredBool   (TEXT("enabled"),                TEXT("Whether Nanite data is generated for this mesh (sets FMeshNaniteSettings.bEnabled)"))
+        .OptionalInteger(TEXT("position_precision"),     TEXT("Nanite PositionPrecision; quantization step is 2^-precision cm. Omit to leave unchanged"))
+        .OptionalNumber (TEXT("keep_percent_triangles"), TEXT("Fraction of source triangles to keep (0..1); 1.0 = no reduction. Maps to KeepPercentTriangles. Omit to leave unchanged"))
         .Build());
 
     return Tools;

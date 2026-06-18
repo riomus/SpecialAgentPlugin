@@ -8,8 +8,8 @@
  *
  * UObject / UClass / UProperty / UFunction introspection.
  *
- * Implements 5 tools: list_classes, get_class_info, list_properties,
- * list_functions, call_function (primitive args only).
+ * Implements 6 tools: list_classes, get_class_info, list_properties,
+ * list_functions, call_function (primitive args only), set_asset_property.
  */
 class SPECIALAGENT_API FReflectionService : public IMCPService
 {
@@ -24,4 +24,5 @@ private:
     FMCPResponse HandleListProperties(const FMCPRequest& Request);
     FMCPResponse HandleListFunctions(const FMCPRequest& Request);
     FMCPResponse HandleCallFunction(const FMCPRequest& Request);
+    FMCPResponse HandleSetAssetProperty(const FMCPRequest& Request);
 };

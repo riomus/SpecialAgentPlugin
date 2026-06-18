@@ -45,6 +45,11 @@ private:
 
     bool ReadFullRequest(TArray<uint8>& OutBuffer, struct FSAHttpRequest& OutReq);
 
+    /** Reject non-local Origins (anti-DNS-rebinding) and, when a token is
+     *  configured, enforce Authorization: Bearer. Writes the error response and
+     *  returns false when the request must not be handled. */
+    bool CheckAuthorized(const struct FSAHttpRequest& Req);
+
     FSATcpServer* Owner;
     FSocket* Socket;
     TSharedPtr<FMCPRequestRouter> Router;

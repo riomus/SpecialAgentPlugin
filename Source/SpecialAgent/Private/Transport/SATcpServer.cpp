@@ -10,15 +10,33 @@
 FSATcpServer::FSATcpServer(TSharedPtr<FMCPRequestRouter> InRouter) : Router(InRouter) {}
 FSATcpServer::~FSATcpServer() { Stop(); }
 
-bool FSATcpServer::Start(int32 Port)
+bool FSATcpServer::Start(int32 Port, const FString& BindAddress, const FString& InAuthToken)
 {
     if (bRunning.load()) return false;
-    FIPv4Endpoint Endpoint(FIPv4Address::Any, Port);
+    AuthToken = InAuthToken;
+
+    // Default to loopback so the server (which runs arbitrary Python) is NOT
+    // reachable from the LAN. Only bind all interfaces when explicitly asked.
+    FIPv4Address BindAddr(127, 0, 0, 1);
+    if (BindAddress.Equals(TEXT("0.0.0.0")) || BindAddress.Equals(TEXT("any"), ESearchCase::IgnoreCase))
+    {
+        BindAddr = FIPv4Address::Any;
+        UE_LOG(LogTemp, Warning,
+            TEXT("SpecialAgent: binding to ALL interfaces (0.0.0.0) — the MCP server is reachable from the network. Prefer BindAddress=127.0.0.1 and/or set AuthToken."));
+    }
+    else if (!BindAddress.IsEmpty() && !BindAddress.Equals(TEXT("127.0.0.1")) && !BindAddress.Equals(TEXT("localhost"), ESearchCase::IgnoreCase))
+    {
+        FIPv4Address Parsed;
+        if (FIPv4Address::Parse(BindAddress, Parsed)) { BindAddr = Parsed; }
+    }
+
+    FIPv4Endpoint Endpoint(BindAddr, Port);
     Listener = MakeUnique<FTcpListener>(Endpoint);
     Listener->OnConnectionAccepted().BindRaw(this, &FSATcpServer::HandleAccept);
     if (!Listener->Init()) { Listener.Reset(); return false; }
     bRunning.store(true);
-    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: raw TCP transport listening on %d"), Port);
+    UE_LOG(LogTemp, Log, TEXT("SpecialAgent: raw TCP transport listening on %s:%d (auth %s)"),
+        *BindAddr.ToString(), Port, AuthToken.IsEmpty() ? TEXT("disabled") : TEXT("enabled"));
     return true;
 }
 

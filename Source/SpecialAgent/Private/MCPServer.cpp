@@ -19,7 +19,7 @@ FSpecialAgentMCPServer::~FSpecialAgentMCPServer()
 	StopServer();
 }
 
-bool FSpecialAgentMCPServer::StartServer(int32 Port)
+bool FSpecialAgentMCPServer::StartServer(int32 Port, const FString& BindAddress, const FString& AuthToken)
 {
 	if (bIsRunning)
 	{
@@ -30,7 +30,7 @@ bool FSpecialAgentMCPServer::StartServer(int32 Port)
 	ServerPort = Port;
 
 	RawServer = MakeUnique<FSATcpServer>(RequestRouter);
-	if (!RawServer->Start(ServerPort))
+	if (!RawServer->Start(ServerPort, BindAddress, AuthToken))
 	{
 		UE_LOG(LogTemp, Error, TEXT("SpecialAgent: raw TCP transport failed to bind %d"), ServerPort);
 		RawServer.Reset();
