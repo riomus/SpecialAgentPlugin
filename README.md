@@ -274,16 +274,19 @@ precedence over the plugin defaults.
 
 ## Documentation
 
-In-editor, the server exposes browsable docs as MCP resources (call `resources/list`):
+Committed references (browsable on GitHub):
 
-| Resource URI | Description |
-|--------------|-------------|
-| `mcp://unreal/cheatsheet` | UE5 Python cheat sheet (subsystems, idempotency, sampler types, redraw, idioms) |
-| `mcp://unreal/deprecations` | Deprecated → modern API mapping |
-| `mcp://unreal/services` | Auto-generated index of every registered service and tool |
-| `mcp://unreal/idioms/*` | Cookbook entries (spawn_actor, material_params, transactions, …) |
+| Document | Description |
+|----------|-------------|
+| [docs/TOOLS.md](docs/TOOLS.md) | Reference of all ~319 MCP tools across 45 services |
+| [Content/Docs/ue5_python_best_practices.md](Content/Docs/ue5_python_best_practices.md) | `python/execute` golden rules, modern subsystem map, units, gotchas |
+| [docs/ue5_python_api_reference.md](docs/ue5_python_api_reference.md) | Build-accurate `unreal` API (methods + signatures) for key classes — regenerate with `Content/Python/generate_api_reference.py` |
+| [Content/Docs/deprecations.md](Content/Docs/deprecations.md) | Deprecated → modern API mapping |
+| [Content/Docs/idioms/](Content/Docs/idioms/) | Cookbook entries (spawn_actor, material_params, transactions, …) |
 
-The authoritative tool list is always available at runtime via `tools/list`.
+In-editor, the server also exposes these as MCP resources (call `resources/list`): `mcp://unreal/cheatsheet`, `mcp://unreal/best_practices`, `mcp://unreal/deprecations`, `mcp://unreal/services` (live tool index), `mcp://unreal/idioms/*`.
+
+The authoritative tool list is always available at runtime via `tools/list`; for the exact live API of any class use the `python/inspect_class` / `search_symbol` / `get_function_signature` tools.
 
 ---
 
